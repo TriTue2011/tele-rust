@@ -54,9 +54,10 @@ impl ChatService {
         // TDLib lưu media trong thư mục loại tệp, không phục vụ tệp DB ở gốc.
         if relative.components().count() < 2 { return Err(missing()); }
         let mime = mime_guess::from_path(relative).first_raw().unwrap_or("text/plain");
+        let content_type = if mime.starts_with("text/") { format!("{mime}; charset=utf-8") } else { mime.into() };
         let bytes = read_bounded(root, Path::new(TD_FILES).join(relative), missing).await?;
         Ok(Binary {
-            bytes, content_type: mime.into(), cache_control: "private, max-age=86400", disposition: None,
+            bytes, content_type, cache_control: "private, max-age=86400", disposition: None,
         })
     }
 }

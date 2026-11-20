@@ -210,6 +210,8 @@ async fn downloads_are_bounded_private_and_never_follow_symlinks() {
     fs::create_dir_all(&media).unwrap();
     let valid = media.join("photo.jpg");
     fs::write(&valid, b"fake JPEG").unwrap();
+    let text = media.join("note.txt");
+    fs::write(&text, "ghi chú").unwrap();
     let large = media.join("large.jpg");
     fs::File::create(&large).unwrap().set_len(files::MAX_FILE_BYTES + 1).unwrap();
     let outside = root.join("outside.jpg");
@@ -223,7 +225,8 @@ async fn downloads_are_bounded_private_and_never_follow_symlinks() {
     let req = |id| json!({"@type":"downloadFile","file_id":id,"priority":16,"offset":0,"limit":0,"synchronous":true});
     let downloaded = |id, path: &Path| ok(req(id), json!({"local":{"path":path,"is_downloading_completed":true}}));
     let (chat, td) = setup(vec![downloaded(1, &valid), err(req(2), 404, "/private/backend/path"),
-        downloaded(3, &large), downloaded(4, &link), downloaded(5, &outside), downloaded(6, &escape)]);
+        downloaded(3, &large), downloaded(4, &link), downloaded(5, &outside), downloaded(6, &escape),
+        downloaded(7, &text)]);
     drop(chat);
     let chat = ChatService::new(td, "+000123", &data);
     let app = rest::router(Arc::new(rest::ChuaCo), Arc::new(chat), RestConfig {
@@ -246,6 +249,11 @@ async fn downloads_are_bounded_private_and_never_follow_symlinks() {
         let body = std::str::from_utf8(&bytes).unwrap();
         assert!(!body.contains("private") && !body.contains("file-test-"), "{body}");
     }
+    let response = get("/api/file/7").await.unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.headers()[header::CONTENT_TYPE], "text/plain; charset=utf-8");
+    assert_eq!(response.headers()[header::CONTENT_LENGTH], "8");
+    assert_eq!(to_bytes(response.into_body(), 100).await.unwrap().as_ref(), "ghi chú".as_bytes());
     let response = get("/api/calltrace/abcdef").await.unwrap();
     assert_eq!(response.headers()[header::CONTENT_DISPOSITION], "inline; filename=\"calltrace-abcdef.log\"");
     assert_eq!(to_bytes(response.into_body(), 100).await.unwrap(), "trace");
