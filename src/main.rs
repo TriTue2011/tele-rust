@@ -1,14 +1,27 @@
 //! Gateway Telegram bản Rust — cột mốc 0: mở libtdjson và đọc phiên bản TDLib.
 //!
-//! Chạy: `TDJSON_LIB=/đường/tới/libtdjson.so tggw version`
+//! Chạy: `TDJSON_LIB=/đường/tới/libtdjson.so tggw version|login|protocol`
 mod contract;
 mod td;
 
-fn main() {
+use std::sync::Arc;
+use std::time::Duration;
+
+use crate::contract::TdLink;
+
+#[tokio::main]
+async fn main() {
     let path = std::env::var("TDJSON_LIB").unwrap_or_else(|_| "libtdjson.so".into());
     let cmd = std::env::args().nth(1).unwrap_or_else(|| "version".into());
     if cmd == "protocol" {
         return run_protocol();
+    }
+    if cmd == "login" {
+        if let Err(e) = run_login(&path).await {
+            eprintln!("LỖI đăng nhập: {e}");
+            std::process::exit(3);
+        }
+        return;
     }
     let td = match td::TdJson::open(&path) {
         Ok(t) => t,
@@ -30,10 +43,52 @@ fn main() {
             }
         }
         other => {
-            eprintln!("lệnh lạ: {other} (có: version, protocol)");
+            eprintln!("lệnh lạ: {other} (có: version, login, protocol)");
             std::process::exit(64);
         }
     }
+}
+
+async fn run_login(path: &str) -> Result<(), String> {
+    let cfg = td::login::LoginConfig::from_env()?;
+    let api = td::TdJson::open(path)?;
+    let client = td::TdClient::start(Arc::new(api));
+    let mut auth = client.auth_watch();
+    let login = td::login::run(&client, &cfg);
+    tokio::pin!(login);
+    loop {
+        tokio::select! {
+            result = &mut login => {
+                result?;
+                break;
+            }
+            result = auth.changed() => {
+                result.map_err(|_| "mất kết nối TDLib".to_owned())?;
+                let state = auth.borrow_and_update().clone();
+                if !state.is_empty() {
+                    println!("Trạng thái đăng nhập: {state}");
+                }
+            }
+        }
+    }
+
+    let me = client.request(serde_json::json!({"@type": "getMe"})).await?;
+    let name = [me.get("first_name").and_then(|v| v.as_str()).unwrap_or_default(),
+                me.get("last_name").and_then(|v| v.as_str()).unwrap_or_default()]
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let username = me.get("username").and_then(|v| v.as_str()).unwrap_or_default();
+    if name.is_empty() {
+        println!("Đăng nhập thành công: @{username}");
+    } else if username.is_empty() {
+        println!("Đăng nhập thành công: {name}");
+    } else {
+        println!("Đăng nhập thành công: {name} (@{username})");
+    }
+    client.close(Duration::from_secs(5)).await;
+    Ok(())
 }
 
 fn run_protocol() {
