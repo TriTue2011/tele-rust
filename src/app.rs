@@ -97,6 +97,9 @@ impl CallControl for ReadyCalls {
     fn say(&self, body: Value) -> BoxFut<'_, Result<Value, GwError>> {
         if self.session.is_ready() { self.inner.say(body) } else { account_offline() }
     }
+    fn snapshot(&self, id: &str) -> BoxFut<'_, Result<Binary, GwError>> {
+        if self.session.is_ready() { self.inner.snapshot(id) } else { account_offline() }
+    }
 }
 
 struct ReadyChat {

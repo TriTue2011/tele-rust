@@ -5,6 +5,7 @@
 //! có Tokio runtime riêng, vì binding 3.0.7 không Sync. Không giữ khóa qua await.
 mod media;
 mod sources;
+mod snapshot;
 pub mod versions;
 
 pub use sources::{camera_command, is_cast_spec, mic_command, speaker_command, valid_speaker_url};
@@ -18,7 +19,7 @@ use ntgcalls::{ConnectionState, NTgCalls, Protocol, StreamDevice, StreamMode};
 use serde_json::{json, Value};
 use tokio::sync::{broadcast, mpsc, oneshot};
 
-use crate::contract::{BoxFut, CallControl, GwError, TdLink};
+use crate::contract::{Binary, BoxFut, CallControl, GwError, TdLink};
 use media::{Media, MediaEvent, MediaOp, NativeMedia, Ready};
 use sources::{Devices, playback_description, video_profile};
 
@@ -31,6 +32,8 @@ enum Command {
     Api(Action, Value, oneshot::Sender<Reply>),
     Update(Value, oneshot::Sender<Reply>),
     Media(MediaEvent),
+    Snapshot(String, oneshot::Sender<Result<Binary, GwError>>),
+    VideoJpeg(String, Option<Vec<u8>>),
     RestoreMic(String, u64, String, String, PathBuf),
     RefreshCapture(String),
     Shutdown(Option<std::sync::mpsc::Sender<()>>, Instant),
@@ -133,6 +136,14 @@ impl CallControl for CallManager {
     fn media(&self, body: Value) -> BoxFut<'_, Reply> { Box::pin(self.request(Action::Media, body)) }
     fn playback(&self, body: Value) -> BoxFut<'_, Reply> { Box::pin(self.request(Action::Playback, body)) }
     fn say(&self, body: Value) -> BoxFut<'_, Reply> { Box::pin(self.request(Action::Say, body)) }
+    fn snapshot(&self, id: &str) -> BoxFut<'_, Result<Binary, GwError>> {
+        let id = id.to_owned();
+        Box::pin(async move {
+            let (tx, rx) = oneshot::channel();
+            self.handle.sender.send(Command::Snapshot(id, tx)).map_err(|_| runtime_error())?;
+            rx.await.map_err(|_| runtime_error())?
+        })
+    }
 }
 
 fn runtime_error() -> GwError { GwError::new(503, "CALL_RUNTIME", "Runtime cuộc gọi đã dừng") }
@@ -164,6 +175,7 @@ struct LiveCall {
     view_on: bool,
     peer_video: bool,
     view: Value,
+    snapshot: snapshot::Snapshot,
     sig: [u64; 4],
     frames_in: u64,
     frame_bytes: u64,
@@ -188,7 +200,7 @@ impl LiveCall {
         let mut c = Self { id, td_id: None, user_id, outgoing, video, state: if outgoing { "dialing" } else { "ringing" },
             accepted: false, ready_done: false, media_created: false, pending_signaling: Vec::new(), devices, playback_kind, playback_cmd,
             playback_path, playback_final: None, cam_off: false, view_on: video, peer_video: false,
-            view: json!({"frames":0,"jpeg":0,"size":"","dropped":0,"bad":0}), sig: [0;4], frames_in: 0, frame_bytes: 0,
+            view: json!({"frames":0,"jpeg":0,"size":"","dropped":0,"bad":0}), snapshot: Default::default(), sig: [0;4], frames_in: 0, frame_bytes: 0,
             peak: 0, error: String::new(), emojis: json!([]), started: Instant::now(), active: None, ended: None, events: VecDeque::new(), capture_revision: 0, speech_revision: None };
         c.log(if outgoing { "tạo cuộc gọi đi" } else { "tạo cuộc gọi đến" });
         c
@@ -258,6 +270,18 @@ impl Actor {
                     }
                     Some(Command::Update(update, reply)) => { let result = self.update(update).await.map(|_| json!({"ok":true})); let _ = reply.send(result); }
                     Some(Command::Media(event)) => self.media_event(event).await,
+                    Some(Command::Snapshot(id, reply)) => {
+                        let result = self.calls.iter().find(|c| c.id == id && c.state != "ended")
+                            .ok_or_else(|| GwError::not_found("Không có cuộc gọi đang diễn ra này."))
+                            .and_then(|c| c.snapshot.response());
+                        let _ = reply.send(result);
+                    }
+                    Some(Command::VideoJpeg(id, jpeg)) => {
+                        if let Some(c) = self.calls.iter_mut().find(|c| c.id == id && c.state != "ended") {
+                            c.snapshot.finish(jpeg);
+                            c.view["jpeg"] = json!(c.snapshot.sequence);
+                        }
+                    }
                     Some(Command::RestoreMic(id, revision, mic, fmt, path)) => {
                         self.restore_mic(&id, revision, mic, fmt, path).await;
                     }
@@ -446,6 +470,7 @@ impl Actor {
         if self.calls[i].state == "ended" { return; }
         let c = &mut self.calls[i];
         c.state = "ended";
+        c.snapshot = Default::default();
         c.ended = Some(Instant::now());
         if let Some(id) = c.td_id { self.handled.insert(id); }
         c.log(why);
@@ -661,9 +686,12 @@ impl Actor {
                 for frame in frames {
                     if matches!(device, StreamDevice::Camera | StreamDevice::Screen) {
                         let w = frame.frame_data.width as usize; let h = frame.frame_data.height as usize;
-                        let key = if w == 0 || h == 0 || frame.data.len() != w*h*3/2 { "bad" } else { "frames" };
+                        let key = if snapshot::valid(w, h, frame.data.len()) { "frames" } else { "bad" };
                         c.view[key] = json!(c.view[key].as_u64().unwrap_or(0)+1);
-                        if key == "frames" { c.view["size"] = json!(format!("{w}x{h}")); }
+                        if key == "frames" {
+                            c.view["size"] = json!(format!("{w}x{h}"));
+                            c.snapshot.submit(w, h, frame.data, c.id.clone(), self.sender.clone());
+                        }
                     } else {
                         c.frames_in += 1; c.frame_bytes += frame.data.len() as u64;
                         for sample in frame.data.chunks_exact(2).take(960) { c.peak = c.peak.max((i16::from_le_bytes([sample[0],sample[1]]) as i32).abs()); }

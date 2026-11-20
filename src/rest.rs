@@ -117,6 +117,7 @@ enum Kind {
     /// POST tệp thô → `ChatControl::handle(POST, …, {"data_b64"})`.
     SendFile,
     ChatBytes,
+    Snapshot,
 }
 
 #[derive(Clone, Copy)]
@@ -198,6 +199,7 @@ async fn handle(ctx: Arc<Ctx>, spec: Spec, req: Request) -> Response {
     }
     let out = match spec.kind {
         Kind::ChatBytes => return bytes_resp(ctx.chat.bytes(&path, &query).await),
+        Kind::Snapshot => return bytes_resp(ctx.call.snapshot(path.rsplit('/').next().unwrap()).await),
         Kind::LiveCalls => ctx.call.calls().await,
         Kind::Live(op) => match body_dict(body).await {
             Err(e) => Err(e),
@@ -324,7 +326,7 @@ fn router_with(ctx: Arc<Ctx>) -> Router {
         .route("/api/live/calls", route(get, s(LiveCalls)))
         .route("/api/live/settings", add(route(get, s(ChatGet)), post, s(Live(Settings))))
         .route("/api/live/view/:call_id", route(get, s(ChatGet)))
-        .route("/api/live/snapshot/:call_id", route(get, s(ChatGet)))
+        .route("/api/live/snapshot/:call_id", route(get, s(Snapshot)))
         .route("/api/live/cast/:call_id/:file", on(get, cast_stream).on(MethodFilter::HEAD, method_not_allowed).fallback(method_not_allowed));
     for (p, op) in [("/api/live/call", Call), ("/api/live/accept", Accept), ("/api/live/hangup", Hangup),
                     ("/api/live/media", Media), ("/api/live/playback", Playback), ("/api/live/say", Say)] {
@@ -495,6 +497,14 @@ mod tests {
         }
         fn say(&self, b: Value) -> BoxFut<'_, Result<Value, GwError>> {
             self.rec("say", "", "", b)
+        }
+        fn snapshot(&self, id: &str) -> BoxFut<'_, Result<Binary, GwError>> {
+            let reply = self.rec("snapshot", id, "", Value::Null);
+            Box::pin(async move {
+                reply.await?;
+                Ok(Binary { bytes: vec![1, 2, 3], content_type: "image/jpeg".into(),
+                    cache_control: "no-store", disposition: None })
+            })
         }
     }
 
@@ -786,12 +796,15 @@ mod tests {
 
     #[tokio::test]
     async fn duong_nhi_phan_va_cast() {
-        let (app, _, chat) = app();
+        let (app, call, chat) = app();
         assert_eq!(send(&app, req("GET", "/api/live/view/c1", None, Body::empty())).await.0, 401);
-        for path in ["/api/live/view/c1", "/api/live/snapshot/c1"] {
-            assert_eq!(send(&app, ok("GET", path, Body::empty())).await.0, 200);
-            assert_eq!(chat.last(), ("GET".into(), path.into(), "".into(), Value::Null));
-        }
+        let view = "/api/live/view/c1";
+        assert_eq!(send(&app, ok("GET", view, Body::empty())).await.0, 200);
+        assert_eq!(chat.last(), ("GET".into(), view.into(), "".into(), Value::Null));
+        let jpeg = app.clone().oneshot(ok("GET", "/api/live/snapshot/c1", Body::empty())).await.unwrap();
+        assert_eq!(jpeg.headers()[header::CONTENT_TYPE], "image/jpeg");
+        assert_eq!(to_bytes(jpeg.into_body(), 3).await.unwrap().as_ref(), &[1, 2, 3]);
+        assert_eq!(call.last(), ("snapshot".into(), "c1".into(), "".into(), Value::Null));
         for path in ["/api/file/12", "/api/calltrace/c1"] {
             let response = app.clone().oneshot(ok("GET", path, Body::empty())).await.unwrap();
             assert_eq!(response.status(), 200);

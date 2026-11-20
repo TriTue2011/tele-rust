@@ -437,6 +437,11 @@ async fn capture_can_change_before_or_during_call_and_info_has_python_keys() {
 #[tokio::test]
 async fn audio_frames_and_video_frames_have_separate_counters() {
     let f=Fixture::new(false); f.outgoing(false).await; f.ready(7,42,true,&["8.0.0"]).await;
+    let manager = f.manager();
+    let info = f.info().await;
+    let id = info["id"].as_str().unwrap();
+    assert_eq!(manager.snapshot("unknown").await.unwrap_err().status, 404);
+    assert_eq!(manager.snapshot(id).await.unwrap_err().code, "NO_VIDEO");
     let metadata=FrameData{absolute_capture_timestamp_ms:0,rotation:VideoRotation::VideoRotation0,width:8,height:4};
     f.emit(MediaEvent::Frames(42,StreamMode::Playback,StreamDevice::Microphone,vec![Frame{ssrc:0,data:vec![0,128,255,127],frame_data:metadata.clone()}])).await;
     f.emit(MediaEvent::Frames(42,StreamMode::Playback,StreamDevice::Camera,vec![Frame{ssrc:0,data:vec![0;48],frame_data:metadata}])).await;
@@ -444,6 +449,19 @@ async fn audio_frames_and_video_frames_have_separate_counters() {
     f.emit(MediaEvent::PeerVideo(42,true)).await;
     assert_eq!(f.info().await["peer_video"],true);
     assert!(matches!(f.ops().last().unwrap(),MediaOp::Sources(_,StreamMode::Playback,d) if d.camera.is_some()));
+    let jpeg = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            match manager.snapshot(id).await {
+                Ok(jpeg) => break jpeg,
+                Err(error) => assert_eq!(error.code, "NO_VIDEO"),
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }).await.unwrap();
+    assert_eq!(jpeg.content_type, "image/jpeg");
+    assert!(jpeg.bytes.starts_with(&[0xff, 0xd8]) && jpeg.bytes.ends_with(&[0xff, 0xd9]));
+    manager.hangup(json!({"id":id})).await.unwrap();
+    assert_eq!(manager.snapshot(id).await.unwrap_err().status, 404);
 }
 
 #[tokio::test]

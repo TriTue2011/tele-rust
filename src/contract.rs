@@ -114,6 +114,9 @@ pub trait CallControl: Send + Sync + 'static {
     fn media(&self, body: Value) -> BoxFut<'_, Result<Value, GwError>>;
     fn playback(&self, body: Value) -> BoxFut<'_, Result<Value, GwError>>;
     fn say(&self, body: Value) -> BoxFut<'_, Result<Value, GwError>>;
+    fn snapshot(&self, _id: &str) -> BoxFut<'_, Result<Binary, GwError>> {
+        Box::pin(async { Err(GwError::new(501, "NOT_IMPLEMENTED", "Chưa có ảnh chụp cuộc gọi.")) })
+    }
 }
 
 /// Tài khoản, chat, tin nhắn — các đường còn lại (`/api/accounts`, `/api/chats…`, `/api/messages/*`, `/api/feed`, …).
