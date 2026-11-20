@@ -2,6 +2,7 @@
 //!
 //! Chạy: `TDJSON_LIB=/đường/tới/libtdjson.so tggw version`
 mod contract;
+mod rest;
 mod td;
 
 fn main() {
@@ -9,6 +10,14 @@ fn main() {
     let cmd = std::env::args().nth(1).unwrap_or_else(|| "version".into());
     if cmd == "protocol" {
         return run_protocol();
+    }
+    if cmd == "serve" {
+        let stub = std::sync::Arc::new(rest::ChuaCo);
+        if let Err(e) = rest::serve_from_env(stub.clone(), stub) {
+            eprintln!("LỖI: {e}");
+            std::process::exit(2);
+        }
+        return;
     }
     let td = match td::TdJson::open(&path) {
         Ok(t) => t,
@@ -30,7 +39,7 @@ fn main() {
             }
         }
         other => {
-            eprintln!("lệnh lạ: {other} (có: version, protocol)");
+            eprintln!("lệnh lạ: {other} (có: version, protocol, serve)");
             std::process::exit(64);
         }
     }

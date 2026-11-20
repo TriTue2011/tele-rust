@@ -1,0 +1,766 @@
+//! HTTP API — GIỐNG HỆT gateway Python (`gateway/routes.py`, `gateway/chat_routes.py`, `gateway/errors.py`) để tích hợp HA
+//! `telegram_call` dùng được mà không sửa. Module này chỉ lo phần vận chuyển; nghiệp vụ nằm sau [`CallControl`]/[`ChatControl`].
+//!
+//! Hành vi đối chiếu với mã Python trong `tham-khao/python-gateway/`:
+//! - Auth `Authorization: Bearer <GATEWAY_TOKEN>` (phân biệt hoa thường, so sánh thời gian hằng); sai/thiếu → 401 `UNAUTHORIZED`.
+//!   Riêng `GET /health` không cần token.
+//! - 120 yêu cầu/phút cho token (cửa sổ trượt 60 giây, `RATE_LIMIT_PER_MINUTE`), chỉ đếm yêu cầu đã qua auth → 429 `RATE_LIMITED`.
+//! - Thân JSON: rỗng = `{}`; > 400 000 byte → 400 «vượt 400 KB»; JSON hỏng → 400; không phải object → 400.
+//! - Lỗi nghiệp vụ [`GwError`] → `{"error":{"code","message"}}` với đúng mã HTTP.
+//! - Kiểm tra TRƯỚC auth như FastAPI: đường lạ → 404 `{"detail":"Not Found"}`, sai phương thức → 405
+//!   `{"detail":"Method Not Allowed"}`, tham số đường dẫn số (`chat_id`, `file_id`) sai → 422 `{"detail":[…int_parsing…]}`.
+//!
+//! Quy ước riêng của bản Rust (hợp đồng `contract.rs` cố định, không chở được các thứ này):
+//! - `POST /api/chats/{id}/send_file`: thân HTTP là tệp thô (tối đa 64 MB, không phải JSON) → [`ChatControl::handle`] nhận
+//!   `{"data_b64": "<base64 của tệp>"}`; `kind`/`name`/`caption` vẫn ở query.
+//! - `/api/live/*` (trừ `GET /api/live/calls`): `?account=` không có chỗ trong [`CallControl`] nên được chép vào thân là
+//!   `"account"` (bản Python chọn tài khoản theo query).
+//! - `GET /api/live/settings` không có hàm trong [`CallControl`] → chuyển cho [`ChatControl::handle`].
+//! - Các đường tải tệp/video/nhật ký chuyển cho `ChatControl` nhưng hợp đồng hiện chỉ trả được JSON, chưa chở luồng nhị phân.
+//! - `/health` lấy số tài khoản từ `ChatControl::handle("GET", "/api/accounts", …)` (`{"tai_khoan":[{status}]}`); lỗi = 0.
+
+use std::collections::VecDeque;
+use std::net::SocketAddr;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use axum::body::{to_bytes, Body};
+use axum::extract::{Request, State};
+use axum::http::{header, HeaderMap, StatusCode};
+use axum::response::{IntoResponse, Response};
+use axum::routing::{on, MethodFilter, MethodRouter};
+use axum::Router;
+use base64::Engine as _;
+use serde_json::{json, Value};
+use subtle::ConstantTimeEq;
+
+use crate::contract::{BoxFut, CallControl, ChatControl, GwError};
+
+/// Như `MAX_BODY_BYTES` của routes.py.
+const MAX_BODY_BYTES: usize = 400_000;
+/// Như `MAX_UPLOAD_BYTES` của chat_routes.py.
+const MAX_UPLOAD_BYTES: usize = 64 * 1024 * 1024;
+const FILE_KINDS: [&str; 5] = ["photo", "video", "voice", "audio", "document"];
+
+pub struct RestConfig {
+    pub token: String,
+    pub rate_limit_per_minute: usize,
+    pub version: String,
+}
+
+struct Ctx {
+    call: Arc<dyn CallControl>,
+    chat: Arc<dyn ChatControl>,
+    token: String,
+    limit: usize,
+    hits: Mutex<VecDeque<Instant>>,
+    version: String,
+    started: Instant,
+}
+
+impl Ctx {
+    /// `_rate_limited` của routes.py: bỏ mốc cũ hơn 60 giây; đủ hạn mức thì từ chối (không ghi thêm mốc).
+    fn rate_limited(&self) -> bool {
+        let now = Instant::now();
+        let mut dq = self.hits.lock().unwrap_or_else(|p| p.into_inner());
+        while dq.front().is_some_and(|t| now.duration_since(*t) > Duration::from_secs(60)) {
+            dq.pop_front();
+        }
+        if dq.len() >= self.limit {
+            return true;
+        }
+        dq.push_back(now);
+        false
+    }
+
+    /// `_auth` của routes.py.
+    fn auth(&self, headers: &HeaderMap) -> Result<(), GwError> {
+        let h = headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()).unwrap_or("");
+        let token = h.strip_prefix("Bearer ").unwrap_or("");
+        if self.token.is_empty() || !ct_eq(token.as_bytes(), self.token.as_bytes()) {
+            return Err(GwError::new(401, "UNAUTHORIZED", "Thiếu hoặc sai token."));
+        }
+        if self.rate_limited() {
+            return Err(GwError::new(429, "RATE_LIMITED", "Quá 120 request/phút cho token này."));
+        }
+        Ok(())
+    }
+}
+
+/// So sánh thời gian hằng (chỉ lộ độ dài, như `secrets.compare_digest`).
+fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+    bool::from(a.ct_eq(b))
+}
+
+#[derive(Clone, Copy)]
+enum LiveOp {
+    Call,
+    Accept,
+    Hangup,
+    Settings,
+    Media,
+    Playback,
+    Say,
+}
+
+#[derive(Clone, Copy)]
+enum Kind {
+    /// GET /api/live/calls → `CallControl::calls`.
+    LiveCalls,
+    /// POST /api/live/* → `CallControl`.
+    Live(LiveOp),
+    /// GET → `ChatControl::handle(GET, …, Null)`.
+    ChatGet,
+    /// POST thân JSON → `ChatControl::handle(POST, …, body)`.
+    ChatPost,
+    /// POST tệp thô → `ChatControl::handle(POST, …, {"data_b64"})`.
+    SendFile,
+}
+
+#[derive(Clone, Copy)]
+struct Spec {
+    kind: Kind,
+    /// Tham số đường dẫn kiểu `int` của FastAPI: (tên, vị trí đoạn khi tách path theo '/').
+    int_param: Option<(&'static str, usize)>,
+}
+
+fn json_resp(status: StatusCode, v: &Value) -> Response {
+    let body = serde_json::to_vec(v).unwrap_or_default();
+    (status, [(header::CONTENT_TYPE, "application/json")], body).into_response()
+}
+
+/// `ApiError` → JSON như `_api_error_handler` (errors.py). `retry_after_seconds` không có trong `GwError`.
+fn error_resp(e: &GwError) -> Response {
+    let status = StatusCode::from_u16(e.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    json_resp(status, &json!({"error": {"code": e.code, "message": e.message}}))
+}
+
+async fn not_found() -> Response {
+    json_resp(StatusCode::NOT_FOUND, &json!({"detail": "Not Found"}))
+}
+
+async fn method_not_allowed() -> Response {
+    json_resp(StatusCode::METHOD_NOT_ALLOWED, &json!({"detail": "Method Not Allowed"}))
+}
+
+/// `_body_dict` của routes.py.
+async fn body_dict(body: Body) -> Result<Value, GwError> {
+    let raw = to_bytes(body, MAX_BODY_BYTES).await.map_err(|_| GwError::bad_request("Thân request vượt 400 KB."))?;
+    if raw.is_empty() {
+        return Ok(json!({}));
+    }
+    let v: Value = serde_json::from_slice(&raw).map_err(|_| GwError::bad_request("Thân request không phải JSON hợp lệ."))?;
+    if !v.is_object() {
+        return Err(GwError::bad_request("Thân POST phải là JSON object."));
+    }
+    Ok(v)
+}
+
+/// `request.query_params.get(name)` của Starlette (giá trị cuối cùng nếu lặp).
+fn query_get(query: &str, name: &str) -> Option<String> {
+    form_urlencoded::parse(query.as_bytes()).filter(|(k, _)| k == name).last().map(|(_, v)| v.into_owned())
+}
+
+async fn handle(ctx: Arc<Ctx>, spec: Spec, req: Request) -> Response {
+    let (parts, body) = req.into_parts();
+    let path = parts.uri.path().to_owned();
+    let query = parts.uri.query().unwrap_or("").to_owned();
+    // FastAPI kiểm kiểu tham số đường dẫn trước khi vào hàm (tức trước auth).
+    if let Some((name, idx)) = spec.int_param {
+        let seg = path.split('/').nth(idx).unwrap_or("");
+        if seg.parse::<i64>().is_err() {
+            let detail = json!({"detail": [{"type": "int_parsing", "loc": ["path", name],
+                "msg": "Input should be a valid integer, unable to parse string as an integer", "input": seg}]});
+            return json_resp(StatusCode::UNPROCESSABLE_ENTITY, &detail);
+        }
+    }
+    if let Err(e) = ctx.auth(&parts.headers) {
+        return error_resp(&e);
+    }
+    let out = match spec.kind {
+        Kind::LiveCalls => ctx.call.calls().await,
+        Kind::Live(op) => match body_dict(body).await {
+            Err(e) => Err(e),
+            Ok(mut b) => {
+                if let Some(acc) = query_get(&query, "account").filter(|a| !a.is_empty()) {
+                    b["account"] = Value::String(acc);
+                }
+                let c = &ctx.call;
+                let fut: BoxFut<'_, Result<Value, GwError>> = match op {
+                    LiveOp::Call => c.call_out(b),
+                    LiveOp::Accept => c.accept(b),
+                    LiveOp::Hangup => c.hangup(b),
+                    LiveOp::Settings => c.settings(b),
+                    LiveOp::Media => c.media(b),
+                    LiveOp::Playback => c.playback(b),
+                    LiveOp::Say => c.say(b),
+                };
+                fut.await
+            }
+        },
+        Kind::ChatGet => ctx.chat.handle("GET", &path, &query, Value::Null).await,
+        Kind::ChatPost => match body_dict(body).await {
+            Err(e) => Err(e),
+            Ok(b) => ctx.chat.handle("POST", &path, &query, b).await,
+        },
+        Kind::SendFile => send_file(&ctx, &path, &query, body).await,
+    };
+    match out {
+        Ok(v) => json_resp(StatusCode::OK, &v),
+        Err(e) => error_resp(&e),
+    }
+}
+
+/// Phần vận chuyển của `send_file` (chat_routes.py): kiểm `kind` trước khi đọc thân, thân thô ≤ 64 MB, không rỗng.
+async fn send_file(ctx: &Ctx, path: &str, query: &str, body: Body) -> Result<Value, GwError> {
+    let kind = query_get(query, "kind").unwrap_or_else(|| "document".into());
+    if !FILE_KINDS.contains(&kind.as_str()) {
+        return Err(GwError::bad_request("kind phải là photo, video, voice, audio hoặc document."));
+    }
+    let raw = to_bytes(body, MAX_UPLOAD_BYTES).await.map_err(|_| GwError::bad_request("Tệp vượt 64 MB."))?;
+    if raw.is_empty() {
+        return Err(GwError::bad_request("Tệp rỗng."));
+    }
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&raw);
+    ctx.chat.handle("POST", path, query, json!({"data_b64": b64})).await
+}
+
+/// `/health` (không auth). Không bao giờ hỏng: `ChatControl` lỗi thì coi như 0 tài khoản.
+async fn health(State(ctx): State<Arc<Ctx>>) -> Response {
+    let (total, online) = match ctx.chat.handle("GET", "/api/accounts", "", Value::Null).await {
+        Ok(v) => v.get("tai_khoan").and_then(Value::as_array).map_or((0, 0), |a| {
+            let online = a.iter().filter(|x| matches!(x.get("status").and_then(Value::as_str), Some("online" | "mock"))).count();
+            (a.len(), online)
+        }),
+        Err(_) => (0, 0),
+    };
+    json_resp(StatusCode::OK, &json!({
+        "status": if online > 0 { "ok" } else { "degraded" },
+        "version": ctx.version,
+        "uptime_seconds": ctx.started.elapsed().as_secs(),
+        "accounts_total": total,
+        "accounts_online": online,
+        "mock_mode": false,
+    }))
+}
+
+/// Luồng MP3 cho loa Cast (`/api/live/cast/{call_id}/{token}.mp3`): bản Python không cần Bearer; bản Rust chưa có luồng nào
+/// nên luôn trả đúng câu 404 của Python khi không có luồng.
+async fn cast_stream(req: Request) -> Response {
+    if !req.uri().path().ends_with(".mp3") {
+        return not_found().await;
+    }
+    error_resp(&GwError::not_found("Không có luồng này."))
+}
+
+/// Một phương thức → `spec`; phương thức khác → 405 kiểu FastAPI.
+fn route(filter: MethodFilter, spec: Spec) -> MethodRouter<Arc<Ctx>> {
+    add(MethodRouter::new(), filter, spec)
+        .on(MethodFilter::HEAD, method_not_allowed)
+        .fallback(method_not_allowed)
+}
+
+fn add(r: MethodRouter<Arc<Ctx>>, filter: MethodFilter, spec: Spec) -> MethodRouter<Arc<Ctx>> {
+    r.on(filter, move |State(ctx): State<Arc<Ctx>>, req: Request| handle(ctx, spec, req))
+}
+
+const fn s(kind: Kind) -> Spec {
+    Spec { kind, int_param: None }
+}
+
+/// `/api/<a>/{chat_id|file_id}/…`: tham số số nằm ở đoạn thứ 3 (`["", "api", a, id, …]`).
+const fn s_id(kind: Kind, name: &'static str) -> Spec {
+    Spec { kind, int_param: Some((name, 3)) }
+}
+
+fn router_with(ctx: Arc<Ctx>) -> Router {
+    use Kind::*;
+    use LiveOp::*;
+    let get = MethodFilter::GET;
+    let post = MethodFilter::POST;
+    let mut r = Router::new().route("/health", on(get, health).on(MethodFilter::HEAD, method_not_allowed).fallback(method_not_allowed));
+    // Chỉ đọc → ChatControl (routes.py + chat_routes.py).
+    for p in ["/api/accounts", "/api/me", "/api/chats", "/api/contacts", "/api/search", "/api/feed", "/api/events",
+              "/api/calls", "/api/calltrace"] {
+        r = r.route(p, route(get, s(ChatGet)));
+    }
+    r = r
+        .route("/api/chats/:chat_id/messages", route(get, s_id(ChatGet, "chat_id")))
+        .route("/api/file/:file_id", route(get, s_id(ChatGet, "file_id")))
+        .route("/api/calltrace/:call_id", route(get, s(ChatGet)));
+    // Ghi, thân JSON → ChatControl.
+    for p in ["/api/send_message", "/api/send_media", "/api/send_voice", "/api/call", "/api/answer_call",
+              "/api/hangup_call", "/api/audio/in", "/api/audio/upload", "/api/messages/edit", "/api/messages/delete",
+              "/api/messages/forward", "/api/messages/react", "/api/resolve", "/api/translate", "/api/contacts/open",
+              "/api/do/:name"] {
+        r = r.route(p, route(post, s(ChatPost)));
+    }
+    for p in ["/api/chats/:chat_id/send", "/api/chats/:chat_id/send_album", "/api/chats/:chat_id/read"] {
+        r = r.route(p, route(post, s_id(ChatPost, "chat_id")));
+    }
+    r = r.route("/api/chats/:chat_id/send_file", route(post, s_id(SendFile, "chat_id")));
+    // Cuộc gọi → CallControl.
+    r = r
+        .route("/api/live/calls", route(get, s(LiveCalls)))
+        .route("/api/live/settings", add(route(get, s(ChatGet)), post, s(Live(Settings))))
+        .route("/api/live/view/:call_id", route(get, s(ChatGet)))
+        .route("/api/live/snapshot/:call_id", route(get, s(ChatGet)))
+        .route("/api/live/cast/:call_id/:file", on(get, cast_stream).on(MethodFilter::HEAD, method_not_allowed).fallback(method_not_allowed));
+    for (p, op) in [("/api/live/call", Call), ("/api/live/accept", Accept), ("/api/live/hangup", Hangup),
+                    ("/api/live/media", Media), ("/api/live/playback", Playback), ("/api/live/say", Say)] {
+        r = r.route(p, route(post, s(Live(op))));
+    }
+    r.fallback(not_found).with_state(ctx)
+}
+
+/// Router HTTP hoàn chỉnh. Gọi với token rỗng là lỗi của người gọi (`serve` từ chối khởi động trước đó).
+pub fn router(call: Arc<dyn CallControl>, chat: Arc<dyn ChatControl>, cfg: RestConfig) -> Router {
+    router_with(Arc::new(Ctx {
+        call,
+        chat,
+        token: cfg.token,
+        limit: cfg.rate_limit_per_minute,
+        hits: Mutex::new(VecDeque::new()),
+        version: cfg.version,
+        started: Instant::now(),
+    }))
+}
+
+/// `_int` của config.py: thiếu hoặc không phải số → mặc định.
+fn env_num<T: std::str::FromStr>(name: &str, default: T) -> T {
+    std::env::var(name).ok().and_then(|v| v.trim().parse().ok()).unwrap_or(default)
+}
+
+/// `tggw serve`: nghe `GATEWAY_HOST` (mặc định 0.0.0.0) : `REST_PORT` (mặc định 3334). Thiếu `GATEWAY_TOKEN` → từ chối chạy
+/// (như `load_config` của Python). Dừng êm khi nhận SIGTERM/SIGINT.
+pub fn serve_from_env(call: Arc<dyn CallControl>, chat: Arc<dyn ChatControl>) -> Result<(), String> {
+    let token = std::env::var("GATEWAY_TOKEN").unwrap_or_default();
+    if token.is_empty() {
+        return Err("GATEWAY_TOKEN chưa đặt. Sinh bằng 'openssl rand -hex 32'.".into());
+    }
+    let host = std::env::var("GATEWAY_HOST").unwrap_or_else(|_| "0.0.0.0".into());
+    let port: u16 = env_num("REST_PORT", 3334);
+    let addr: SocketAddr = format!("{host}:{port}").parse().map_err(|e| format!("địa chỉ nghe sai {host}:{port}: {e}"))?;
+    let cfg = RestConfig {
+        token,
+        rate_limit_per_minute: env_num("RATE_LIMIT_PER_MINUTE", 120),
+        version: env!("CARGO_PKG_VERSION").into(),
+    };
+    let app = router(call, chat, cfg);
+    let rt = tokio::runtime::Runtime::new().map_err(|e| format!("không tạo được tokio: {e}"))?;
+    rt.block_on(async move {
+        let listener = tokio::net::TcpListener::bind(addr).await.map_err(|e| format!("không nghe được {addr}: {e}"))?;
+        eprintln!("tggw serve: nghe http://{addr}");
+        axum::serve(listener, app).with_graceful_shutdown(shutdown_signal()).await.map_err(|e| format!("HTTP lỗi: {e}"))
+    })
+}
+
+async fn shutdown_signal() {
+    let term = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut s) => {
+                s.recv().await;
+            }
+            Err(_) => std::future::pending::<()>().await,
+        }
+    };
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {},
+        _ = term => {},
+    }
+}
+
+/// `CallControl`/`ChatControl` TẠM cho `tggw serve` khi chưa có module `calls`/`chat`: mọi việc → 501 `NOT_IMPLEMENTED`,
+/// riêng danh sách cuộc gọi trả `{"calls":[]}`.
+pub struct ChuaCo;
+
+fn chua_co(what: &str) -> BoxFut<'static, Result<Value, GwError>> {
+    let e = GwError::new(501, "NOT_IMPLEMENTED", format!("Bản Rust chưa có: {what}"));
+    Box::pin(async move { Err(e) })
+}
+
+impl CallControl for ChuaCo {
+    fn calls(&self) -> BoxFut<'_, Result<Value, GwError>> {
+        Box::pin(async { Ok(json!({"calls": []})) })
+    }
+    fn call_out(&self, _: Value) -> BoxFut<'_, Result<Value, GwError>> {
+        chua_co("/api/live/call")
+    }
+    fn accept(&self, _: Value) -> BoxFut<'_, Result<Value, GwError>> {
+        chua_co("/api/live/accept")
+    }
+    fn hangup(&self, _: Value) -> BoxFut<'_, Result<Value, GwError>> {
+        chua_co("/api/live/hangup")
+    }
+    fn settings(&self, _: Value) -> BoxFut<'_, Result<Value, GwError>> {
+        chua_co("/api/live/settings")
+    }
+    fn media(&self, _: Value) -> BoxFut<'_, Result<Value, GwError>> {
+        chua_co("/api/live/media")
+    }
+    fn playback(&self, _: Value) -> BoxFut<'_, Result<Value, GwError>> {
+        chua_co("/api/live/playback")
+    }
+    fn say(&self, _: Value) -> BoxFut<'_, Result<Value, GwError>> {
+        chua_co("/api/live/say")
+    }
+}
+
+impl ChatControl for ChuaCo {
+    fn handle(&self, method: &str, path: &str, _: &str, _: Value) -> BoxFut<'_, Result<Value, GwError>> {
+        chua_co(&format!("{method} {path}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tower::ServiceExt;
+
+    /// Ghi lại mọi lời gọi; trả lời theo `reply` (mặc định `{"ok":true,"from":…}`).
+    #[derive(Default)]
+    struct Fake {
+        log: Mutex<Vec<(String, String, String, Value)>>,
+        reply: Mutex<Option<Result<Value, GwError>>>,
+    }
+
+    impl Fake {
+        fn rec(&self, a: &str, b: &str, c: &str, v: Value) -> BoxFut<'_, Result<Value, GwError>> {
+            self.log.lock().unwrap().push((a.into(), b.into(), c.into(), v));
+            let out = self.reply.lock().unwrap().clone().unwrap_or_else(|| Ok(json!({"ok": true, "from": a})));
+            Box::pin(async move { out })
+        }
+        fn last(&self) -> (String, String, String, Value) {
+            self.log.lock().unwrap().last().cloned().expect("không có lời gọi nào")
+        }
+        fn count(&self) -> usize {
+            self.log.lock().unwrap().len()
+        }
+    }
+
+    impl CallControl for Fake {
+        fn calls(&self) -> BoxFut<'_, Result<Value, GwError>> {
+            self.rec("calls", "", "", Value::Null)
+        }
+        fn call_out(&self, b: Value) -> BoxFut<'_, Result<Value, GwError>> {
+            self.rec("call_out", "", "", b)
+        }
+        fn accept(&self, b: Value) -> BoxFut<'_, Result<Value, GwError>> {
+            self.rec("accept", "", "", b)
+        }
+        fn hangup(&self, b: Value) -> BoxFut<'_, Result<Value, GwError>> {
+            self.rec("hangup", "", "", b)
+        }
+        fn settings(&self, b: Value) -> BoxFut<'_, Result<Value, GwError>> {
+            self.rec("settings", "", "", b)
+        }
+        fn media(&self, b: Value) -> BoxFut<'_, Result<Value, GwError>> {
+            self.rec("media", "", "", b)
+        }
+        fn playback(&self, b: Value) -> BoxFut<'_, Result<Value, GwError>> {
+            self.rec("playback", "", "", b)
+        }
+        fn say(&self, b: Value) -> BoxFut<'_, Result<Value, GwError>> {
+            self.rec("say", "", "", b)
+        }
+    }
+
+    impl ChatControl for Fake {
+        fn handle(&self, m: &str, p: &str, q: &str, b: Value) -> BoxFut<'_, Result<Value, GwError>> {
+            self.rec(m, p, q, b)
+        }
+    }
+
+    const TOK: &str = "bi-mat-thu";
+
+    fn app_limit(call: &Arc<Fake>, chat: &Arc<Fake>, limit: usize) -> Router {
+        let cfg = RestConfig { token: TOK.into(), rate_limit_per_minute: limit, version: "thu".into() };
+        router(call.clone(), chat.clone(), cfg)
+    }
+
+    fn app() -> (Router, Arc<Fake>, Arc<Fake>) {
+        let (call, chat) = (Arc::new(Fake::default()), Arc::new(Fake::default()));
+        (app_limit(&call, &chat, 120), call, chat)
+    }
+
+    fn req(method: &str, uri: &str, auth: Option<&str>, body: impl Into<Body>) -> Request {
+        let mut b = Request::builder().method(method).uri(uri);
+        if let Some(a) = auth {
+            b = b.header("Authorization", a);
+        }
+        b.body(body.into()).unwrap()
+    }
+
+    fn ok(method: &str, uri: &str, body: impl Into<Body>) -> Request {
+        req(method, uri, Some(&format!("Bearer {TOK}")), body)
+    }
+
+    async fn send(app: &Router, r: Request) -> (u16, Value) {
+        let resp = app.clone().oneshot(r).await.unwrap();
+        let st = resp.status().as_u16();
+        let raw = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        (st, serde_json::from_slice(&raw).unwrap_or(Value::Null))
+    }
+
+    fn err(code: &str, msg: &str) -> Value {
+        json!({"error": {"code": code, "message": msg}})
+    }
+
+    #[tokio::test]
+    async fn health_khong_can_token_va_dung_hinh_dang() {
+        let (app, _, chat) = app();
+        *chat.reply.lock().unwrap() =
+            Some(Ok(json!({"tai_khoan": [{"status": "online"}, {"status": "offline"}, {"status": "mock"}]})));
+        let (st, v) = send(&app, req("GET", "/health", None, Body::empty())).await;
+        assert_eq!(st, 200);
+        assert_eq!(v["status"], "ok");
+        assert_eq!(v["accounts_total"], 3);
+        assert_eq!(v["accounts_online"], 2);
+        assert_eq!(v["mock_mode"], false);
+        assert!(v["version"].is_string() && v["uptime_seconds"].is_u64());
+        assert_eq!(v.as_object().unwrap().len(), 6);
+        assert_eq!(chat.last().1, "/api/accounts");
+    }
+
+    #[tokio::test]
+    async fn health_khi_chat_loi_van_200_degraded() {
+        let (app, _, chat) = app();
+        *chat.reply.lock().unwrap() = Some(Err(GwError::new(501, "NOT_IMPLEMENTED", "x")));
+        let (st, v) = send(&app, req("GET", "/health", None, Body::empty())).await;
+        assert_eq!((st, v["status"].clone(), v["accounts_total"].clone()), (200, json!("degraded"), json!(0)));
+    }
+
+    #[tokio::test]
+    async fn sai_hoac_thieu_token_401() {
+        let (app, call, _) = app();
+        let want = err("UNAUTHORIZED", "Thiếu hoặc sai token.");
+        let bad_auth = [None, Some("Bearer sai"), Some("bearer bi-mat-thu"), Some("Bearer  bi-mat-thu"), Some(TOK),
+                        Some("Bearer bi-mat-th")];
+        for a in bad_auth {
+            assert_eq!(send(&app, req("GET", "/api/live/calls", a, Body::empty())).await, (401, want.clone()), "{a:?}");
+        }
+        assert_eq!(send(&app, req("POST", "/api/live/hangup", None, "{bad")).await, (401, want));
+        assert_eq!(call.count(), 0);
+    }
+
+    #[tokio::test]
+    async fn qua_han_muc_429_va_401_khong_tinh() {
+        let (call, chat) = (Arc::new(Fake::default()), Arc::new(Fake::default()));
+        let app = app_limit(&call, &chat, 3);
+        for _ in 0..5 {
+            assert_eq!(send(&app, req("GET", "/api/live/calls", Some("Bearer sai"), Body::empty())).await.0, 401);
+        }
+        for _ in 0..3 {
+            assert_eq!(send(&app, ok("GET", "/api/live/calls", Body::empty())).await.0, 200);
+        }
+        let got = send(&app, ok("GET", "/api/chats", Body::empty())).await;
+        assert_eq!(got, (429, err("RATE_LIMITED", "Quá 120 request/phút cho token này.")));
+        // /health không bị giới hạn.
+        assert_eq!(send(&app, req("GET", "/health", None, Body::empty())).await.0, 200);
+        assert_eq!(call.count(), 3);
+    }
+
+    #[tokio::test]
+    async fn han_muc_mac_dinh_120_dung_chung_cac_duong() {
+        let (app, call, chat) = app();
+        for i in 0..120 {
+            let path = if i % 2 == 0 { "/api/live/calls" } else { "/api/chats" };
+            assert_eq!(send(&app, ok("GET", path, Body::empty())).await.0, 200);
+        }
+        assert_eq!(send(&app, ok("GET", "/api/accounts", Body::empty())).await,
+                   (429, err("RATE_LIMITED", "Quá 120 request/phút cho token này.")));
+        assert_eq!((call.count(), chat.count()), (60, 60));
+    }
+
+    #[test]
+    fn cua_so_truot_bo_moc_cu_khong_gia_han_khi_tu_choi() {
+        let fake = Arc::new(Fake::default());
+        let ctx = Ctx {
+            call: fake.clone(), chat: fake, token: TOK.into(), limit: 2,
+            hits: Mutex::new(VecDeque::from([
+                Instant::now() - Duration::from_secs(61), Instant::now(),
+            ])),
+            version: "thu".into(), started: Instant::now(),
+        };
+        assert!(!ctx.rate_limited());
+        let before = ctx.hits.lock().unwrap().clone();
+        assert_eq!(before.len(), 2);
+        assert!(ctx.rate_limited());
+        assert_eq!(*ctx.hits.lock().unwrap(), before);
+    }
+
+    #[tokio::test]
+    async fn token_cau_hinh_rong_khong_bo_qua_bearer() {
+        let fake = Arc::new(Fake::default());
+        let app = router(fake.clone(), fake, RestConfig {
+            token: String::new(), rate_limit_per_minute: 120, version: "thu".into(),
+        });
+        assert_eq!(send(&app, req("GET", "/api/accounts", None, Body::empty())).await.0, 401);
+        assert_eq!(send(&app, req("GET", "/api/accounts", Some("Bearer "), Body::empty())).await.0, 401);
+    }
+
+    #[tokio::test]
+    async fn than_json_sai_400() {
+        let (app, call, _) = app();
+        let cases = [
+            ("{bad", "Thân request không phải JSON hợp lệ."),
+            ("   ", "Thân request không phải JSON hợp lệ."),
+            ("[1]", "Thân POST phải là JSON object."),
+            ("\"x\"", "Thân POST phải là JSON object."),
+        ];
+        for (body, msg) in cases {
+            assert_eq!(send(&app, ok("POST", "/api/live/hangup", body)).await, (400, err("BAD_REQUEST", msg)), "{body}");
+        }
+        assert_eq!(call.count(), 0);
+    }
+
+    #[tokio::test]
+    async fn than_qua_400kb_400_dung_400000_thi_qua() {
+        let (app, call, chat) = app();
+        // Đúng 400 000 byte: {"a":"xxx…"} → được nhận.
+        let exact = format!("{{\"a\":\"{}\"}}", "x".repeat(MAX_BODY_BYTES - 8));
+        assert_eq!(exact.len(), MAX_BODY_BYTES);
+        assert_eq!(send(&app, ok("POST", "/api/live/hangup", exact)).await.0, 200);
+        assert_eq!(call.count(), 1);
+        let over = format!("{{\"a\":\"{}\"}}", "x".repeat(MAX_BODY_BYTES - 7));
+        let want = (400, err("BAD_REQUEST", "Thân request vượt 400 KB."));
+        assert_eq!(send(&app, ok("POST", "/api/live/hangup", over.clone())).await, want);
+        assert_eq!(send(&app, ok("POST", "/api/chats/5/send_album", over)).await, want);
+        assert_eq!((call.count(), chat.count()), (1, 0));
+    }
+
+    #[tokio::test]
+    async fn than_rong_la_object_rong() {
+        let (app, call, _) = app();
+        assert_eq!(send(&app, ok("POST", "/api/live/hangup", Body::empty())).await.0, 200);
+        assert_eq!(call.last(), ("hangup".into(), "".into(), "".into(), json!({})));
+    }
+
+    #[tokio::test]
+    async fn dinh_tuyen_live_toi_call_control() {
+        let (app, call, chat) = app();
+        let (st, v) = send(&app, ok("GET", "/api/live/calls", Body::empty())).await;
+        assert_eq!((st, v), (200, json!({"ok": true, "from": "calls"})));
+        for (p, name) in [("call", "call_out"), ("accept", "accept"), ("hangup", "hangup"), ("settings", "settings"),
+                          ("media", "media"), ("playback", "playback"), ("say", "say")] {
+            let (st, _) = send(&app, ok("POST", &format!("/api/live/{p}"), r#"{"id":"c1"}"#)).await;
+            assert_eq!(st, 200, "{p}");
+            assert_eq!(call.last(), (name.into(), "".into(), "".into(), json!({"id": "c1"})), "{p}");
+        }
+        // ?account= được chép vào thân cho CallControl.
+        send(&app, ok("POST", "/api/live/call?account=%2B84123", r#"{"user_id":5}"#)).await;
+        assert_eq!(call.last().3, json!({"user_id": 5, "account": "+84123"}));
+        // GET /api/live/settings không có trong CallControl → ChatControl.
+        send(&app, ok("GET", "/api/live/settings", Body::empty())).await;
+        assert_eq!(chat.last(), ("GET".into(), "/api/live/settings".into(), "".into(), Value::Null));
+        assert_eq!(chat.count(), 1);
+    }
+
+    #[tokio::test]
+    async fn dinh_tuyen_con_lai_toi_chat_control() {
+        let (app, call, chat) = app();
+        send(&app, ok("GET", "/api/chats/-1001/messages?limit=3&account=x", Body::empty())).await;
+        assert_eq!(chat.last(), ("GET".into(), "/api/chats/-1001/messages".into(), "limit=3&account=x".into(), Value::Null));
+        for p in ["/api/accounts", "/api/chats", "/api/contacts", "/api/feed", "/api/search"] {
+            assert_eq!(send(&app, ok("GET", p, Body::empty())).await.0, 200, "{p}");
+            assert_eq!(chat.last().1, p);
+        }
+        for p in ["/api/messages/delete", "/api/messages/edit", "/api/messages/forward", "/api/messages/react",
+                  "/api/resolve", "/api/send_voice", "/api/translate", "/api/chats/7/read", "/api/chats/7/send",
+                  "/api/chats/7/send_album", "/api/do/getChats"] {
+            assert_eq!(send(&app, ok("POST", p, r#"{"k":1}"#)).await.0, 200, "{p}");
+            assert_eq!(chat.last(), ("POST".into(), p.into(), "".into(), json!({"k": 1})), "{p}");
+        }
+        assert_eq!(call.count(), 0);
+    }
+
+    #[tokio::test]
+    async fn send_file_than_tho_thanh_base64() {
+        let (app, _, chat) = app();
+        let (st, _) = send(&app, ok("POST", "/api/chats/9/send_file?kind=photo&name=a.jpg", &b"\x00\xffabc"[..])).await;
+        assert_eq!(st, 200);
+        assert_eq!(chat.last(), ("POST".into(), "/api/chats/9/send_file".into(), "kind=photo&name=a.jpg".into(),
+                                 json!({"data_b64": "AP9hYmM="})));
+        // Thân trên 400 KB vẫn được (giới hạn 64 MB).
+        assert_eq!(send(&app, ok("POST", "/api/chats/9/send_file", vec![1u8; 500_000])).await.0, 200);
+        // kind kiểm trước, rồi mới tới tệp rỗng — như Python.
+        let kind_msg = err("BAD_REQUEST", "kind phải là photo, video, voice, audio hoặc document.");
+        assert_eq!(send(&app, ok("POST", "/api/chats/9/send_file?kind=x", Body::empty())).await, (400, kind_msg));
+        let empty = err("BAD_REQUEST", "Tệp rỗng.");
+        assert_eq!(send(&app, ok("POST", "/api/chats/9/send_file", Body::empty())).await, (400, empty));
+        assert_eq!(chat.count(), 2);
+    }
+
+    #[tokio::test]
+    async fn gw_error_thanh_json_errors_py() {
+        let (app, call, chat) = app();
+        *call.reply.lock().unwrap() = Some(Err(GwError::new(409, "ACCOUNT_BUSY", "Tài khoản đang bận.")));
+        let got = send(&app, ok("POST", "/api/live/call", "{}")).await;
+        assert_eq!(got, (409, err("ACCOUNT_BUSY", "Tài khoản đang bận.")));
+        *chat.reply.lock().unwrap() = Some(Err(GwError::not_found("Không có.")));
+        assert_eq!(send(&app, ok("GET", "/api/contacts", Body::empty())).await, (404, err("NOT_FOUND", "Không có.")));
+        *chat.reply.lock().unwrap() = Some(Err(GwError::new(503, "ACCOUNT_OFFLINE", "m")));
+        assert_eq!(send(&app, ok("GET", "/api/chats", Body::empty())).await, (503, err("ACCOUNT_OFFLINE", "m")));
+        // Toàn bộ mã trong errors.py; FLOOD_WAIT chỉ chuyển được code/message vì GwError không mang thời gian chờ.
+        for (status, code) in [
+            (400, "BAD_REQUEST"), (404, "NOT_FOUND"), (409, "ACCOUNT_BUSY"),
+            (409, "CALL_NOT_ACTIVE"), (409, "ENDPOINT_BUSY"), (429, "FLOOD_WAIT"),
+            (429, "LOGIN_LOCKED"), (502, "MEDIA_ENGINE_ERROR"),
+            (503, "ACCOUNT_OFFLINE"), (501, "NOT_IMPLEMENTED"),
+        ] {
+            *chat.reply.lock().unwrap() = Some(Err(GwError::new(status, code, "Thông báo từ trait.")));
+            assert_eq!(send(&app, ok("GET", "/api/chats", Body::empty())).await,
+                       (status, err(code, "Thông báo từ trait.")));
+        }
+    }
+
+    #[tokio::test]
+    async fn kiem_truoc_auth_404_405_422_nhu_fastapi() {
+        let (app, call, chat) = app();
+        assert_eq!(send(&app, req("GET", "/api/nope", None, Body::empty())).await, (404, json!({"detail": "Not Found"})));
+        let m = (405, json!({"detail": "Method Not Allowed"}));
+        assert_eq!(send(&app, req("POST", "/api/live/calls", None, Body::empty())).await, m);
+        assert_eq!(send(&app, req("DELETE", "/health", None, Body::empty())).await, m);
+        assert_eq!(send(&app, req("GET", "/api/live/hangup", None, Body::empty())).await, m);
+        let want = json!({"detail": [{"type": "int_parsing", "loc": ["path", "chat_id"],
+            "msg": "Input should be a valid integer, unable to parse string as an integer", "input": "abc"}]});
+        assert_eq!(send(&app, req("GET", "/api/chats/abc/messages", None, Body::empty())).await, (422, want.clone()));
+        assert_eq!(send(&app, ok("POST", "/api/chats/abc/send", "{}")).await, (422, want));
+        assert_eq!(send(&app, req("GET", "/api/file/x", None, Body::empty())).await.0, 422);
+        for path in ["/health", "/api/live/calls", "/api/accounts", "/api/live/cast/c1/tok.mp3"] {
+            assert_eq!(send(&app, req("HEAD", path, None, Body::empty())).await.0, 405, "{path}");
+        }
+        assert_eq!((call.count(), chat.count()), (0, 0));
+    }
+
+    #[tokio::test]
+    async fn duong_nhi_phan_va_cast() {
+        let (app, _, chat) = app();
+        assert_eq!(send(&app, req("GET", "/api/live/view/c1", None, Body::empty())).await.0, 401);
+        for path in ["/api/live/view/c1", "/api/live/snapshot/c1", "/api/file/12", "/api/calltrace/c1"] {
+            assert_eq!(send(&app, ok("GET", path, Body::empty())).await.0, 200);
+            assert_eq!(chat.last(), ("GET".into(), path.into(), "".into(), Value::Null));
+        }
+        let cast = send(&app, req("GET", "/api/live/cast/c1/tok.mp3", None, Body::empty())).await;
+        assert_eq!(cast, (404, err("NOT_FOUND", "Không có luồng này.")));
+    }
+
+    #[tokio::test]
+    async fn chua_co_tra_501_va_calls_rong() {
+        let tam = Arc::new(ChuaCo);
+        let cfg = RestConfig { token: TOK.into(), rate_limit_per_minute: 120, version: "thu".into() };
+        let app = router(tam.clone(), tam, cfg);
+        assert_eq!(send(&app, ok("GET", "/api/live/calls", Body::empty())).await, (200, json!({"calls": []})));
+        let (st, v) = send(&app, ok("POST", "/api/chats/1/send", "{}")).await;
+        assert_eq!((st, v["error"]["code"].clone()), (501, json!("NOT_IMPLEMENTED")));
+        assert_eq!(send(&app, req("GET", "/health", None, Body::empty())).await.1["status"], "degraded");
+    }
+
+    #[test]
+    fn so_sanh_thoi_gian_hang() {
+        assert!(ct_eq(b"abc", b"abc"));
+        assert!(!ct_eq(b"abc", b"abd"));
+        assert!(!ct_eq(b"abc", b"ab"));
+        assert!(ct_eq(b"", b""));
+    }
+}
