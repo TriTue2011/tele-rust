@@ -4,7 +4,6 @@
 mod contract;
 mod td;
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use crate::contract::TdLink;
@@ -51,8 +50,7 @@ async fn main() {
 
 async fn run_login(path: &str) -> Result<(), String> {
     let cfg = td::login::LoginConfig::from_env()?;
-    let api = td::TdJson::open(path)?;
-    let client = td::TdClient::start(Arc::new(api));
+    let client = td::TdClient::open(path)?;
     let mut auth = client.auth_watch();
     let login = td::login::run(&client, &cfg);
     tokio::pin!(login);

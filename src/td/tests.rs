@@ -84,12 +84,22 @@ impl TdApi for FakeApi {
 
 fn start() -> (Arc<FakeApi>, Arc<TdClient>) {
     let api = Arc::new(FakeApi::default());
-    let client = TdClient::start(api.clone());
+    let client = TdClient::start(api.clone(), None);
     (api, client)
 }
 
 fn extra_of(v: &Value) -> Value {
     v["@extra"].clone()
+}
+
+#[test]
+fn chi_mot_client_that_duoc_nhan_va_quyen_duoc_nha_sau_khi_dung() {
+    let guard = super::ReceiverGuard::acquire().unwrap();
+    assert!(TdClient::open("thu-vien-khong-ton-tai.so").err().unwrap().contains("đã có một TdClient"));
+    drop(guard);
+    // Mở thư viện thất bại cũng phải nhả quyền, để lần sau còn khởi tạo lại được.
+    assert!(TdClient::open("thu-vien-khong-ton-tai.so").err().unwrap().contains("không mở được"));
+    assert!(super::ReceiverGuard::acquire().is_ok());
 }
 
 #[tokio::test]

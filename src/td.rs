@@ -34,7 +34,7 @@ type Execute = unsafe extern "C" fn(*const c_char) -> *const c_char;
 
 /// Bốn hàm C thô của libtdjson. Tách thành trait để test không cần thư viện thật.
 /// `receive` chỉ được gọi từ MỘT luồng tại một thời điểm (TdClient bảo đảm điều đó).
-pub trait TdApi: std::marker::Send + Sync + 'static {
+trait TdApi: std::marker::Send + Sync + 'static {
     fn create_client_id(&self) -> i32;
     fn send(&self, client_id: i32, request: &Value);
     /// Chờ tối đa `timeout` giây một bản tin bất kỳ (của mọi client). `None` khi hết giờ.
@@ -182,13 +182,33 @@ fn extra_key(extra: &Value) -> String {
     }
 }
 
-/// Một client TDLib (một tài khoản). Chỉ nên có MỘT TdClient mỗi tiến trình: `td_receive` là hàm toàn cục.
+static RECEIVER_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// Giữ quyền nhận toàn cục tới khi luồng nhận đã dừng và thư viện được nhả.
+struct ReceiverGuard;
+
+impl ReceiverGuard {
+    fn acquire() -> Result<Self, String> {
+        RECEIVER_ACTIVE.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map(|_| Self)
+            .map_err(|_| "đã có một TdClient đang nhận bản tin trong tiến trình".to_owned())
+    }
+}
+
+impl Drop for ReceiverGuard {
+    fn drop(&mut self) {
+        RECEIVER_ACTIVE.store(false, Ordering::Release);
+    }
+}
+
+/// Một client TDLib (một tài khoản). Chỉ MỘT TdClient thật mỗi tiến trình: `td_receive` là hàm toàn cục.
 pub struct TdClient {
     shared: Arc<Shared>,
     next_extra: AtomicU64,
     thread: Mutex<Option<JoinHandle<()>>>,
     pub(crate) code: Secret,
     pub(crate) password: Secret,
+    _receiver_guard: Option<ReceiverGuard>,
 }
 
 /// Ô chứa mã/mật khẩu do người dùng gửi (không bao giờ in ra).
@@ -212,8 +232,15 @@ impl Secret {
 }
 
 impl TdClient {
+    /// Mở thư viện và giữ quyền nhận độc quyền. Client thứ hai trả Err, không thể lấy mất bản tin của client đầu.
+    pub fn open(path: &str) -> Result<Arc<Self>, String> {
+        let guard = ReceiverGuard::acquire()?;
+        let api = Arc::new(TdJson::open(path)?);
+        Ok(Self::start(api, Some(guard)))
+    }
+
     /// Tạo client, khởi động luồng nhận và «đánh thức» TDLib (client chỉ thật sự chạy sau lần td_send đầu tiên).
-    pub fn start(api: Arc<dyn TdApi>) -> Arc<Self> {
+    fn start(api: Arc<dyn TdApi>, receiver_guard: Option<ReceiverGuard>) -> Arc<Self> {
         // TDLib mặc định ghi log rất dài: chỉ giữ lỗi (như bản Python).
         api.execute(&json!({"@type": "setLogVerbosityLevel", "new_verbosity_level": 1}));
         let client_id = api.create_client_id();
@@ -241,6 +268,7 @@ impl TdClient {
             thread: Mutex::new(Some(thread)),
             code: Secret::default(),
             password: Secret::default(),
+            _receiver_guard: receiver_guard,
         })
     }
 
