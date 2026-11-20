@@ -1,7 +1,8 @@
 //! Gateway Telegram bản Rust — cột mốc 0: mở libtdjson và đọc phiên bản TDLib.
 //!
-//! Chạy: `TDJSON_LIB=/đường/tới/libtdjson.so tggw version|login|protocol`
+//! Chạy: `TDJSON_LIB=/đường/tới/libtdjson.so tggw version|login|protocol|serve`
 mod contract;
+mod rest;
 mod td;
 
 use std::time::Duration;
@@ -19,6 +20,14 @@ async fn main() {
         if let Err(e) = run_login(&path).await {
             eprintln!("LỖI đăng nhập: {e}");
             std::process::exit(3);
+        }
+        return;
+    }
+    if cmd == "serve" {
+        let stub = std::sync::Arc::new(rest::ChuaCo);
+        if let Err(e) = rest::serve_from_env(stub.clone(), stub) {
+            eprintln!("LỖI: {e}");
+            std::process::exit(2);
         }
         return;
     }
@@ -42,7 +51,7 @@ async fn main() {
             }
         }
         other => {
-            eprintln!("lệnh lạ: {other} (có: version, login, protocol)");
+            eprintln!("lệnh lạ: {other} (có: version, login, protocol, serve)");
             std::process::exit(64);
         }
     }
