@@ -104,8 +104,12 @@ impl Media for NativeMedia {
                 MediaOp::Signaling(id, data) => self.0.send_signaling_data(id, &data).await,
                 MediaOp::Stop(id) => self.0.stop(id).await,
             };
-            // Lỗi binding có thể chứa command/URL có khóa: không công bố chuỗi lỗi gốc.
-            result.map_err(|_| "Thao tác NTgCalls thất bại".into())
+            // Lỗi binding có thể chứa command/URL có khóa: KHÔNG công bố chuỗi lỗi gốc, chỉ tên LOẠI lỗi
+            // (enum cố định như ShellError/ConnectionError) để chẩn đoán được mà không lộ bí mật.
+            result.map_err(|e| {
+                eprintln!("NTgCalls: thao tác lỗi, loại {:?}", e.kind);
+                "Thao tác NTgCalls thất bại".into()
+            })
         })
     }
 }

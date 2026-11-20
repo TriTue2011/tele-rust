@@ -30,12 +30,12 @@ install -d -m 700 "$BASE/data"
 # 3. Dừng Python (KHÔNG xoá) rồi mới chạy Rust — không bao giờ chạy song song cùng một tài khoản.
 docker stop "$PY" >/dev/null; echo "đã dừng $PY"
 if docker inspect "$RS" >/dev/null 2>&1; then docker stop "$RS" >/dev/null 2>&1 || true; docker rename "$RS" "$RS-cu-$(date +%Y%m%d-%H%M%S)"; fi   # KHÔNG docker rm: đổi tên bản cũ
-docker run -d --name "$RS" --network host --restart no \
+docker run -d --name "$RS" --network host --restart no --entrypoint /opt/rs/tggw \
   -v "$BASE:/opt/rs:ro" -v "$BASE/data:/data" -v "$SESSION:/data/tdlib" -w /data \
   -e TDJSON_LIB=$(ls /opt/telegram-gateway-rs/tdjson.libs/libtdjson-*.so* | head -1 | sed 's#/opt/telegram-gateway-rs#/opt/rs#') \
   -e TGGW_DATA=/data -e TG_API_ID="$API_ID" -e TG_API_HASH="$API_HASH" -e TG_PHONE="$PHONE" \
   -e GATEWAY_TOKEN="$TOKEN" -e GATEWAY_HOST="$HOST" -e REST_PORT="$PORT" \
-  tggw-builder:1.90 /opt/rs/tggw serve >/dev/null
+  telegram-gateway:local-200 serve >/dev/null
 # 4. Chờ /health báo tài khoản online (tối đa 90 giây); không đạt thì quay lại Python.
 OK=0
 for i in $(seq 1 45); do
