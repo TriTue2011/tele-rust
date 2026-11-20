@@ -99,12 +99,14 @@ impl Drop for Fixture {
     fn drop(&mut self) {
         // Đợi thread đóng media trước khi dọn dữ liệu của riêng test.
         let (tx,rx)=std::sync::mpsc::channel();
+        let mut sent = false;
         if let Some(manager)=self.manager.take() {
-            let _ = manager.handle.sender.send(Command::Shutdown(Some(tx)));
+            manager.handle.shutting_down.store(true, Ordering::Release);
+            sent = manager.handle.sender.send(Command::Shutdown(Some(tx), Instant::now()+Duration::from_secs(3))).is_ok();
             let callback=self.media.lock().unwrap().callback.take();
             drop(callback); drop(manager);
         }
-        let _ = rx.recv_timeout(Duration::from_secs(3));
+        if sent { let _ = rx.recv_timeout(Duration::from_secs(3)); }
         for name in ["live_settings.json","live_settings.json.tmp"] { let _=fs::remove_file(self.dir.join(name)); }
         if let Ok(files)=fs::read_dir(self.dir.join("live")) { for file in files.flatten() { let _=fs::remove_file(file.path()); } }
         let _=fs::remove_dir(self.dir.join("live")); let _=fs::remove_dir(&self.dir);
@@ -526,8 +528,17 @@ async fn native_binding_protocol_and_callback_registration_smoke_test() {
     let protocol=NTgCalls::get_protocol().unwrap(); assert!(!protocol.library_versions.is_empty());
     let manager=CallManager::new(f.td.clone(),&f.dir).unwrap();
     assert_eq!(manager.calls().await.unwrap(),json!({"calls":[]}));
-    let (tx,rx)=std::sync::mpsc::channel(); manager.handle.sender.send(Command::Shutdown(Some(tx))).unwrap();
-    rx.recv_timeout(Duration::from_secs(3)).unwrap();
+    manager.shutdown(Duration::from_secs(3)).await.unwrap();
+}
+
+#[tokio::test]
+async fn shutdown_discards_active_call_once_and_rejects_new_requests() {
+    let f=Fixture::new(false); f.outgoing(false).await;
+    f.manager().shutdown(Duration::from_secs(3)).await.unwrap();
+    assert_eq!(f.requests("discardCall").len(),1);
+    assert_eq!(f.manager().calls().await.unwrap_err().status,503);
+    f.manager().shutdown(Duration::from_secs(3)).await.unwrap();
+    assert_eq!(f.requests("discardCall").len(),1);
 }
 
 #[test]

@@ -210,6 +210,19 @@ async fn trang_thai_dang_nhap_doc_duoc() {
     assert_eq!(client.auth_state(), "authorizationStateWaitPhoneNumber");
 }
 
+#[tokio::test]
+async fn close_chi_gui_mot_lan_va_cho_trang_thai_closed() {
+    let (api, client) = start();
+    let closing = client.clone();
+    let task = tokio::spawn(async move { closing.close(Duration::from_secs(2)).await; });
+    api.wait_sent("close", 1).await;
+    assert_eq!(api.sent_of("close").len(), 1);
+    api.auth("authorizationStateClosed");
+    tokio::time::timeout(Duration::from_secs(2), task).await.unwrap().unwrap();
+    assert_eq!(client.auth_state(), "authorizationStateClosed");
+    assert_eq!(api.sent_of("close").len(), 1);
+}
+
 struct TmpDir(PathBuf);
 impl TmpDir {
     fn new(name: &str) -> Self {
@@ -226,6 +239,27 @@ impl Drop for TmpDir {
 
 fn cfg(dir: &TmpDir) -> LoginConfig {
     LoginConfig { data_dir: dir.0.clone(), api_id: 12345, api_hash: "hash-bi-mat".into(), phone: "+84900000000".into() }
+}
+
+#[test]
+fn cau_hinh_thieu_tu_choi_bang_tieng_viet_khong_lo_gia_tri_bi_mat() {
+    let old_api_id = std::env::var_os("TG_API_ID");
+    let old_api_hash = std::env::var_os("TG_API_HASH");
+    std::env::remove_var("TG_API_ID");
+    std::env::set_var("TG_API_HASH", "api-hash-khong-lo");
+
+    let error = LoginConfig::from_env().unwrap_err();
+
+    match old_api_id {
+        Some(value) => std::env::set_var("TG_API_ID", value),
+        None => std::env::remove_var("TG_API_ID"),
+    }
+    match old_api_hash {
+        Some(value) => std::env::set_var("TG_API_HASH", value),
+        None => std::env::remove_var("TG_API_HASH"),
+    }
+    assert!(error.contains("TG_API_ID") && error.contains("thiếu"), "{error}");
+    assert!(!error.contains("api-hash-khong-lo"), "{error}");
 }
 
 /// Trả lời `ok` cho mọi yêu cầu, trừ mã "11111" (sai) → PHONE_CODE_INVALID.
@@ -282,19 +316,14 @@ async fn dang_nhap_gui_dung_yeu_cau_tung_trang_thai() {
     let s = api.wait_sent("setAuthenticationPhoneNumber", 1).await;
     assert_eq!(s[0]["phone_number"], "+84900000000");
 
-    // 3) waitCode → chưa gửi gì tới khi có mã; mã sai thì chờ mã mới (không gửi lại); mã từ tệp được đọc và xoá.
+    // 3) waitCode → mã từ tệp được đọc và xoá.
     api.auth("authorizationStateWaitCode");
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert!(api.sent_of("checkAuthenticationCode").is_empty());
-    client.submit_code("11111");
-    api.wait_sent("checkAuthenticationCode", 1).await;
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    assert_eq!(api.sent_of("checkAuthenticationCode").len(), 1, "mã sai không bị gửi lại");
     let code_file = dir.0.join("login_code.txt");
     std::fs::write(&code_file, "22222\n").unwrap();
-    let s = api.wait_sent("checkAuthenticationCode", 2).await;
-    assert_eq!(s[0]["code"], "11111");
-    assert_eq!(s[1]["code"], "22222");
+    let s = api.wait_sent("checkAuthenticationCode", 1).await;
+    assert_eq!(s[0]["code"], "22222");
     assert!(!code_file.exists(), "tệp mã phải bị xoá sau khi đọc");
 
     // 4) waitPassword → tệp mật khẩu.
@@ -312,6 +341,21 @@ async fn dang_nhap_gui_dung_yeu_cau_tung_trang_thai() {
     // Mỗi bước đúng MỘT yêu cầu (không lặp setTdlibParameters / số điện thoại).
     assert_eq!(api.sent_of("setTdlibParameters").len(), 1);
     assert_eq!(api.sent_of("setAuthenticationPhoneNumber").len(), 1);
+}
+
+#[tokio::test]
+async fn ma_sai_ket_thuc_dang_nhap_va_khong_gui_lai() {
+    let dir = TmpDir::new("ma-sai");
+    let (api, client) = start();
+    *api.responder.lock().unwrap() = Some(ok_responder());
+    let (c, k) = (client.clone(), cfg(&dir));
+    let task = tokio::spawn(async move { login::run(&c, &k).await });
+    api.auth("authorizationStateWaitCode");
+    client.submit_code("11111");
+    api.wait_sent("checkAuthenticationCode", 1).await;
+    let result = tokio::time::timeout(Duration::from_secs(3), task).await.unwrap().unwrap();
+    assert!(result.unwrap_err().contains("PHONE_CODE_INVALID"));
+    assert_eq!(api.sent_of("checkAuthenticationCode").len(), 1, "mã sai không bị gửi lại");
 }
 
 #[tokio::test]

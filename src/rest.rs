@@ -20,6 +20,7 @@
 //! - `/health` lấy số tài khoản từ `ChatControl::handle("GET", "/api/accounts", …)` (`{"tai_khoan":[{status}]}`); lỗi = 0.
 
 use std::collections::VecDeque;
+use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -334,6 +335,16 @@ fn env_num<T: std::str::FromStr>(name: &str, default: T) -> T {
 /// `tggw serve`: nghe `GATEWAY_HOST` (mặc định 0.0.0.0) : `REST_PORT` (mặc định 3334). Thiếu `GATEWAY_TOKEN` → từ chối chạy
 /// (như `load_config` của Python). Dừng êm khi nhận SIGTERM/SIGINT.
 pub fn serve_from_env(call: Arc<dyn CallControl>, chat: Arc<dyn ChatControl>) -> Result<(), String> {
+    let (addr, cfg) = serve_config_from_env()?;
+    let app = router(call, chat, cfg);
+    let rt = tokio::runtime::Runtime::new().map_err(|e| format!("không tạo được tokio: {e}"))?;
+    rt.block_on(async move {
+        let listener = tokio::net::TcpListener::bind(addr).await.map_err(|e| format!("không nghe được {addr}: {e}"))?;
+        serve(listener, app, shutdown_signal()).await
+    })
+}
+
+pub fn serve_config_from_env() -> Result<(SocketAddr, RestConfig), String> {
     let token = std::env::var("GATEWAY_TOKEN").unwrap_or_default();
     if token.is_empty() {
         return Err("GATEWAY_TOKEN chưa đặt. Sinh bằng 'openssl rand -hex 32'.".into());
@@ -346,16 +357,19 @@ pub fn serve_from_env(call: Arc<dyn CallControl>, chat: Arc<dyn ChatControl>) ->
         rate_limit_per_minute: env_num("RATE_LIMIT_PER_MINUTE", 120),
         version: env!("CARGO_PKG_VERSION").into(),
     };
-    let app = router(call, chat, cfg);
-    let rt = tokio::runtime::Runtime::new().map_err(|e| format!("không tạo được tokio: {e}"))?;
-    rt.block_on(async move {
-        let listener = tokio::net::TcpListener::bind(addr).await.map_err(|e| format!("không nghe được {addr}: {e}"))?;
-        eprintln!("tggw serve: nghe http://{addr}");
-        axum::serve(listener, app).with_graceful_shutdown(shutdown_signal()).await.map_err(|e| format!("HTTP lỗi: {e}"))
-    })
+    Ok((addr, cfg))
 }
 
-async fn shutdown_signal() {
+pub async fn serve<F>(listener: tokio::net::TcpListener, app: Router, shutdown: F) -> Result<(), String>
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    let addr = listener.local_addr().map_err(|e| format!("không đọc được địa chỉ HTTP: {e}"))?;
+    eprintln!("tggw serve: nghe http://{addr}");
+    axum::serve(listener, app).with_graceful_shutdown(shutdown).await.map_err(|e| format!("HTTP lỗi: {e}"))
+}
+
+pub async fn shutdown_signal() {
     let term = async {
         match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
             Ok(mut s) => {
@@ -762,5 +776,19 @@ mod tests {
         assert!(!ct_eq(b"abc", b"abd"));
         assert!(!ct_eq(b"abc", b"ab"));
         assert!(ct_eq(b"", b""));
+    }
+
+    #[test]
+    fn thieu_gateway_token_tu_choi_khoi_dong_bang_tieng_viet() {
+        let old = std::env::var_os("GATEWAY_TOKEN");
+        std::env::remove_var("GATEWAY_TOKEN");
+
+        let result = serve_config_from_env();
+
+        if let Some(value) = old {
+            std::env::set_var("GATEWAY_TOKEN", value);
+        }
+        let error = result.err().expect("thiếu token phải từ chối cấu hình");
+        assert!(error.contains("GATEWAY_TOKEN") && error.contains("chưa đặt"), "{error}");
     }
 }

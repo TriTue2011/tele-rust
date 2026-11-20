@@ -10,7 +10,7 @@ pub mod versions;
 pub use sources::{camera_command, is_cast_spec, mic_command, speaker_command, valid_speaker_url};
 
 use std::{collections::{HashSet, VecDeque}, fs::{self, OpenOptions}, io::Write,
-    os::unix::fs::OpenOptionsExt, path::{Path, PathBuf}, sync::{atomic::{AtomicU64, Ordering}, Arc},
+    os::unix::fs::OpenOptionsExt, path::{Path, PathBuf}, sync::{atomic::{AtomicBool, AtomicU64, Ordering}, Arc},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH}};
 
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -33,16 +33,21 @@ enum Command {
     Media(MediaEvent),
     RestoreMic(String, u64, String, String, PathBuf),
     RefreshCapture(String),
-    Shutdown(Option<std::sync::mpsc::Sender<()>>),
+    Shutdown(Option<std::sync::mpsc::Sender<()>>, Instant),
 }
 
 struct Handle {
     sender: mpsc::UnboundedSender<Command>,
     events: broadcast::Sender<Value>,
+    shutting_down: AtomicBool,
 }
 
 impl Drop for Handle {
-    fn drop(&mut self) { let _ = self.sender.send(Command::Shutdown(None)); }
+    fn drop(&mut self) {
+        if !self.shutting_down.swap(true, Ordering::AcqRel) {
+            let _ = self.sender.send(Command::Shutdown(None, Instant::now() + Duration::from_secs(5)));
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -60,7 +65,7 @@ impl CallManager {
         let (sender, receiver) = mpsc::unbounded_channel();
         let (frame_sender, frame_receiver) = mpsc::channel(3);
         let (events, _) = broadcast::channel(256);
-        let handle = Arc::new(Handle { sender: sender.clone(), events: events.clone() });
+        let handle = Arc::new(Handle { sender: sender.clone(), events: events.clone(), shutting_down: AtomicBool::new(false) });
         let (startup_tx, startup_rx) = std::sync::mpsc::sync_channel(1);
         std::thread::Builder::new().name("tggw-calls".into()).spawn(move || {
             let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
@@ -89,14 +94,29 @@ impl CallManager {
 
     pub fn events(&self) -> broadcast::Receiver<Value> { self.handle.events.subscribe() }
 
+    /// Ngừng nhận lệnh, kết thúc các cuộc gọi hiện tại rồi chờ actor dọn media.
+    pub async fn shutdown(&self, wait: Duration) -> Result<(), String> {
+        if self.handle.shutting_down.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() {
+            return Ok(());
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.handle.sender.send(Command::Shutdown(Some(tx), Instant::now() + wait)).map_err(|_| "runtime cuộc gọi đã dừng".to_owned())?;
+        tokio::task::spawn_blocking(move || rx.recv_timeout(wait))
+            .await
+            .map_err(|_| "không chờ được runtime cuộc gọi dừng".to_owned())?
+            .map_err(|_| "quá thời gian chờ runtime cuộc gọi dừng".to_owned())
+    }
+
     /// Lối vào có chờ xử lý, tiện cho adapter TDLib và kiểm thử; new() đã tự nghe updates().
     pub async fn handle_update(&self, update: Value) -> Reply {
+        if self.handle.shutting_down.load(Ordering::Acquire) { return Err(runtime_error()); }
         let (tx, rx) = oneshot::channel();
         self.handle.sender.send(Command::Update(update, tx)).map_err(|_| runtime_error())?;
         rx.await.map_err(|_| runtime_error())?
     }
 
     async fn request(&self, action: Action, body: Value) -> Reply {
+        if self.handle.shutting_down.load(Ordering::Acquire) { return Err(runtime_error()); }
         let (tx, rx) = oneshot::channel();
         self.handle.sender.send(Command::Api(action, body, tx)).map_err(|_| runtime_error())?;
         rx.await.map_err(|_| runtime_error())?
@@ -217,6 +237,7 @@ impl Actor {
     async fn run(&mut self, mut commands: mpsc::UnboundedReceiver<Command>, mut updates: broadcast::Receiver<Value>, mut frames: mpsc::Receiver<MediaEvent>) {
         let mut updates_open = true;
         let mut shutdown_ack = None;
+        let mut shutdown_deadline = None;
         loop {
             tokio::select! {
                 cmd = commands.recv() => match cmd {
@@ -245,7 +266,7 @@ impl Actor {
                             if self.capture(i).await.is_err() { self.calls[i].log("bật lại nguồn gửi đi lỗi"); }
                         }
                     }
-                    Some(Command::Shutdown(ack)) => { shutdown_ack = ack; break; }
+                    Some(Command::Shutdown(ack, deadline)) => { shutdown_ack = ack; shutdown_deadline = Some(deadline); break; }
                     None => break,
                 },
                 update = updates.recv(), if updates_open => match update {
@@ -262,7 +283,17 @@ impl Actor {
             }
         }
         for i in 0..self.calls.len() {
-            if self.calls[i].state != "ended" { let _ = self.discard(i).await; self.end(i, "runtime dừng").await; }
+            if self.calls[i].state != "ended" {
+                let deadline = shutdown_deadline.unwrap_or_else(|| Instant::now() + Duration::from_secs(5));
+                if let Some(left) = deadline.checked_duration_since(Instant::now()) {
+                    let _ = tokio::time::timeout(left, self.discard(i)).await;
+                    let left = deadline.checked_duration_since(Instant::now()).unwrap_or_default();
+                    let _ = tokio::time::timeout(left, self.end(i, "runtime dừng")).await;
+                } else {
+                    self.calls[i].state = "ended";
+                    self.calls[i].ended = Some(Instant::now());
+                }
+            }
         }
         if let Some(ack) = shutdown_ack { let _ = ack.send(()); }
     }
