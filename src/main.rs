@@ -51,42 +51,21 @@ async fn main() {
 async fn run_login(path: &str) -> Result<(), String> {
     let cfg = td::login::LoginConfig::from_env()?;
     let client = td::TdClient::open(path)?;
-    let mut auth = client.auth_watch();
-    let login = td::login::run(&client, &cfg);
-    tokio::pin!(login);
-    loop {
-        tokio::select! {
-            result = &mut login => {
-                result?;
-                break;
-            }
-            result = auth.changed() => {
-                result.map_err(|_| "mất kết nối TDLib".to_owned())?;
-                let state = auth.borrow_and_update().clone();
-                if !state.is_empty() {
-                    println!("Trạng thái đăng nhập: {state}");
-                }
-            }
-        }
-    }
-
-    let me = client.request(serde_json::json!({"@type": "getMe"})).await?;
-    let name = [me.get("first_name").and_then(|v| v.as_str()).unwrap_or_default(),
-                me.get("last_name").and_then(|v| v.as_str()).unwrap_or_default()]
-        .into_iter()
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ");
-    let username = me.get("username").and_then(|v| v.as_str()).unwrap_or_default();
-    if name.is_empty() {
-        println!("Đăng nhập thành công: @{username}");
-    } else if username.is_empty() {
+    let result = async {
+        td::login::run(&client, &cfg).await?;
+        let me = client.request(serde_json::json!({"@type": "getMe"})).await?;
+        let name = [me.get("first_name").and_then(|v| v.as_str()).unwrap_or_default(),
+                    me.get("last_name").and_then(|v| v.as_str()).unwrap_or_default()]
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
         println!("Đăng nhập thành công: {name}");
-    } else {
-        println!("Đăng nhập thành công: {name} (@{username})");
-    }
+        Ok(())
+    }.await;
+    // Kể cả đăng nhập/getMe thất bại vẫn chờ TDLib ghi DB và nhả khoá.
     client.close(Duration::from_secs(5)).await;
-    Ok(())
+    result
 }
 
 fn run_protocol() {

@@ -330,6 +330,35 @@ async fn mat_khau_qua_submit_password() {
 }
 
 #[tokio::test]
+async fn doi_trang_thai_khi_cho_ma_va_khong_gui_lai_so_dien_thoai() {
+    let dir = TmpDir::new("doi-trang-thai");
+    let (api, client) = start();
+    *api.responder.lock().unwrap() = Some(ok_responder());
+    let (c, k) = (client.clone(), cfg(&dir));
+    let task = tokio::spawn(async move { login::run(&c, &k).await });
+    api.auth("authorizationStateWaitPhoneNumber");
+    api.wait_sent("setAuthenticationPhoneNumber", 1).await;
+    api.auth("authorizationStateWaitPhoneNumber");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(api.sent_of("setAuthenticationPhoneNumber").len(), 1);
+    api.auth("authorizationStateWaitCode");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Phiên được xác thực từ nơi khác trong lúc chờ mã: không được treo trong submit().
+    api.auth("authorizationStateReady");
+    assert_eq!(tokio::time::timeout(Duration::from_secs(2), task).await.unwrap().unwrap(), Ok(()));
+    assert!(api.sent_of("checkAuthenticationCode").is_empty());
+}
+
+#[tokio::test]
+async fn phien_da_dang_nhap_khong_can_gui_lai_thong_tin() {
+    let dir = TmpDir::new("phien-san");
+    let (api, client) = start();
+    api.auth("authorizationStateReady");
+    assert_eq!(tokio::time::timeout(Duration::from_secs(2), login::run(&client, &cfg(&dir))).await.unwrap(), Ok(()));
+    assert_eq!(api.types(), vec!["getAuthorizationState"]);
+}
+
+#[tokio::test]
 async fn tep_ma_cu_bi_bo_qua() {
     let dir = TmpDir::new("ma-cu");
     let code_file = dir.0.join("login_code.txt");

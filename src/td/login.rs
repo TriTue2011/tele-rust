@@ -134,6 +134,9 @@ pub async fn run(client: &TdClient, cfg: &LoginConfig) -> Result<(), String> {
     let mut rx = client.auth_watch();
     loop {
         let state = rx.borrow_and_update().clone();
+        if !state.is_empty() {
+            println!("Trạng thái đăng nhập: {state}");
+        }
         match state.as_str() {
             "" => {} // TDLib chưa báo trạng thái đầu tiên
             "authorizationStateWaitTdlibParameters" => {
@@ -197,6 +200,9 @@ async fn submit(
     let entered = SystemTime::now();
     let mut tick = tokio::time::interval(Duration::from_secs(1));
     loop {
+        if rx.has_changed().map_err(|_| "mất kết nối TDLib".to_owned())? {
+            return Ok(false);
+        }
         let value = input.slot.take().or_else(|| {
             read_input_file(&input.file, entered, input.what).map(|v| {
                 if field == "code" { v.trim().to_owned() } else { v }
