@@ -114,7 +114,7 @@ async fn feed_long_poll_wakes_for_update_without_network_calls() {
 async fn chat_feed_emits_only_final_message_metadata_to_events() {
     use crate::events::EventBridge;
     let data = PathBuf::from(format!("target/chat-event-test-{}", std::process::id()));
-    let bridge = EventBridge::start(&data, "+000123").await.unwrap();
+    let bridge = EventBridge::start(&data, "+000123", None).await.unwrap();
     let (chat, td) = setup(vec![]);
     drop(chat);
     let chat = ChatService::with_events(td.clone(), "+000123", &data, Some(bridge.sink.clone()));

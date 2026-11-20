@@ -11,7 +11,7 @@ use tokio::task::JoinHandle;
 use crate::calls::CallManager;
 use crate::chat::ChatService;
 use crate::contract::{Binary, BoxFut, CallControl, ChatControl, GwError, TdLink};
-use crate::events::EventBridge;
+use crate::events::{EventBridge, Webhook};
 use crate::{rest, td};
 
 const CALLS_SHUTDOWN_WAIT: Duration = Duration::from_secs(10);
@@ -127,7 +127,7 @@ impl App {
         let login_config = td::login::LoginConfig::from_env()
             .map_err(|e| format!("Cấu hình đăng nhập không hợp lệ: {e}"))?;
         let (addr, rest_config) = rest::serve_config_from_env()?;
-        let events = EventBridge::start(&login_config.data_dir, &login_config.phone).await?;
+        let events = EventBridge::start(&login_config.data_dir, &login_config.phone, Webhook::from_env()).await?;
         let library = std::env::var("TDJSON_LIB").unwrap_or_else(|_| "libtdjson.so".into());
         let client = td::TdClient::open(&library)
             .map_err(|e| format!("Không khởi tạo được TDLib: {e}"))?;

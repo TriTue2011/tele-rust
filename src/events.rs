@@ -1,5 +1,6 @@
 //! Cầu sự kiện Telegram → spool, REST và Home Assistant.
 mod spool;
+mod webhook;
 #[cfg(test)]
 mod tests;
 
@@ -10,6 +11,7 @@ use tokio::{sync::{broadcast, mpsc, oneshot}, task::JoinHandle};
 
 use crate::contract::GwError;
 use spool::Spool;
+pub(crate) use webhook::Webhook;
 
 #[derive(Clone)]
 pub(crate) struct EventSink {
@@ -79,16 +81,19 @@ pub(crate) struct EventBridge {
     pub(crate) sink: EventSink,
     stop: Option<oneshot::Sender<()>>,
     worker: JoinHandle<()>,
+    webhook: Option<JoinHandle<()>>,
 }
 
 impl EventBridge {
-    pub(crate) async fn start(data_dir: &Path, account: &str) -> Result<Self, String> {
+    pub(crate) async fn start(data_dir: &Path, account: &str, webhook: Option<Webhook>) -> Result<Self, String> {
         let path = data_dir.join("events");
         let spool = tokio::task::spawn_blocking(move || Spool::open(path)).await
             .ok().and_then(Result::ok).ok_or("Không mở được thư mục sự kiện.")?;
         let store = EventStore(Arc::new(Mutex::new(spool)));
         let (tx, mut queue) = mpsc::channel(1024);
         let (stop, mut stopping) = oneshot::channel();
+        let (published, source) = broadcast::channel(256);
+        let webhook = webhook.map(|webhook| tokio::spawn(webhook.follow(source)));
         let writer = store.clone();
         let worker = tokio::spawn(async move {
             loop {
@@ -99,10 +104,13 @@ impl EventBridge {
                 let Some(event) = event else { break };
                 let writer = writer.clone();
                 let written = tokio::task::spawn_blocking(move || writer.0.lock().unwrap().append(event)).await;
-                if !matches!(written, Ok(Ok(_))) { eprintln!("Không ghi được sự kiện."); }
+                match written {
+                    Ok(Ok(event)) => { let _ = published.send(event); }
+                    _ => eprintln!("Không ghi được sự kiện."),
+                }
             }
         });
-        Ok(Self { store, sink: EventSink { account: account.into(), queue: tx }, stop: Some(stop), worker })
+        Ok(Self { store, sink: EventSink { account: account.into(), queue: tx }, stop: Some(stop), worker, webhook })
     }
 
     pub(crate) async fn shutdown(mut self) {
@@ -110,5 +118,11 @@ impl EventBridge {
         if tokio::time::timeout(Duration::from_secs(5), &mut self.worker).await.is_err() {
             self.worker.abort();
         }
+    }
+}
+
+impl Drop for EventBridge {
+    fn drop(&mut self) {
+        if let Some(webhook) = &self.webhook { webhook.abort(); }
     }
 }

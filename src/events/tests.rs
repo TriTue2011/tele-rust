@@ -30,7 +30,7 @@ async fn wait_for_cursor(store: &EventStore, cursor: u64) -> Value {
 #[tokio::test]
 async fn event_poll_auth_shape_permission_and_cursor_after_restart() {
     let root = Temp::new();
-    let bridge = EventBridge::start(&root.0, "+000123").await.unwrap();
+    let bridge = EventBridge::start(&root.0, "+000123", None).await.unwrap();
     let (calls, source) = broadcast::channel(16);
     let follower = tokio::spawn(bridge.sink.clone().follow_calls(source));
     let call = json!({"id":"abc123","outgoing":true,"seconds":1.5});
@@ -56,7 +56,7 @@ async fn event_poll_auth_shape_permission_and_cursor_after_restart() {
     assert_eq!(serde_json::from_slice::<Value>(&fs::read(file).unwrap()).unwrap(), *first);
     bridge.shutdown().await;
 
-    let bridge = EventBridge::start(&root.0, "+000123").await.unwrap();
+    let bridge = EventBridge::start(&root.0, "+000123", None).await.unwrap();
     assert_eq!(bridge.store.poll(0).await.unwrap(), want);
     bridge.sink.emit("account_status", json!({"status":"online"}));
     let all = wait_for_cursor(&bridge.store, 3).await;
@@ -94,4 +94,93 @@ fn rotation_keeps_latest_files_and_ignores_uncommitted_write() {
     assert!(!dir.join(".pending").exists());
     assert_eq!(spool.poll(269)["events"][0]["id"], 270);
     assert_eq!(spool.append(json!({"type":"account_status"})).unwrap()["id"], 271);
+}
+
+#[tokio::test]
+async fn one_spooled_event_posts_the_same_envelope_and_token_once() {
+    use axum::{extract::State, http::{HeaderMap, StatusCode}, routing::post, Json, Router};
+    let root = Temp::new();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (tx, mut received) = mpsc::channel(8);
+    let app = Router::new().route("/ha", post(|State(tx): State<mpsc::Sender<(HeaderMap, Value)>>,
+        headers: HeaderMap, Json(event): Json<Value>| async move {
+        tx.send((headers, event)).await.unwrap();
+        StatusCode::NO_CONTENT
+    })).with_state(tx);
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let webhook = Webhook::new(&format!("http://localhost:{port}/ha"), "webhook-test").unwrap();
+    let bridge = EventBridge::start(&root.0, "+000123", Some(webhook)).await.unwrap();
+    bridge.sink.emit("message_new", json!({"peer":"••••","tin_id":"7"}));
+    let (headers, delivered) = tokio::time::timeout(Duration::from_secs(5), received.recv()).await.unwrap().unwrap();
+    assert_eq!(headers["X-Gateway-Token"], "webhook-test");
+    assert_eq!(headers["Content-Type"], "application/json");
+    assert_eq!(bridge.store.poll(0).await.unwrap(), json!({"events":[delivered],"cursor":1}));
+    let dir = root.0.join("events");
+    assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+    assert_eq!(serde_json::from_slice::<Value>(&fs::read(dir.join("000000000001.json")).unwrap()).unwrap(), delivered);
+    assert!(tokio::time::timeout(Duration::from_millis(1250), received.recv()).await.is_err());
+    bridge.shutdown().await;
+    server.abort();
+}
+
+#[tokio::test]
+async fn unavailable_webhook_cannot_block_spool_and_has_a_retry_limit() {
+    use axum::{extract::State, http::StatusCode, routing::post, Json, Router};
+    use tokio::sync::Notify;
+    let root = Temp::new();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let notify = Arc::new(Notify::new());
+    let (tx, mut received) = mpsc::channel(8);
+    let app = Router::new().route("/ha", post(|State((tx, wait)): State<(mpsc::Sender<u64>, Arc<Notify>)>,
+        Json(event): Json<Value>| async move {
+        let id = event["id"].as_u64().unwrap();
+        tx.send(id).await.unwrap();
+        if id == 1 { wait.notified().await; }
+        StatusCode::SERVICE_UNAVAILABLE
+    })).with_state((tx, notify.clone()));
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let webhook = Webhook::new(&format!("http://{addr}/ha"), "test").unwrap();
+    let bridge = EventBridge::start(&root.0, "test", Some(webhook)).await.unwrap();
+    bridge.sink.emit("message_new", json!({"tin_id":"1"}));
+    assert_eq!(tokio::time::timeout(Duration::from_secs(5), received.recv()).await.unwrap(), Some(1));
+    bridge.sink.emit("message_new", json!({"tin_id":"2"}));
+    assert_eq!(wait_for_cursor(&bridge.store, 2).await["events"].as_array().unwrap().len(), 2);
+    notify.notify_one();
+    for expected in [1, 1, 2] {
+        assert_eq!(tokio::time::timeout(Duration::from_secs(5), received.recv()).await.unwrap(), Some(expected));
+        if expected == 1 { notify.notify_one(); }
+    }
+    bridge.shutdown().await;
+    server.abort();
+}
+
+#[tokio::test]
+async fn webhook_blocks_link_local_schemes_and_redirects() {
+    use axum::{extract::State, http::StatusCode, routing::post, Router};
+    for url in ["file:///data/events", "ftp://localhost/ha", "http://169.254.0.1/ha",
+        "https://169.254.255.254/ha", "http://[::ffff:a9fe:1]/ha"] {
+        assert!(Webhook::new(url, "test").is_none(), "{url}");
+    }
+    assert!(Webhook::new("https://192.168.1.2/ha", "test").is_some());
+    let root = Temp::new();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (tx, mut received) = mpsc::channel(8);
+    let app = Router::new().route("/ha", post(|State(tx): State<mpsc::Sender<&'static str>>| async move {
+        tx.send("ha").await.unwrap();
+        (StatusCode::TEMPORARY_REDIRECT, [("Location", "/redirected")])
+    })).route("/redirected", post(|State(tx): State<mpsc::Sender<&'static str>>| async move {
+        tx.send("redirected").await.unwrap();
+        StatusCode::OK
+    })).with_state(tx);
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let webhook = Webhook::new(&format!("http://{addr}/ha"), "test").unwrap();
+    let bridge = EventBridge::start(&root.0, "test", Some(webhook)).await.unwrap();
+    bridge.sink.emit("message_new", json!({"tin_id":"1"}));
+    assert_eq!(tokio::time::timeout(Duration::from_secs(5), received.recv()).await.unwrap(), Some("ha"));
+    assert!(tokio::time::timeout(Duration::from_millis(1250), received.recv()).await.is_err());
+    bridge.shutdown().await;
+    server.abort();
 }
