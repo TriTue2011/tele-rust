@@ -1,14 +1,26 @@
 //! Gateway Telegram bản Rust — cột mốc 0: mở libtdjson và đọc phiên bản TDLib.
 //!
-//! Chạy: `TDJSON_LIB=/đường/tới/libtdjson.so tggw version`
+//! Chạy: `TDJSON_LIB=/đường/tới/libtdjson.so tggw version|login|protocol`
 mod contract;
 mod td;
 
-fn main() {
+use std::time::Duration;
+
+use crate::contract::TdLink;
+
+#[tokio::main]
+async fn main() {
     let path = std::env::var("TDJSON_LIB").unwrap_or_else(|_| "libtdjson.so".into());
     let cmd = std::env::args().nth(1).unwrap_or_else(|| "version".into());
     if cmd == "protocol" {
         return run_protocol();
+    }
+    if cmd == "login" {
+        if let Err(e) = run_login(&path).await {
+            eprintln!("LỖI đăng nhập: {e}");
+            std::process::exit(3);
+        }
+        return;
     }
     let td = match td::TdJson::open(&path) {
         Ok(t) => t,
@@ -30,10 +42,30 @@ fn main() {
             }
         }
         other => {
-            eprintln!("lệnh lạ: {other} (có: version, protocol)");
+            eprintln!("lệnh lạ: {other} (có: version, login, protocol)");
             std::process::exit(64);
         }
     }
+}
+
+async fn run_login(path: &str) -> Result<(), String> {
+    let cfg = td::login::LoginConfig::from_env()?;
+    let client = td::TdClient::open(path)?;
+    let result = async {
+        td::login::run(&client, &cfg).await?;
+        let me = client.request(serde_json::json!({"@type": "getMe"})).await?;
+        let name = [me.get("first_name").and_then(|v| v.as_str()).unwrap_or_default(),
+                    me.get("last_name").and_then(|v| v.as_str()).unwrap_or_default()]
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+        println!("Đăng nhập thành công: {name}");
+        Ok(())
+    }.await;
+    // Kể cả đăng nhập/getMe thất bại vẫn chờ TDLib ghi DB và nhả khoá.
+    client.close(Duration::from_secs(5)).await;
+    result
 }
 
 fn run_protocol() {

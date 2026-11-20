@@ -17,4 +17,4 @@ case "$CMD" in
 esac
 # Xếp hàng: mỗi lúc chỉ MỘT bản dựng trên .200 (máy HA 8 nhân), tối đa 3 nhân.
 ssh ha200 "flock /tmp/tggw-build.lock docker run --rm --cpus 3 -v $DEST:/src -w /src -v tggw-cargo-registry:/usr/local/cargo/registry \
-  $RUST_IMG sh -c '$ARGS' | tail -25; ls -la $DEST/target/release/tggw 2>/dev/null"
+  $RUST_IMG sh -c '$ARGS'"

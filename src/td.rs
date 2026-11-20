@@ -2,17 +2,45 @@
 //!
 //! Không dùng crate `tdlib-rs` vì nó chỉ hỗ trợ TDLib 1.8.61, cũ hơn 1.8.69 của bản Python: phiên TDLib tạo bằng bản mới
 //! có thể không mở được bằng bản cũ. Thư viện được mở lúc chạy (dlopen) từ đường dẫn `TDJSON_LIB`.
+//!
+//! Cấu trúc:
+//! - [`TdApi`]   : bốn hàm C thô (create_client_id/send/receive/execute). [`TdJson`] là bản thật; test dùng bản giả.
+//! - [`TdClient`]: MỘT luồng nhận gọi `td_receive`, ghép câu trả lời theo `@extra`, phát update qua broadcast,
+//!   theo dõi trạng thái đăng nhập → hiện thực [`crate::contract::TdLink`].
+//! - [`login`]   : máy trạng thái đăng nhập (setTdlibParameters → số điện thoại → mã → mật khẩu → ready).
 
+pub mod login;
+#[cfg(test)]
+mod tests;
+
+use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_double, c_int};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
+use std::time::Duration;
 
 use libloading::Library;
-use serde_json::Value;
+use serde_json::{json, Value};
+use tokio::sync::{broadcast, oneshot, watch, Notify};
+
+use crate::contract::{BoxFut, TdLink};
 
 type CreateClientId = unsafe extern "C" fn() -> c_int;
 type Send = unsafe extern "C" fn(c_int, *const c_char);
 type Receive = unsafe extern "C" fn(c_double) -> *const c_char;
 type Execute = unsafe extern "C" fn(*const c_char) -> *const c_char;
+
+/// Bốn hàm C thô của libtdjson. Tách thành trait để test không cần thư viện thật.
+/// `receive` chỉ được gọi từ MỘT luồng tại một thời điểm (TdClient bảo đảm điều đó).
+trait TdApi: std::marker::Send + Sync + 'static {
+    fn create_client_id(&self) -> i32;
+    fn send(&self, client_id: i32, request: &Value);
+    /// Chờ tối đa `timeout` giây một bản tin bất kỳ (của mọi client). `None` khi hết giờ.
+    fn receive(&self, timeout: f64) -> Option<Value>;
+    fn execute(&self, request: &Value) -> Option<Value>;
+}
 
 /// Thư viện libtdjson đã mở. TDLib cho phép gọi các hàm này từ nhiều luồng, trừ `td_receive` chỉ một luồng tại một thời điểm.
 pub struct TdJson {
@@ -39,17 +67,29 @@ impl TdJson {
         }
     }
 
-    pub fn create_client_id(&self) -> i32 {
+    /// Phiên bản TDLib của thư viện đã mở (vd "1.8.69").
+    pub fn version(&self) -> Option<String> {
+        let r = TdApi::execute(self, &json!({"@type": "getOption", "name": "version"}))?;
+        r.get("value").and_then(|v| v.as_str()).map(str::to_owned)
+    }
+
+    /// Gọi đồng bộ các hàm TDLib cho phép (getOption, setLogVerbosityLevel…).
+    pub fn execute(&self, request: &Value) -> Option<Value> {
+        TdApi::execute(self, request)
+    }
+}
+
+impl TdApi for TdJson {
+    fn create_client_id(&self) -> i32 {
         unsafe { (self.create_client_id)() }
     }
 
-    pub fn send(&self, client_id: i32, request: &Value) {
+    fn send(&self, client_id: i32, request: &Value) {
         let s = CString::new(request.to_string()).expect("JSON không chứa byte 0");
         unsafe { (self.send)(client_id, s.as_ptr()) }
     }
 
-    /// Chờ tối đa `timeout` giây một bản tin bất kỳ (của mọi client). `None` khi hết giờ.
-    pub fn receive(&self, timeout: f64) -> Option<Value> {
+    fn receive(&self, timeout: f64) -> Option<Value> {
         let p = unsafe { (self.receive)(timeout) };
         if p.is_null() {
             return None;
@@ -60,7 +100,7 @@ impl TdJson {
     }
 
     /// Gọi đồng bộ các hàm TDLib cho phép (getOption, setLogVerbosityLevel…).
-    pub fn execute(&self, request: &Value) -> Option<Value> {
+    fn execute(&self, request: &Value) -> Option<Value> {
         let s = CString::new(request.to_string()).expect("JSON không chứa byte 0");
         let p = unsafe { (self.execute)(s.as_ptr()) };
         if p.is_null() {
@@ -69,10 +109,271 @@ impl TdJson {
         let out = unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned();
         serde_json::from_str(&out).ok()
     }
+}
 
-    /// Phiên bản TDLib của thư viện đã mở (vd "1.8.69").
-    pub fn version(&self) -> Option<String> {
-        let r = self.execute(&serde_json::json!({"@type": "getOption", "name": "version"}))?;
-        r.get("value").and_then(|v| v.as_str()).map(str::to_owned)
+/// Thời gian chờ một câu trả lời (bằng bản Python `TdlibClient.call(timeout=30)`).
+pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// Sức chứa hàng update; người nhận chậm quá sẽ gặp `RecvError::Lagged`.
+const UPDATES_CAPACITY: usize = 4096;
+/// Mỗi lần `td_receive` chờ tối đa bao lâu (giây) — cũng là thời gian tối đa để luồng nhận thấy lệnh dừng.
+const RECEIVE_TIMEOUT: f64 = 1.0;
+
+type Pending = Mutex<Option<HashMap<String, oneshot::Sender<Value>>>>;
+
+/// Huỷ future (ví dụ REST ngắt kết nối) cũng phải gỡ người chờ khỏi bảng.
+struct PendingRequest<'a> {
+    pending: &'a Pending,
+    key: String,
+}
+
+impl Drop for PendingRequest<'_> {
+    fn drop(&mut self) {
+        if let Some(pending) = self.pending.lock().unwrap().as_mut() {
+            pending.remove(&self.key);
+        }
+    }
+}
+
+/// Phần dùng chung giữa TdClient và luồng nhận.
+struct Shared {
+    api: Arc<dyn TdApi>,
+    client_id: i32,
+    /// `@extra` → người đang chờ. `None` = luồng nhận đã dừng (yêu cầu mới trả Err ngay).
+    pending: Pending,
+    updates: broadcast::Sender<Value>,
+    /// `@type` của trạng thái đăng nhập mới nhất (rỗng khi TDLib chưa báo).
+    auth: watch::Sender<String>,
+    stop: AtomicBool,
+}
+
+impl Shared {
+    /// Phân loại MỘT bản tin từ td_receive: câu trả lời (có `@extra`) → đúng người chờ; còn lại là update → broadcast.
+    fn route(&self, mut msg: Value) {
+        if let Some(cid) = msg.get("@client_id").and_then(Value::as_i64) {
+            if cid != i64::from(self.client_id) {
+                return; // bản tin của client khác trong cùng tiến trình
+            }
+        }
+        if let Some(extra) = msg.get("@extra").cloned() {
+            let key = extra_key(&extra);
+            let waiter = self.pending.lock().unwrap().as_mut().and_then(|m| m.remove(&key));
+            if let Some(tx) = waiter {
+                if let Some(o) = msg.as_object_mut() {
+                    o.remove("@extra");
+                    o.remove("@client_id");
+                }
+                let _ = tx.send(msg);
+            }
+            // Câu trả lời không còn ai chờ (đã hết giờ) → bỏ, KHÔNG lẫn vào dòng update.
+            return;
+        }
+        if msg.get("@type").and_then(Value::as_str) == Some("updateAuthorizationState") {
+            let state = msg
+                .pointer("/authorization_state/@type")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            if state == "authorizationStateClosed" {
+                self.pending.lock().unwrap().take();
+                self.stop.store(true, Ordering::Relaxed);
+            }
+            self.auth.send_if_modified(|current| {
+                if *current == state { return false; }
+                *current = state;
+                true
+            });
+        }
+        let _ = self.updates.send(msg); // không ai đăng ký thì thôi
+    }
+
+    fn receive_loop(self: Arc<Self>) {
+        while !self.stop.load(Ordering::Relaxed) {
+            if let Some(msg) = self.api.receive(RECEIVE_TIMEOUT) {
+                self.route(msg);
+            }
+        }
+        // Dừng: mọi người đang chờ nhận Err (sender bị huỷ) thay vì treo.
+        self.pending.lock().unwrap().take();
+    }
+}
+
+fn extra_key(extra: &Value) -> String {
+    match extra {
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
+    }
+}
+
+static RECEIVER_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// Giữ quyền nhận toàn cục tới khi luồng nhận đã dừng và thư viện được nhả.
+struct ReceiverGuard;
+
+impl ReceiverGuard {
+    fn acquire() -> Result<Self, String> {
+        RECEIVER_ACTIVE.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map(|_| Self)
+            .map_err(|_| "đã có một TdClient đang nhận bản tin trong tiến trình".to_owned())
+    }
+}
+
+impl Drop for ReceiverGuard {
+    fn drop(&mut self) {
+        RECEIVER_ACTIVE.store(false, Ordering::Release);
+    }
+}
+
+/// Một client TDLib (một tài khoản). Chỉ MỘT TdClient thật mỗi tiến trình: `td_receive` là hàm toàn cục.
+pub struct TdClient {
+    shared: Arc<Shared>,
+    next_extra: AtomicU64,
+    thread: Mutex<Option<JoinHandle<()>>>,
+    pub(crate) code: Secret,
+    pub(crate) password: Secret,
+    _receiver_guard: Option<ReceiverGuard>,
+}
+
+/// Ô chứa mã/mật khẩu do người dùng gửi (không bao giờ in ra).
+#[derive(Default)]
+pub(crate) struct Secret {
+    slot: Mutex<Option<String>>,
+    notify: Notify,
+}
+
+impl Secret {
+    fn put(&self, v: &str) {
+        *self.slot.lock().unwrap() = Some(v.to_owned());
+        self.notify.notify_one();
+    }
+    pub(crate) fn take(&self) -> Option<String> {
+        self.slot.lock().unwrap().take().filter(|s| !s.is_empty())
+    }
+    pub(crate) async fn notified(&self) {
+        self.notify.notified().await
+    }
+}
+
+impl TdClient {
+    /// Mở thư viện và giữ quyền nhận độc quyền. Client thứ hai trả Err, không thể lấy mất bản tin của client đầu.
+    pub fn open(path: &str) -> Result<Arc<Self>, String> {
+        let guard = ReceiverGuard::acquire()?;
+        let api = Arc::new(TdJson::open(path)?);
+        Ok(Self::start(api, Some(guard)))
+    }
+
+    /// Tạo client, khởi động luồng nhận và «đánh thức» TDLib (client chỉ thật sự chạy sau lần td_send đầu tiên).
+    fn start(api: Arc<dyn TdApi>, receiver_guard: Option<ReceiverGuard>) -> Arc<Self> {
+        // TDLib mặc định ghi log rất dài: chỉ giữ lỗi (như bản Python).
+        api.execute(&json!({"@type": "setLogVerbosityLevel", "new_verbosity_level": 1}));
+        let client_id = api.create_client_id();
+        let (updates, _) = broadcast::channel(UPDATES_CAPACITY);
+        let (auth, _) = watch::channel(String::new());
+        let shared = Arc::new(Shared {
+            api,
+            client_id,
+            pending: Mutex::new(Some(HashMap::new())),
+            updates,
+            auth,
+            stop: AtomicBool::new(false),
+        });
+        let s = shared.clone();
+        let thread = std::thread::Builder::new()
+            .name("td-receive".into())
+            .spawn(move || s.receive_loop())
+            .expect("không tạo được luồng nhận TDLib");
+        // Yêu cầu vô hại để TDLib dựng client → phát updateAuthorizationState đầu tiên. Không dùng câu trả lời của nó
+        // để đặt trạng thái (trả lời có thể đến sau update mới hơn → trạng thái lùi).
+        shared.api.send(client_id, &json!({"@type": "getAuthorizationState", "@extra": "khoi-dong"}));
+        Arc::new(Self {
+            shared,
+            next_extra: AtomicU64::new(1),
+            thread: Mutex::new(Some(thread)),
+            code: Secret::default(),
+            password: Secret::default(),
+            _receiver_guard: receiver_guard,
+        })
+    }
+
+    pub fn client_id(&self) -> i32 {
+        self.shared.client_id
+    }
+
+    /// `@type` của trạng thái đăng nhập mới nhất (vd "authorizationStateWaitCode"); rỗng khi TDLib chưa báo.
+    pub fn auth_state(&self) -> String {
+        self.shared.auth.borrow().clone()
+    }
+
+    /// Theo dõi thay đổi trạng thái đăng nhập (không bao giờ lỡ giá trị mới nhất).
+    pub fn auth_watch(&self) -> watch::Receiver<String> {
+        self.shared.auth.subscribe()
+    }
+
+    /// Nộp mã đăng nhập (máy trạng thái dùng khi đang ở waitCode).
+    pub fn submit_code(&self, code: &str) {
+        self.code.put(code.trim());
+    }
+
+    /// Nộp mật khẩu 2FA (dùng khi đang ở waitPassword).
+    pub fn submit_password(&self, password: &str) {
+        self.password.put(password);
+    }
+
+    /// Gửi yêu cầu, chờ câu trả lời cùng `@extra` (tối đa `timeout`). `Err` khi TDLib trả error, hết giờ hoặc luồng nhận dừng.
+    pub async fn request_timeout(&self, mut req: Value, timeout: Duration) -> Result<Value, String> {
+        let kind = req.get("@type").and_then(Value::as_str).unwrap_or("?").to_owned();
+        let Some(obj) = req.as_object_mut() else {
+            return Err("yêu cầu TDLib phải là đối tượng JSON".into());
+        };
+        let extra = format!("r{}", self.next_extra.fetch_add(1, Ordering::Relaxed));
+        obj.insert("@extra".into(), Value::String(extra.clone()));
+        let (tx, rx) = oneshot::channel();
+        match self.shared.pending.lock().unwrap().as_mut() {
+            Some(m) => m.insert(extra.clone(), tx),
+            None => return Err("mất kết nối TDLib (luồng nhận đã dừng)".into()),
+        };
+        let _pending = PendingRequest { pending: &self.shared.pending, key: extra };
+        self.shared.api.send(self.shared.client_id, &req);
+        let reply = match tokio::time::timeout(timeout, rx).await {
+            Ok(Ok(v)) => v,
+            Ok(Err(_)) => return Err("mất kết nối TDLib (luồng nhận đã dừng)".into()),
+            Err(_) => {
+                return Err(format!("TDLib không trả lời {kind} sau {} giây", timeout.as_secs()));
+            }
+        };
+        if reply.get("@type").and_then(Value::as_str) == Some("error") {
+            let msg = reply.get("message").and_then(Value::as_str).unwrap_or_default();
+            if msg.is_empty() {
+                let code = reply.get("code").and_then(Value::as_i64).unwrap_or(0);
+                return Err(format!("lỗi TDLib {code}"));
+            }
+            return Err(msg.to_owned());
+        }
+        Ok(reply)
+    }
+
+    /// Đóng client và chờ `authorizationStateClosed` (TDLib ghi xong DB, nhả khoá td.binlog), tối đa `wait`.
+    pub async fn close(&self, wait: Duration) {
+        let mut rx = self.auth_watch();
+        self.shared.api.send(self.shared.client_id, &json!({"@type": "close", "@extra": "dong"}));
+        let _ = tokio::time::timeout(wait, rx.wait_for(|s| s == "authorizationStateClosed")).await;
+    }
+}
+
+impl Drop for TdClient {
+    fn drop(&mut self) {
+        self.shared.stop.store(true, Ordering::Relaxed);
+        if let Some(t) = self.thread.lock().unwrap().take() {
+            let _ = t.join(); // tối đa RECEIVE_TIMEOUT
+        }
+    }
+}
+
+impl TdLink for TdClient {
+    fn request(&self, req: Value) -> BoxFut<'_, Result<Value, String>> {
+        Box::pin(self.request_timeout(req, REQUEST_TIMEOUT))
+    }
+
+    fn updates(&self) -> broadcast::Receiver<Value> {
+        self.shared.updates.subscribe()
     }
 }
