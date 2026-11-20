@@ -4,6 +4,7 @@
 //! `events` phát incoming/active/ended/peer_video. NTgCalls nằm trong một thread
 //! có Tokio runtime riêng, vì binding 3.0.7 không Sync. Không giữ khóa qua await.
 mod media;
+mod cast;
 mod sources;
 mod snapshot;
 pub mod versions;
@@ -19,7 +20,7 @@ use ntgcalls::{ConnectionState, NTgCalls, Protocol, StreamDevice, StreamMode};
 use serde_json::{json, Value};
 use tokio::sync::{broadcast, mpsc, oneshot};
 
-use crate::contract::{Binary, BoxFut, CallControl, GwError, TdLink};
+use crate::contract::{Binary, BoxFut, CallControl, CastAudio, GwError, TdLink};
 use crate::events::{mask_peer, mask_peer_id};
 use media::{Media, MediaEvent, MediaOp, NativeMedia, Ready};
 use sources::{Devices, playback_description, video_profile};
@@ -35,6 +36,7 @@ enum Command {
     Media(MediaEvent),
     Snapshot(String, oneshot::Sender<Result<Binary, GwError>>),
     VideoJpeg(String, Option<Vec<u8>>),
+    CastAudio(String, String, oneshot::Sender<Option<CastAudio>>),
     RestoreMic(String, u64, String, String, PathBuf),
     RefreshCapture(String),
     Shutdown(Option<std::sync::mpsc::Sender<()>>, Instant),
@@ -60,10 +62,15 @@ pub struct CallManager { handle: Arc<Handle> }
 impl CallManager {
     /// Dùng cùng TdLink mà tầng TDLib đã đăng nhập; không tự mở client TDLib.
     pub fn new(td: Arc<dyn TdLink>, data_dir: impl AsRef<Path>) -> Result<Self, GwError> {
-        Self::spawn(td, data_dir.as_ref().to_path_buf(), Box::new(NativeMedia(NTgCalls::new())), p2p_enabled(std::env::var("TELEGRAM_P2P").ok().as_deref()))
+        Self::with_cast(td, data_dir.as_ref(), None)
     }
 
-    fn spawn(td: Arc<dyn TdLink>, data_dir: PathBuf, mut media: Box<dyn Media>, p2p: bool) -> Result<Self, GwError> {
+    pub(crate) fn with_cast(td: Arc<dyn TdLink>, data_dir: &Path, cast_port: Option<u16>) -> Result<Self, GwError> {
+        Self::spawn(td, data_dir.to_path_buf(), Box::new(NativeMedia(NTgCalls::new())),
+            p2p_enabled(std::env::var("TELEGRAM_P2P").ok().as_deref()), cast_port)
+    }
+
+    fn spawn(td: Arc<dyn TdLink>, data_dir: PathBuf, mut media: Box<dyn Media>, p2p: bool, cast_port: Option<u16>) -> Result<Self, GwError> {
         let updates = td.updates(); // Đăng ký trước khi bất kỳ createCall nào có thể gửi đi.
         let protocol = media.protocol().map_err(|_| GwError::new(502, "MEDIA_FAILED", "Không đọc được protocol NTgCalls"))?;
         let (sender, receiver) = mpsc::unbounded_channel();
@@ -87,7 +94,7 @@ impl CallManager {
                 }
                 media.callbacks(sender.clone(), frame_sender);
                 let mut actor = Actor { td, media, protocol, p2p, data_dir, defaults, calls: Vec::new(),
-                    handled: HashSet::new(), events, sender, profile: video_profile(&std::env::var("VIDEO_PROFILE").unwrap_or_default()) };
+                    handled: HashSet::new(), events, sender, profile: video_profile(&std::env::var("VIDEO_PROFILE").unwrap_or_default()), cast_port };
                 let _ = startup_tx.send(Ok(()));
                 actor.run(receiver, updates, frame_receiver).await;
             });
@@ -145,6 +152,14 @@ impl CallControl for CallManager {
             rx.await.map_err(|_| runtime_error())?
         })
     }
+    fn cast_audio(&self, id: &str, token: &str) -> BoxFut<'_, Option<CastAudio>> {
+        let (id, token) = (id.to_owned(), token.to_owned());
+        Box::pin(async move {
+            let (tx, rx) = oneshot::channel();
+            self.handle.sender.send(Command::CastAudio(id, token, tx)).ok()?;
+            rx.await.ok().flatten()
+        })
+    }
 }
 
 fn runtime_error() -> GwError { GwError::new(503, "CALL_RUNTIME", "Runtime cuộc gọi đã dừng") }
@@ -172,6 +187,7 @@ struct LiveCall {
     playback_cmd: String,
     playback_path: PathBuf,
     playback_final: Option<u64>,
+    cast: Option<cast::CastSink>,
     cam_off: bool,
     view_on: bool,
     peer_video: bool,
@@ -200,7 +216,7 @@ impl LiveCall {
         let playback_path = data_dir.join("live").join(format!("{id}_in.pcm"));
         let mut c = Self { id, td_id: None, user_id, outgoing, video, state: if outgoing { "dialing" } else { "ringing" },
             accepted: false, ready_done: false, media_created: false, pending_signaling: Vec::new(), devices, playback_kind, playback_cmd,
-            playback_path, playback_final: None, cam_off: false, view_on: video, peer_video: false,
+            playback_path, playback_final: None, cast: None, cam_off: false, view_on: video, peer_video: false,
             view: json!({"frames":0,"jpeg":0,"size":"","dropped":0,"bad":0}), snapshot: Default::default(), sig: [0;4], frames_in: 0, frame_bytes: 0,
             peak: 0, error: String::new(), emojis: json!([]), started: Instant::now(), active: None, ended: None, events: VecDeque::new(), capture_revision: 0, speech_revision: None };
         c.log(if outgoing { "tạo cuộc gọi đi" } else { "tạo cuộc gọi đến" });
@@ -227,7 +243,25 @@ impl LiveCall {
     }
 
     fn playback(&self) -> Result<ntgcalls::MediaDescription, GwError> {
-        playback_description(&self.playback_kind, &self.playback_cmd, &self.playback_path.to_string_lossy(), self.view_on)
+        self.playback_with(&self.playback_kind, &self.playback_cmd, self.cast.as_ref())
+    }
+
+    fn playback_with(&self, kind: &str, cmd: &str, cast: Option<&cast::CastSink>) -> Result<ntgcalls::MediaDescription, GwError> {
+        let path = self.playback_path.to_string_lossy();
+        if let Some(cast) = cast { return playback_description("shell", &cast.encoder_command(), &path, self.view_on); }
+        playback_description(kind, cmd, &path, self.view_on)
+    }
+
+    fn check_playback(&self, kind: &str, cmd: &str, cast_port: Option<u16>) -> Result<(), GwError> {
+        if kind == "push" && is_cast_spec(cmd) {
+            return cast_port.map(|_| ()).ok_or_else(|| GwError::new(501, "NOT_IMPLEMENTED", "Chưa có cổng HTTP cho luồng Cast."));
+        }
+        self.playback_with(kind, cmd, None).map(|_| ())
+    }
+
+    async fn open_cast(kind: &str, cmd: &str) -> Result<Option<cast::CastSink>, GwError> {
+        if kind != "push" || !is_cast_spec(cmd) { return Ok(None); }
+        cast::CastSink::open().await.map(Some).map_err(|_| media_error())
     }
 }
 
@@ -244,6 +278,7 @@ struct Actor {
     events: broadcast::Sender<Value>,
     sender: mpsc::UnboundedSender<Command>,
     profile: (i16, i16, u8),
+    cast_port: Option<u16>,
 }
 
 impl Actor {
@@ -282,6 +317,11 @@ impl Actor {
                             c.snapshot.finish(jpeg);
                             c.view["jpeg"] = json!(c.snapshot.sequence);
                         }
+                    }
+                    Some(Command::CastAudio(id, token, reply)) => {
+                        let stream = self.calls.iter().find(|c| c.id == id && c.state != "ended")
+                            .and_then(|c| c.cast.as_ref()).and_then(|cast| cast.subscribe(&token));
+                        let _ = reply.send(stream);
                     }
                     Some(Command::RestoreMic(id, revision, mic, fmt, path)) => {
                         self.restore_mic(&id, revision, mic, fmt, path).await;
@@ -417,7 +457,7 @@ impl Actor {
         if body["playback"] == "shell" { devices.playback = "shell".into(); }
         let video = body["video"].as_bool().unwrap_or(false);
         let call = LiveCall::new(user, true, video, devices, &self.data_dir);
-        call.playback()?; // Cast trả 501 ngay, trước khi createCall gây hiệu ứng bên ngoài.
+        call.check_playback(&call.playback_kind, &call.playback_cmd, self.cast_port)?;
         self.prune();
         self.calls.push(call);
         let i = self.calls.len()-1;
@@ -451,7 +491,7 @@ impl Actor {
         // apply_defaults: chỉ external/file được thừa kế nếu không có speaker.
         if !matches!(devices.playback.as_str(), "external" | "file") { devices.playback = "file".into(); }
         let kind = if devices.speaker.is_empty() { devices.playback.clone() } else { "push".into() };
-        playback_description(&kind, &devices.speaker, &c.playback_path.to_string_lossy(), c.view_on)?;
+        c.check_playback(&kind, &devices.speaker, self.cast_port)?;
         self.td_request(json!({"@type":"acceptCall","call_id":c.td_id,"protocol":self.protocol_json()})).await?;
         let c = &mut self.calls[i];
         c.accepted = true;
@@ -475,6 +515,7 @@ impl Actor {
         let c = &mut self.calls[i];
         c.state = "ended";
         c.snapshot = Default::default();
+        if let Some(cast) = c.cast.take() { cast.close().await; }
         c.ended = Some(Instant::now());
         if let Some(id) = c.td_id { self.handled.insert(id); }
         c.log(why);
@@ -598,7 +639,11 @@ impl Actor {
         self.media.execute(MediaOp::Create(c.user_id)).await.map_err(|_| media_error())?;
         c.media_created = true;
         self.media.execute(MediaOp::Sources(c.user_id, StreamMode::Capture, c.devices.capture(c.video, c.cam_off, self.profile))).await.map_err(|_| media_error())?;
+        c.cast = LiveCall::open_cast(&c.playback_kind, &c.playback_cmd).await?;
         self.media.execute(MediaOp::Sources(c.user_id, StreamMode::Playback, c.playback()?)).await.map_err(|_| media_error())?;
+        if let Some(cast) = &mut c.cast {
+            cast.start(cast::target(&c.playback_cmd).unwrap(), self.cast_port.unwrap(), &c.id);
+        }
         if !ready.key.is_empty() {
             c.log("NTgCalls: skip_exchange");
             self.media.execute(MediaOp::Skip(c.user_id, ready.key.clone(), c.outgoing)).await.map_err(|_| media_error())?;
@@ -647,9 +692,20 @@ impl Actor {
         // push CHỈ lấy url đã kiểm tra; cmd không thể ghi đè URL như một lệnh shell.
         let cmd = if kind == "push" { body["url"].as_str().filter(|s| !s.is_empty()).unwrap_or(&c.devices.speaker) }
             else { body["cmd"].as_str().unwrap_or("") }.to_owned();
-        let desc = playback_description(&kind, &cmd, &c.playback_path.to_string_lossy(), c.view_on)?;
-        if c.media_created { self.media.execute(MediaOp::Sources(c.user_id, StreamMode::Playback, desc)).await.map_err(|_| media_error())?; }
+        c.check_playback(&kind, &cmd, self.cast_port)?;
+        if c.cast.is_some() && kind == c.playback_kind && cmd == c.playback_cmd { return Ok(c.info()); }
+        let mut next_cast = None;
+        if c.media_created {
+            next_cast = LiveCall::open_cast(&kind, &cmd).await?;
+            let desc = c.playback_with(&kind, &cmd, next_cast.as_ref())?;
+            self.media.execute(MediaOp::Sources(c.user_id, StreamMode::Playback, desc)).await.map_err(|_| media_error())?;
+        }
         let c = &mut self.calls[i];
+        if let Some(cast) = c.cast.take() { cast.close().await; }
+        if let Some(cast) = &mut next_cast {
+            cast.start(cast::target(&cmd).unwrap(), self.cast_port.unwrap(), &c.id);
+        }
+        c.cast = next_cast;
         c.playback_kind = kind;
         if c.playback_kind == "push" { c.devices.speaker = cmd.clone(); }
         c.playback_cmd = cmd;

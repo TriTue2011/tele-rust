@@ -74,7 +74,7 @@ impl Fixture {
         let (updates,_) = broadcast::channel(256);
         let td = Arc::new(FakeTd { requests:Arc::new(Mutex::new(Vec::new())),updates,early:Mutex::new(None),fail:Mutex::new(None) });
         let media=Arc::new(Mutex::new(FakeState::default()));
-        let manager=CallManager::spawn(td.clone(),dir.clone(),Box::new(FakeMedia(media.clone())),p2p).unwrap();
+        let manager=CallManager::spawn(td.clone(),dir.clone(),Box::new(FakeMedia(media.clone())),p2p,None).unwrap();
         Self { manager:Some(manager),td,media,dir }
     }
     fn manager(&self) -> &CallManager { self.manager.as_ref().unwrap() }
@@ -131,7 +131,7 @@ fn local_actor(f: &Fixture) -> (Actor, mpsc::UnboundedReceiver<Command>) {
     let (sender,commands) = mpsc::unbounded_channel();
     let (events,_) = broadcast::channel(256);
     (Actor { td:f.td.clone(), media:Box::new(media), protocol, p2p:false, data_dir:f.dir.clone(), defaults:Devices::default(),
-        calls:vec![], handled:HashSet::new(), events, sender, profile:(640,360,15) }, commands)
+        calls:vec![], handled:HashSet::new(), events, sender, profile:(640,360,15), cast_port:None }, commands)
 }
 
 #[test]
@@ -374,7 +374,7 @@ async fn settings_validate_mask_preserve_secrets_and_persist_0600() {
     let path=f.dir.join("live_settings.json");
     let saved:Value=serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     assert_eq!(saved["camera"],"rtsp://u:secret@cam/s"); assert_eq!(saved["speaker"],R1); assert_eq!(fs::metadata(path).unwrap().permissions().mode()&0o777,0o600);
-    let second=CallManager::spawn(f.td.clone(),f.dir.clone(),Box::new(FakeMedia(Arc::new(Mutex::new(FakeState::default())))),false).unwrap();
+    let second=CallManager::spawn(f.td.clone(),f.dir.clone(),Box::new(FakeMedia(Arc::new(Mutex::new(FakeState::default())))),false,None).unwrap();
     assert_eq!(second.settings(Value::Null).await.unwrap()["mic_format"],"s16le16k");
     f.manager().settings(json!({"speaker":""})).await.unwrap(); assert_eq!(f.manager().settings(Value::Null).await.unwrap()["speaker"],"");
 }
@@ -416,7 +416,7 @@ async fn cast_returns_explicit_501_before_tdlib_or_media_side_effects() {
     let c=f.incoming(11,9,false).await;
     f.manager().settings(json!({"speaker":"cast://id/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"})).await.unwrap();
     let error=f.manager().accept(json!({"id":c["id"]})).await.unwrap_err();
-    assert_eq!(error.status,501); assert!(error.message.contains("TODO")); assert!(f.requests("acceptCall").is_empty());
+    assert_eq!(error.status,501); assert!(error.message.contains("cổng HTTP")); assert!(f.requests("acceptCall").is_empty());
 }
 
 #[tokio::test]
@@ -565,7 +565,7 @@ fn history_pruning_never_prunes_live_calls_or_forgets_handled_ids() {
     // Kiểm tra qua actor thuần, không cần thread hay NTgCalls thật.
     let (updates,_)=broadcast::channel(1); let (sender,_)=mpsc::unbounded_channel(); let (events,_)=broadcast::channel(1);
     let media=FakeMedia(Arc::new(Mutex::new(FakeState::default()))); let protocol=media.protocol().unwrap();
-    let mut actor=Actor {td:Arc::new(FakeTd{requests:Arc::new(Mutex::new(Vec::new())),updates,early:Mutex::new(None),fail:Mutex::new(None)}),media:Box::new(media),protocol,p2p:false,data_dir:"data".into(),defaults:Devices::default(),calls:vec![],handled:HashSet::from([99]),events,sender,profile:(640,360,15)};
+    let mut actor=Actor {td:Arc::new(FakeTd{requests:Arc::new(Mutex::new(Vec::new())),updates,early:Mutex::new(None),fail:Mutex::new(None)}),media:Box::new(media),protocol,p2p:false,data_dir:"data".into(),defaults:Devices::default(),calls:vec![],handled:HashSet::from([99]),events,sender,profile:(640,360,15),cast_port:None};
     for i in 0..27 { let mut c=LiveCall::new(100+i,true,false,Devices::default(),Path::new("data")); c.state="ended"; c.ended=Some(Instant::now()); actor.calls.push(c); }
     actor.calls.push(LiveCall::new(1,true,false,Devices::default(),Path::new("data")));
     actor.prune(); assert_eq!(actor.calls.len(),21); assert_eq!(actor.calls[0].user_id,107); assert_eq!(actor.calls.last().unwrap().state,"dialing"); assert!(actor.handled.contains(&99));

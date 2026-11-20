@@ -22,6 +22,12 @@ pub struct Binary {
     pub disposition: Option<String>,
 }
 
+/// MP3 liên tục từ bộ phát Cast, đã kiểm token của cuộc gọi.
+pub struct CastAudio {
+    pub prime: Vec<u8>,
+    pub audio: tokio::sync::broadcast::Receiver<Vec<u8>>,
+}
+
 /// Lỗi TDLib: giữ nguyên mã HTTP của TDLib và message để tầng API ánh xạ đúng
 /// hợp đồng Python. Lỗi vận chuyển không có mã.
 #[derive(Debug, Clone, PartialEq)]
@@ -116,6 +122,9 @@ pub trait CallControl: Send + Sync + 'static {
     fn say(&self, body: Value) -> BoxFut<'_, Result<Value, GwError>>;
     fn snapshot(&self, _id: &str) -> BoxFut<'_, Result<Binary, GwError>> {
         Box::pin(async { Err(GwError::new(501, "NOT_IMPLEMENTED", "Chưa có ảnh chụp cuộc gọi.")) })
+    }
+    fn cast_audio(&self, _id: &str, _token: &str) -> BoxFut<'_, Option<CastAudio>> {
+        Box::pin(async { None })
     }
 }
 

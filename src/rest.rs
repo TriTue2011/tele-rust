@@ -285,13 +285,35 @@ async fn health(State(ctx): State<Arc<Ctx>>) -> Response {
     }))
 }
 
-/// Luồng MP3 cho loa Cast (`/api/live/cast/{call_id}/{token}.mp3`): bản Python không cần Bearer; bản Rust chưa có luồng nào
-/// nên luôn trả đúng câu 404 của Python khi không có luồng.
-async fn cast_stream(req: Request) -> Response {
-    if !req.uri().path().ends_with(".mp3") {
+/// Loa Cast không gửi Bearer. Token riêng của mỗi cuộc gọi hết hiệu lực khi luồng đóng.
+async fn cast_stream(State(ctx): State<Arc<Ctx>>, req: Request) -> Response {
+    let mut parts = req.uri().path().rsplit('/');
+    let Some(token) = parts.next().and_then(|s| s.strip_suffix(".mp3")) else {
         return not_found().await;
-    }
-    error_resp(&GwError::not_found("Không có luồng này."))
+    };
+    let id = parts.next().unwrap();
+    let Some(stream) = ctx.call.cast_audio(id, token).await else {
+        return error_resp(&GwError::not_found("Không có luồng này."));
+    };
+    const CAST_LENGTH: usize = 16_000 * 4 * 3600;
+    let chunks = futures_util::stream::unfold((Some(stream.prime), stream.audio, CAST_LENGTH), |(mut prime, mut audio, left)| async move {
+        if left == 0 { return None; }
+        let mut chunk = match prime.take().filter(|p| !p.is_empty()) {
+            Some(bytes) => bytes,
+            None => loop {
+                match audio.recv().await {
+                    Ok(bytes) => break bytes,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
+                }
+            },
+        };
+        chunk.truncate(left);
+        let left = left - chunk.len();
+        Some((Ok::<_, std::convert::Infallible>(chunk), (prime, audio, left)))
+    });
+    ([(header::CONTENT_TYPE, "audio/mpeg".into()), (header::CACHE_CONTROL, "no-store".into()),
+        (header::CONTENT_LENGTH, CAST_LENGTH.to_string())], Body::from_stream(chunks)).into_response()
 }
 
 /// Một phương thức → `spec`; phương thức khác → 405 kiểu FastAPI.
@@ -475,6 +497,7 @@ impl ChatControl for ChuaCo {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::contract::CastAudio;
     use tower::ServiceExt;
 
     /// Ghi lại mọi lời gọi; trả lời theo `reply` (mặc định `{"ok":true,"from":…}`).
@@ -529,6 +552,15 @@ mod tests {
                 reply.await?;
                 Ok(Binary { bytes: vec![1, 2, 3], content_type: "image/jpeg".into(),
                     cache_control: "no-store", disposition: None })
+            })
+        }
+        fn cast_audio(&self, id: &str, token: &str) -> BoxFut<'_, Option<CastAudio>> {
+            let valid = id == "c1" && token == "test-cast-token";
+            Box::pin(async move {
+                if !valid { return None; }
+                let (tx, audio) = tokio::sync::broadcast::channel(1);
+                tx.send(vec![4, 5, 6]).unwrap();
+                Some(CastAudio { prime: vec![1, 2, 3], audio })
             })
         }
     }
@@ -839,6 +871,11 @@ mod tests {
         }
         let cast = send(&app, req("GET", "/api/live/cast/c1/tok.mp3", None, Body::empty())).await;
         assert_eq!(cast, (404, err("NOT_FOUND", "Không có luồng này.")));
+        let cast = app.oneshot(req("GET", "/api/live/cast/c1/test-cast-token.mp3", None, Body::empty())).await.unwrap();
+        assert_eq!(cast.headers()[header::CONTENT_TYPE], "audio/mpeg");
+        assert_eq!(cast.headers()[header::CACHE_CONTROL], "no-store");
+        assert_eq!(cast.headers()[header::CONTENT_LENGTH], "230400000");
+        assert_eq!(to_bytes(cast.into_body(), 6).await.unwrap().as_ref(), &[1, 2, 3, 4, 5, 6]);
     }
 
     #[tokio::test]

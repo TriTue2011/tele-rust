@@ -10,7 +10,7 @@ use tokio::task::JoinHandle;
 
 use crate::calls::CallManager;
 use crate::chat::ChatService;
-use crate::contract::{Binary, BoxFut, CallControl, ChatControl, GwError, TdLink};
+use crate::contract::{Binary, BoxFut, CallControl, CastAudio, ChatControl, GwError, TdLink};
 use crate::events::{EventBridge, Webhook};
 use crate::{rest, td};
 
@@ -101,6 +101,9 @@ impl CallControl for ReadyCalls {
     fn snapshot(&self, id: &str) -> BoxFut<'_, Result<Binary, GwError>> {
         if self.session.is_ready() { self.inner.snapshot(id) } else { account_offline() }
     }
+    fn cast_audio(&self, id: &str, token: &str) -> BoxFut<'_, Option<CastAudio>> {
+        self.inner.cast_audio(id, token)
+    }
 }
 
 struct ReadyChat {
@@ -128,24 +131,17 @@ impl App {
             .map_err(|e| format!("Cấu hình đăng nhập không hợp lệ: {e}"))?;
         let (addr, rest_config) = rest::serve_config_from_env()?;
         let events = EventBridge::start(&login_config.data_dir, &login_config.phone, Webhook::from_env()).await?;
+        let listener = tokio::net::TcpListener::bind(addr).await.map_err(|e| format!("Không nghe được {addr}: {e}"))?;
+        let cast_port = listener.local_addr().map_err(|_| "Không đọc được cổng HTTP.")?.port();
         let library = std::env::var("TDJSON_LIB").unwrap_or_else(|_| "libtdjson.so".into());
         let client = td::TdClient::open(&library)
             .map_err(|e| format!("Không khởi tạo được TDLib: {e}"))?;
         let td_link: Arc<dyn TdLink> = client.clone();
-        let manager = match CallManager::new(td_link.clone(), &login_config.data_dir) {
+        let manager = match CallManager::with_cast(td_link.clone(), &login_config.data_dir, Some(cast_port)) {
             Ok(manager) => manager,
             Err(e) => {
                 client.close(TDLIB_CLOSE_WAIT).await;
                 return Err(format!("Không khởi tạo được CallManager: {}", e.message));
-            }
-        };
-
-        let listener = match tokio::net::TcpListener::bind(addr).await {
-            Ok(listener) => listener,
-            Err(e) => {
-                let _ = manager.shutdown(CALLS_SHUTDOWN_WAIT).await;
-                client.close(TDLIB_CLOSE_WAIT).await;
-                return Err(format!("Không nghe được {addr}: {e}"));
             }
         };
 

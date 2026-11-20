@@ -1,5 +1,5 @@
 //! Dựng lệnh cố định; nguồn bên ngoài luôn là đúng một đối số shell.
-use std::{net::Ipv4Addr, sync::OnceLock};
+use std::sync::OnceLock;
 
 use ntgcalls::{AudioDescription, MediaDescription, MediaSource, VideoDescription};
 use regex::Regex;
@@ -15,13 +15,7 @@ fn speaker_re() -> &'static Regex {
 }
 
 pub fn is_cast_spec(spec: &str) -> bool {
-    let Some(host) = spec.trim().strip_prefix("cast://") else { return false };
-    if let Some(id) = host.strip_prefix("id/") {
-        return id.len() == 32 && id.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
-    }
-    let Ok(ip) = host.parse::<Ipv4Addr>() else { return false };
-    // Chỉ địa chỉ LAN; loại cả loopback, link-local và địa chỉ không xác định.
-    ip.is_private() && !ip.is_loopback() && !ip.is_link_local() && !ip.is_unspecified()
+    super::cast::target(spec).is_some()
 }
 
 pub fn valid_speaker_url(url: &str) -> bool {
@@ -149,7 +143,6 @@ pub(super) fn playback_description(kind: &str, cmd: &str, path: &str, video: boo
         "external" => (MediaSource::External, String::new()),
         "file" => (MediaSource::File, path.to_owned()),
         "shell" => (MediaSource::Shell, if cmd.is_empty() { format!("ffmpeg -hide_banner -loglevel error -f s16le -ar 48000 -ac 1 -i pipe:0 -f wav {}", quote(&format!("{path}.wav"))) } else { cmd.to_owned() }),
-        "push" if is_cast_spec(cmd) => return Err(GwError::new(501, "NOT_IMPLEMENTED", "TODO: bộ nhận Google Cast chưa được chuyển sang Rust")),
         "push" => (MediaSource::Shell, speaker_command(cmd)?),
         _ => return Err(GwError::bad_request("kind phải là external, file, shell hoặc push")),
     };

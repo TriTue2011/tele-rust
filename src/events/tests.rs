@@ -93,7 +93,10 @@ fn rotation_keeps_latest_files_and_ignores_uncommitted_write() {
     assert!(!dir.join("000000000001.json").exists());
     assert!(!dir.join(".pending").exists());
     assert_eq!(spool.poll(269)["events"][0]["id"], 270);
-    assert_eq!(spool.append(json!({"type":"account_status"})).unwrap()["id"], 271);
+    let event = spool.append(json!({"type":"account_status", "timestamp": 1795202064.6094441})).unwrap();
+    assert_eq!(event["id"], 271);
+    drop(spool);
+    assert_eq!(Spool::open(dir).unwrap().poll(270)["events"][0], event);
 }
 
 #[tokio::test]
