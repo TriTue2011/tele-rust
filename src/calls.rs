@@ -352,7 +352,8 @@ impl Actor {
         let i = self.calls.len()-1;
         match self.td_request(json!({"@type":"createCall","user_id":user,"protocol":self.protocol_json(),"is_video":video})).await {
             Ok(reply) => {
-                let id = reply["id"].as_i64().ok_or_else(|| GwError::new(502,"TDLIB_FAILED","createCall không trả mã cuộc gọi"));
+                let id = reply["call_id"].as_i64().or_else(|| reply["id"].as_i64()).or_else(|| reply.as_i64())
+                    .filter(|id| *id > 0).ok_or_else(|| GwError::new(502,"TDLIB_FAILED","createCall không trả mã cuộc gọi"));
                 match id {
                     Ok(id) => {
                         self.calls[i].td_id = Some(id);
@@ -390,7 +391,7 @@ impl Actor {
     async fn discard(&self, i: usize) -> Result<(), GwError> {
         let c = &self.calls[i];
         if let Some(id) = c.td_id {
-            self.td_request(json!({"@type":"discardCall","call_id":id,"is_disconnected":false,"duration":c.active.map(|t| t.elapsed().as_secs()).unwrap_or(0),"is_video":c.video,"connection_id":0})).await?;
+            self.td_request(json!({"@type":"discardCall","call_id":id,"invite_link":"","is_disconnected":false,"duration":c.active.map(|t| t.elapsed().as_secs()).unwrap_or(0),"is_video":c.video,"connection_id":0})).await?;
         }
         Ok(())
     }

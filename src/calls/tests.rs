@@ -24,7 +24,7 @@ impl TdLink for FakeTd {
             }
             if req["@type"] == "createCall" {
                 if let Some(update) = self.early.lock().unwrap().take() { let _ = self.updates.send(update); }
-                Ok(json!({"@type":"call","id":7}))
+                Ok(json!({"@type":"callId","call_id":7}))
             } else if req["@type"] == "searchPublicChat" {
                 Ok(json!({"type":{"@type":"chatTypePrivate","user_id":42}}))
             } else if req["@type"] == "searchUserByPhoneNumber" {
