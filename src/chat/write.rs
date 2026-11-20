@@ -149,9 +149,9 @@ impl ChatService {
                 let text = string(&b["text"]);
                 if text.trim().is_empty() { return Err(GwError::bad_request("Thiếu nội dung mới.")); }
                 let chat = int(&b["chat_id"], "chat_id")?;
-                let id = int(&b["message_id"], "message_id")?;
+                let id = self.final_id(int(&b["message_id"], "message_id")?).await;
                 let ft = self.formatted(&text, &string(&b["parse_mode"])).await?;
-                let m = self.request(json!({"@type":"editMessageText","chat_id":chat,"message_id":self.final_id(id).await,
+                let m = self.request(json!({"@type":"editMessageText","chat_id":chat,"message_id":id,
                     "input_message_content":{"@type":"inputMessageText","text":ft}})).await?;
                 return Ok(message(&m, ""));
             }

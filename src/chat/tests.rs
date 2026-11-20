@@ -134,3 +134,48 @@ async fn tdlib_errors_map_to_gateway_errors() {
         assert_eq!((e.status,e.code.as_str()),(status,code));
     }
 }
+
+#[tokio::test]
+async fn rest_passes_raw_upload_and_maps_chat_results() {
+    use axum::{body::{to_bytes, Body}, http::Request};
+    use tower::ServiceExt;
+    use crate::rest::{self, RestConfig};
+
+    let (chat, _) = setup(vec![
+        ok(json!({"@type":"sendMessage","chat_id":5,"input_message_content":{"@type":"inputMessageAudio",
+            "audio":{"@type":"inputAudio","audio":{"@type":"inputFileLocal","path":"sample.mp3","bytes":"raw audio"}},
+            "caption":{"@type":"formattedText","text":"bản thử","entities":[]}}}),td_message(31)),
+    ]);
+    let app = rest::router(Arc::new(rest::ChuaCo), Arc::new(chat), RestConfig {
+        token:"test-token".into(),rate_limit_per_minute:120,version:"test".into(),
+    });
+    for (method, path, body, status, expected) in [
+        ("POST","/api/chats/5/send_file?kind=audio&name=sample.mp3&caption=b%E1%BA%A3n+th%E1%BB%AD&account=%2B000123",
+            "raw audio",200,normalized(31,"")),
+        ("GET","/api/file/31","",501,json!({"error":{"code":"NOT_IMPLEMENTED","message":no_bytes().message}})),
+        ("GET","/api/me?account=wrong","",404,json!({"error":{"code":"NOT_FOUND","message":"Không rõ tài khoản."}})),
+    ] {
+        let request = Request::builder().method(method).uri(path).header("Authorization","Bearer test-token").body(Body::from(body)).unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(),status);
+        let bytes = to_bytes(response.into_body(), 1_000_000).await.unwrap();
+        assert_eq!(serde_json::from_slice::<Value>(&bytes).unwrap(),expected);
+    }
+}
+
+#[test]
+fn media_and_reactions_have_python_message_shapes() {
+    let photo = json!({"id":1,"date":100,"is_outgoing":true,"reply_to":{"message_id":12},"content":{"@type":"messagePhoto","caption":{"text":" cap "},
+        "photo":{"sizes":[{"width":90,"photo":{"id":11}},
+        {"width":800,"height":600,"photo":{"id":12,"size":0,"expected_size":123,"local":{"is_downloading_completed":true,"path":"x.jpg"}}},
+        {"width":2000,"photo":{"id":13}}]}},"interaction_info":{"reactions":{"reactions":[{"type":{"emoji":"👍"},"total_count":2,"is_chosen":true}]}}});
+    let m = message(&photo,"An");
+    assert_eq!(m,json!({"id":1,"chat_id":null,"date":100,"edit_date":0,"outgoing":true,"sender":"An","kind":"photo","text":" cap ",
+        "summary":"🖼 Ảnh: cap","reply_to":12,"reactions":[{"emoji":"👍","count":2,"mine":true}],
+        "file":{"id":12,"size":123,"path":"x.jpg","width":800,"height":600,"mime":"image/jpeg"}}));
+    let voice = message(&json!({"content":{"@type":"messageVoiceNote","voice_note":{"duration":4,"voice":{"id":21}}}}),"");
+    assert_eq!(voice["file"],json!({"id":21,"size":0,"path":"","name":"","mime":"","duration":4,"width":0,"height":0}));
+    let doc = message(&json!({"content":{"@type":"messageDocument","document":{"file_name":"a.pdf","mime_type":"application/pdf","document":{"id":31,"size":10}}}}),"");
+    assert_eq!(doc["file"],json!({"id":31,"size":10,"path":"","name":"a.pdf","mime":"application/pdf","duration":0,"width":0,"height":0}));
+    assert_eq!(doc["summary"],"📎 a.pdf");
+}

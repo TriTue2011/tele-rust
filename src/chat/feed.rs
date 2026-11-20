@@ -131,3 +131,25 @@ impl State {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn reset_cursor_and_provisional_id_map_are_bounded() {
+        let s = State::default();
+        for n in 1..=2002 {
+            s.update(&json!({"@type":"updateMessageSendSucceeded","old_message_id":n,
+                "message":{"id":n<<20,"chat_id":5}}));
+        }
+        let out = s.since(1, Duration::ZERO).await;
+        assert_eq!(out["cursor"],2002);
+        assert_eq!(out["reset"],true);
+        let items = out["items"].as_array().unwrap();
+        assert_eq!(items.len(),2000);
+        assert_eq!(items[0]["id"],3);
+        assert_eq!(s.final_id(2002, Duration::ZERO).await,2002<<20);
+        assert_eq!(s.final_id(1, Duration::ZERO).await,1);
+    }
+}
