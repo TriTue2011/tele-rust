@@ -777,4 +777,18 @@ mod tests {
         assert!(!ct_eq(b"abc", b"ab"));
         assert!(ct_eq(b"", b""));
     }
+
+    #[test]
+    fn thieu_gateway_token_tu_choi_khoi_dong_bang_tieng_viet() {
+        let old = std::env::var_os("GATEWAY_TOKEN");
+        std::env::remove_var("GATEWAY_TOKEN");
+
+        let result = serve_config_from_env();
+
+        if let Some(value) = old {
+            std::env::set_var("GATEWAY_TOKEN", value);
+        }
+        let error = result.err().expect("thiếu token phải từ chối cấu hình");
+        assert!(error.contains("GATEWAY_TOKEN") && error.contains("chưa đặt"), "{error}");
+    }
 }

@@ -39,6 +39,31 @@ def object_shape(value, fields, path):
         require(type(value[key]) in types, f"{path}.{key} sai kiểu")
 
 
+def call_shape(call):
+    """LiveCall.info() và VideoView.info() trong bản Python tham khảo."""
+    number = (int, float)
+    object_shape(call, {
+        "id": (str,), "user_id": (int,), "outgoing": (bool,),
+        "video": (bool,), "state": (str,), "emojis": (list,),
+        "error": (str,), "seconds": number, "peer_video": (bool,),
+        "view": (dict,), "diag": (dict,), "sig": (dict,),
+        "cpu_max": number, "mic_muted": (bool,), "cam_off": (bool,),
+        "frames_in": (int,), "frame_bytes": (int,), "peak": number,
+        "playback": (dict,), "events": (list,),
+    }, "calls[]")
+    require(all(type(emoji) is str for emoji in call["emojis"]),
+            "calls[].emojis[] phải là string")
+    object_shape(call["view"], {
+        "frames": (int,), "jpeg": (int,), "size": (str,),
+        "dropped": (int,), "bad": (int,),
+    }, "calls[].view")
+    object_shape(call["sig"], {key: (int,) for key in ("tx_n", "tx_b", "rx_n", "rx_b")},
+                 "calls[].sig")
+    object_shape(call["playback"], {"kind": (str,), "bytes": (int,)}, "calls[].playback")
+    for event in call["events"]:
+        object_shape(event, {"t": number, "e": (str,)}, "calls[].events[]")
+
+
 def main():
     if len(sys.argv) != 3:
         raise SystemExit(f"Cách dùng: {sys.argv[0]} BASE_URL TOKEN")
