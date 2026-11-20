@@ -1,13 +1,11 @@
 //! Gateway Telegram bản Rust — cột mốc 0: mở libtdjson và đọc phiên bản TDLib.
 //!
 //! Chạy: `TDJSON_LIB=/đường/tới/libtdjson.so tggw version|login|protocol|serve`
-mod contract;
-mod rest;
-mod td;
 
 use std::time::Duration;
 
-use crate::contract::TdLink;
+use telegram_gateway_rs::contract::TdLink;
+use telegram_gateway_rs::{rest, td};
 
 #[tokio::main]
 async fn main() {

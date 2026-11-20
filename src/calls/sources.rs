@@ -1,0 +1,164 @@
+//! Dựng lệnh cố định; nguồn bên ngoài luôn là đúng một đối số shell.
+use std::{net::Ipv4Addr, sync::OnceLock};
+
+use ntgcalls::{AudioDescription, MediaDescription, MediaSource, VideoDescription};
+use regex::Regex;
+use serde_json::{json, Value};
+
+use crate::contract::GwError;
+
+pub(super) const SAMPLE_RATE: u32 = 48_000;
+
+fn speaker_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"\Ahttps?://[A-Za-z0-9.\-]+(?::\d{1,5})?/api/(?:r1_speaker|dahua_talk)/(intercom|duplex)/[A-Za-z0-9_\-]+\?k=[A-Za-z0-9_\-%.~]+\z").unwrap())
+}
+
+pub fn is_cast_spec(spec: &str) -> bool {
+    let Some(host) = spec.trim().strip_prefix("cast://") else { return false };
+    if let Some(id) = host.strip_prefix("id/") {
+        return id.len() == 32 && id.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+    }
+    let Ok(ip) = host.parse::<Ipv4Addr>() else { return false };
+    // Chỉ địa chỉ LAN; loại cả loopback, link-local và địa chỉ không xác định.
+    ip.is_private() && !ip.is_loopback() && !ip.is_link_local() && !ip.is_unspecified()
+}
+
+pub fn valid_speaker_url(url: &str) -> bool {
+    speaker_re().is_match(url) || is_cast_spec(url)
+}
+
+pub(super) fn quote(s: &str) -> String {
+    if !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"_@%+=:,./-".contains(&b)) {
+        s.to_owned()
+    } else {
+        format!("'{}'", s.replace('\'', "'\"'\"'"))
+    }
+}
+
+pub fn mic_command(spec: &str, fmt: &str) -> String {
+    let base = "ffmpeg -hide_banner -loglevel error -nostdin";
+    let out = "-f s16le -ac 1 -ar 48000 pipe:1";
+    match spec {
+        "silence" => format!("{base} -re -f lavfi -i \"anullsrc=r=48000:cl=mono\" {out}"),
+        "" | "test" => format!("{base} -re -f lavfi -i \"sine=frequency=440:sample_rate=48000\" -af volume=0.25 {out}"),
+        _ if fmt == "s16le16k" => format!("{base} -f s16le -ar 16000 -ac 1 -i {} {out}", quote(spec)),
+        _ if spec.starts_with("rtsp://") || spec.starts_with("rtsps://") => format!("{base} -rtsp_transport tcp -i {} -vn {out}", quote(spec)),
+        _ => format!("{base} -i {} -vn {out}", quote(spec)),
+    }
+}
+
+pub fn speaker_command(url: &str) -> Result<String, GwError> {
+    let m = speaker_re().captures(url).ok_or_else(|| GwError::bad_request("speaker không phải cửa bộ đàm r1_speaker / dahua_talk"))?;
+    let out = if &m[1] == "duplex" { "-ac 1 -ar 16000 -c:a pcm_s16le -f s16le" }
+        else { "-ac 1 -ar 8000 -c:a pcm_alaw -f alaw" };
+    Ok(format!("ffmpeg -hide_banner -loglevel error -fflags nobuffer -flags low_delay -probesize 32 -analyzeduration 0 -f s16le -ar 48000 -ac 1 -i pipe:0 {out} -flush_packets 1 -method POST -chunked_post 1 -content_type application/octet-stream {}", quote(url)))
+}
+
+pub(super) fn video_profile(value: &str) -> (i16, i16, u8) {
+    if value.trim().eq_ignore_ascii_case("low") { (480, 270, 10) } else { (640, 360, 15) }
+}
+
+pub fn camera_command(spec: &str, profile: (i16, i16, u8)) -> String {
+    let (w, h, fps) = profile;
+    let base = "ffmpeg -hide_banner -loglevel error -nostdin";
+    let out = format!("-vf scale={w}:{h},fps={fps} -f rawvideo -pix_fmt yuv420p pipe:1");
+    match spec {
+        "black" => format!("{base} -re -f lavfi -i \"color=c=black:size={w}x{h}:rate={fps}\" {out}"),
+        "" | "test" => format!("{base} -re -f lavfi -i \"testsrc2=size={w}x{h}:rate={fps}\" {out}"),
+        _ if spec.starts_with("rtsp://") || spec.starts_with("rtsps://") => format!("{base} -rtsp_transport tcp -i {} -an {out}", quote(spec)),
+        _ => format!("{base} -re -i {} -an {out}", quote(spec)),
+    }
+}
+
+pub(super) fn mask(value: &str) -> String {
+    static PASSWORD: OnceLock<Regex> = OnceLock::new();
+    static KEY: OnceLock<Regex> = OnceLock::new();
+    let password = PASSWORD.get_or_init(|| Regex::new(r"(://[^/\s:@]+:)[^@/\s]*@").unwrap());
+    let key = KEY.get_or_init(|| Regex::new(r"([?&]k=)[^&\s]+").unwrap());
+    key.replace_all(&password.replace_all(value, "${1}***@"), "${1}***").into_owned()
+}
+
+pub(super) fn source(value: &Value, key: &str) -> Result<String, GwError> {
+    let s = value.as_str().ok_or_else(|| GwError::bad_request(format!("{key} phải là chuỗi")))?.trim();
+    let s = if s.is_empty() { "test" } else { s };
+    let special = s == "test" || (key == "mic" && s == "silence") || (key == "camera" && s == "black");
+    if s.contains('\0') || !(special || s.starts_with('/') || s.starts_with("./") || ["rtsp://", "rtsps://", "http://", "https://", "rtmp://"].iter().any(|p| s.starts_with(p))) {
+        return Err(GwError::bad_request(format!("{key} phải là nguồn thử, URL rtsp/http hoặc đường dẫn tệp")));
+    }
+    Ok(s.to_owned())
+}
+
+#[derive(Clone)]
+pub(super) struct Devices {
+    pub mic: String,
+    pub mic_format: String,
+    pub camera: String,
+    pub playback: String,
+    pub speaker: String,
+}
+
+impl Default for Devices {
+    fn default() -> Self {
+        Self { mic: "test".into(), mic_format: "auto".into(), camera: "test".into(), playback: "file".into(), speaker: String::new() }
+    }
+}
+
+impl Devices {
+    pub fn json(&self, masked: bool) -> Value {
+        let show = |s: &str| if masked { mask(s) } else { s.to_owned() };
+        json!({"mic":show(&self.mic), "mic_format":self.mic_format, "camera":show(&self.camera), "playback":self.playback, "speaker":show(&self.speaker)})
+    }
+
+    pub fn update(&mut self, body: &Value) -> Result<(), GwError> {
+        if !body.is_object() { return Err(GwError::bad_request("Cần JSON object")); }
+        for (key, target) in [("mic", &mut self.mic), ("camera", &mut self.camera)] {
+            if let Some(value) = body.get(key) {
+                let value = source(value, key)?;
+                if !value.contains("***@") && !value.contains("k=***") { *target = value; }
+            }
+        }
+        if let Some(value) = body.get("speaker") {
+            let value = value.as_str().ok_or_else(|| GwError::bad_request("speaker phải là chuỗi"))?.trim();
+            if !value.contains("k=***") {
+                if !value.is_empty() && !valid_speaker_url(value) { return Err(GwError::bad_request("speaker phải là cửa bộ đàm hoặc cast:// nội bộ")); }
+                self.speaker = value.to_owned();
+            }
+        }
+        if matches!(body["mic_format"].as_str(), Some("auto" | "s16le16k")) { self.mic_format = body["mic_format"].as_str().unwrap().into(); }
+        if matches!(body["playback"].as_str(), Some("external" | "file")) { self.playback = body["playback"].as_str().unwrap().into(); }
+        Ok(())
+    }
+
+    pub fn capture(&self, video: bool, cam_off: bool, profile: (i16, i16, u8)) -> MediaDescription {
+        MediaDescription {
+            microphone: Some(audio(MediaSource::Shell, mic_command(&self.mic, &self.mic_format), true)),
+            speaker: None,
+            camera: (video && !cam_off).then(|| VideoDescription { media_source: MediaSource::Shell, width: profile.0, height: profile.1, fps: profile.2, input: camera_command(&self.camera, profile), keep_open: true }),
+            screen: None,
+        }
+    }
+}
+
+fn audio(media_source: MediaSource, input: String, keep_open: bool) -> AudioDescription {
+    AudioDescription { media_source, sample_rate: SAMPLE_RATE, channel_count: 1, input, keep_open }
+}
+
+pub(super) fn playback_description(kind: &str, cmd: &str, path: &str, video: bool) -> Result<MediaDescription, GwError> {
+    let (src, input) = match kind {
+        "external" => (MediaSource::External, String::new()),
+        "file" => (MediaSource::File, path.to_owned()),
+        "shell" => (MediaSource::Shell, if cmd.is_empty() { format!("ffmpeg -hide_banner -loglevel error -f s16le -ar 48000 -ac 1 -i pipe:0 -f wav {}", quote(&format!("{path}.wav"))) } else { cmd.to_owned() }),
+        "push" if is_cast_spec(cmd) => return Err(GwError::new(501, "NOT_IMPLEMENTED", "TODO: bộ nhận Google Cast chưa được chuyển sang Rust")),
+        "push" => (MediaSource::Shell, speaker_command(cmd)?),
+        _ => return Err(GwError::bad_request("kind phải là external, file, shell hoặc push")),
+    };
+    if input.contains('\0') { return Err(GwError::bad_request("Nguồn chứa ký tự NUL")); }
+    Ok(MediaDescription {
+        // NTgCalls chỉ bật audio incoming khi PLAYBACK có writer Microphone.
+        microphone: Some(audio(src, input, false)),
+        speaker: None,
+        camera: video.then(|| VideoDescription { media_source: MediaSource::External, width: 640, height: 360, fps: 15, input: String::new(), keep_open: false }),
+        screen: None,
+    })
+}
