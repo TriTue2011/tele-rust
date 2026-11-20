@@ -200,7 +200,7 @@ pub(crate) struct Secret {
 
 impl Secret {
     fn put(&self, v: &str) {
-        *self.slot.lock().unwrap() = Some(v.trim().to_owned());
+        *self.slot.lock().unwrap() = Some(v.to_owned());
         self.notify.notify_one();
     }
     pub(crate) fn take(&self) -> Option<String> {
@@ -260,7 +260,7 @@ impl TdClient {
 
     /// Nộp mã đăng nhập (máy trạng thái dùng khi đang ở waitCode).
     pub fn submit_code(&self, code: &str) {
-        self.code.put(code);
+        self.code.put(code.trim());
     }
 
     /// Nộp mật khẩu 2FA (dùng khi đang ở waitPassword).

@@ -254,9 +254,9 @@ async fn dang_nhap_gui_dung_yeu_cau_tung_trang_thai() {
     // 4) waitPassword → tệp mật khẩu.
     api.auth("authorizationStateWaitPassword");
     tokio::time::sleep(Duration::from_millis(100)).await;
-    std::fs::write(dir.0.join("login_password.txt"), "mk-tep").unwrap();
+    std::fs::write(dir.0.join("login_password.txt"), " mk-tep \r\n").unwrap();
     let s = api.wait_sent("checkAuthenticationPassword", 1).await;
-    assert_eq!(s[0]["password"], "mk-tep");
+    assert_eq!(s[0]["password"], " mk-tep ");
 
     // 5) ready → xong.
     api.auth("authorizationStateReady");
@@ -276,9 +276,9 @@ async fn mat_khau_qua_submit_password() {
     let (c, k) = (client.clone(), cfg(&dir));
     let task = tokio::spawn(async move { login::run(&c, &k).await });
     api.auth("authorizationStateWaitPassword");
-    client.submit_password("mk-ham");
+    client.submit_password(" mk-ham ");
     let s = api.wait_sent("checkAuthenticationPassword", 1).await;
-    assert_eq!(s[0]["password"], "mk-ham");
+    assert_eq!(s[0]["password"], " mk-ham ");
     api.auth("authorizationStateReady");
     assert_eq!(tokio::time::timeout(Duration::from_secs(3), task).await.unwrap().unwrap(), Ok(()));
 }
@@ -328,6 +328,22 @@ async fn thieu_so_dien_thoai_thi_err() {
     let r = tokio::time::timeout(Duration::from_secs(3), login::run(&client, &k)).await.unwrap();
     assert!(r.unwrap_err().contains("TG_PHONE"));
     assert!(api.sent_of("setAuthenticationPhoneNumber").is_empty());
+}
+
+#[tokio::test]
+async fn loi_dang_nhap_khong_lo_api_hash() {
+    let dir = TmpDir::new("loi-bi-mat");
+    let (api, client) = start();
+    *api.responder.lock().unwrap() = Some(Box::new(|req| {
+        (req["@type"] == "setTdlibParameters").then(|| json!({
+            "@type": "error", "code": 400, "message": "invalid api_hash: hash-bi-mat"
+        }))
+    }));
+    api.auth("authorizationStateWaitTdlibParameters");
+    let error = tokio::time::timeout(Duration::from_secs(3), login::run(&client, &cfg(&dir)))
+        .await.unwrap().unwrap_err();
+    assert!(error.contains("setTdlibParameters bị từ chối"));
+    assert!(!error.contains("hash-bi-mat"), "{error}");
 }
 
 #[test]

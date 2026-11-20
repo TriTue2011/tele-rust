@@ -142,7 +142,7 @@ pub async fn run(client: &TdClient, cfg: &LoginConfig) -> Result<(), String> {
                 client
                     .request(tdlib_parameters(cfg, &key))
                     .await
-                    .map_err(|e| format!("setTdlibParameters bị từ chối: {e}"))?;
+                    .map_err(|e| format!("setTdlibParameters bị từ chối: {}", e.replace(&cfg.api_hash, "***")))?;
             }
             "authorizationStateWaitPhoneNumber" => {
                 if cfg.phone.is_empty() {
@@ -197,9 +197,14 @@ async fn submit(
     let entered = SystemTime::now();
     let mut tick = tokio::time::interval(Duration::from_secs(1));
     loop {
-        let value = input.slot.take().or_else(|| read_input_file(&input.file, entered, input.what));
+        let value = input.slot.take().or_else(|| {
+            read_input_file(&input.file, entered, input.what).map(|v| {
+                if field == "code" { v.trim().to_owned() } else { v }
+            }).filter(|v| !v.is_empty())
+        });
         if let Some(v) = value {
-            match client.request(json!({"@type": kind, (field): v})).await {
+            // TDLib có thể nhắc lại input trong message lỗi; che trước khi log hoặc trả lên CLI.
+            match client.request(json!({"@type": kind, (field): v})).await.map_err(|e| e.replace(&v, "***")) {
                 Ok(_) => return Ok(true),
                 Err(e) if e.contains("FLOOD_WAIT") => return Err(format!("{kind}: {e}")),
                 Err(e) => eprintln!("[td] {} bị từ chối ({e}); chờ {} mới", input.what, input.what),
@@ -226,7 +231,8 @@ fn read_input_file(path: &Path, entered: SystemTime, what: &str) -> Option<Strin
         let _ = fs::remove_file(path);
         return None;
     }
-    let v = fs::read_to_string(path).ok()?.trim().to_owned();
+    // Giữ khoảng trắng của mật khẩu, chỉ bỏ ký tự xuống dòng do trình soạn thảo thêm.
+    let v = fs::read_to_string(path).ok()?.trim_end_matches(['\r', '\n']).to_owned();
     if v.is_empty() {
         return None;
     }
