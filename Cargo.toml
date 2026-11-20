@@ -1,0 +1,20 @@
+[package]
+name = "telegram-gateway-rs"
+version = "0.1.0"
+edition = "2021"
+description = "Gateway Telegram (tài khoản người dùng: tin nhắn + gọi thoại/video) cho Home Assistant — bản Rust, chạy song song bản Python"
+publish = false
+
+[[bin]]
+name = "tggw"
+path = "src/main.rs"
+
+[dependencies]
+# Mở libtdjson (TDLib 1.8.69, lấy từ wheel tdjson==1.8.69 — cùng bản với gateway Python) lúc chạy, nói chuyện bằng JSON.
+libloading = "=0.8.6"
+serde_json = "=1.0.133"
+
+[profile.release]
+lto = "thin"
+codegen-units = 4
+strip = true
