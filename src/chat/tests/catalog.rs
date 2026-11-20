@@ -1,6 +1,6 @@
 use super::*;
 
-struct Case(&'static str, Value, Vec<(Value, Result<Value, String>)>, Value);
+struct Case(&'static str, Value, Vec<FakeReply>, Value);
 
 fn mutate(name: &'static str, body: Value, request: Value, response: Value) -> Case {
     Case(name, body, vec![ok(request,json!({"@type":"ok"}))], response)

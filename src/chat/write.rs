@@ -2,7 +2,8 @@ mod uploads;
 
 use serde_json::{json, Value};
 
-use super::{array, int, message, string, text, truth, telegram_status, ChatService, GwError, Query, Reply};
+use super::{array, int, message, string, text, truth, ChatService, GwError, Query, Reply};
+use crate::contract::TdError;
 use std::time::Duration;
 use uploads::{decode, voice_ogg, Upload, MAX_UPLOAD};
 
@@ -211,7 +212,7 @@ impl ChatService {
                 return Err(GwError::bad_request("số điện thoại chỉ gồm chữ số sau dấu +"));
             }
             let user = self.request(json!({"@type":"searchUserByPhoneNumber","phone_number":digits,"only_local":false})).await?;
-            if user["@type"] != "user" { return Err(telegram_status(404, "PHONE_NOT_FOUND")); }
+            if user["@type"] != "user" { return Err(GwError::from_tdlib(TdError::telegram(404, "PHONE_NOT_FOUND"))); }
             return self.open_private(int(&user["id"], "user_id")?).await;
         }
         self.resolve_legacy(p).await

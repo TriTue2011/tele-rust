@@ -232,29 +232,12 @@ fn no_bytes() -> GwError {
     GwError::new(501, "NOT_IMPLEMENTED", "ChatControl chỉ trả JSON; đường này cần phản hồi tệp nhị phân hoặc luồng.")
 }
 
-fn telegram_error(error: String) -> GwError {
-    if error.starts_with("TDLib không trả lời ") {
+fn telegram_error(error: crate::contract::TdError) -> GwError {
+    if error.code.is_none() && error.message.starts_with("TDLib không trả lời ") {
         return GwError::new(504, "TELEGRAM_TIMEOUT", "Telegram không trả lời kịp.");
     }
-    if error.starts_with("mất kết nối TDLib") {
+    if error.code.is_none() && error.message.starts_with("mất kết nối TDLib") {
         return GwError::new(503, "ACCOUNT_OFFLINE", "Tài khoản đang mất kết nối tới Telegram.");
     }
-    // TdClient chỉ giữ code nếu thông báo rỗng; các lỗi khác mặc định như TelegramError(400).
-    if let Some(code) = error.strip_prefix("lỗi TDLib ").and_then(|s| s.parse::<u16>().ok()) {
-        return telegram_status(code, &code.to_string());
-    }
-    let upper = error.to_ascii_uppercase();
-    if upper.split_whitespace().any(|s| s.strip_prefix("FLOOD_WAIT_").is_some_and(|n| n.parse::<u64>().is_ok()))
-        || upper.strip_prefix("TOO MANY REQUESTS: RETRY AFTER ").is_some_and(|n| n.parse::<u64>().is_ok()) {
-        return GwError::new(429, "FLOOD_WAIT", "Telegram yêu cầu chờ trước khi thử lại.");
-    }
-    telegram_status(400, &error)
-}
-
-fn telegram_status(code: u16, message: &str) -> GwError {
-    if (400..500).contains(&code) {
-        GwError::new(code, "TELEGRAM_ERROR", format!("Telegram từ chối: {message}"))
-    } else {
-        GwError::new(502, "MEDIA_ENGINE_ERROR", format!("Lỗi phía Telegram: {message}"))
-    }
+    GwError::from_tdlib(error)
 }

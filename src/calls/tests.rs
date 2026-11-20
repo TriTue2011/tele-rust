@@ -1,4 +1,5 @@
 use super::*;
+use crate::contract::TdError;
 use std::sync::Mutex;
 use ntgcalls::{Frame, FrameData, MediaSource, VideoRotation};
 use media::MediaFuture;
@@ -16,11 +17,11 @@ struct FakeTd {
 }
 
 impl TdLink for FakeTd {
-    fn request(&self, req: Value) -> BoxFut<'_, Result<Value, String>> {
+    fn request(&self, req: Value) -> BoxFut<'_, Result<Value, TdError>> {
         Box::pin(async move {
             self.requests.lock().unwrap().push(req.clone());
             if let Some(kind) = self.fail.lock().unwrap().as_ref() {
-                if req["@type"].as_str() == Some(kind) { return Err(format!("lỗi có khóa {R1}")); }
+                if req["@type"].as_str() == Some(kind) { return Err(TdError::transport(format!("lỗi có khóa {R1}"))); }
             }
             if req["@type"] == "createCall" {
                 if let Some(update) = self.early.lock().unwrap().take() { let _ = self.updates.send(update); }

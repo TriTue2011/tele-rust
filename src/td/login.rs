@@ -145,7 +145,7 @@ pub async fn run(client: &TdClient, cfg: &LoginConfig) -> Result<(), String> {
                 client
                     .request(tdlib_parameters(cfg, &key))
                     .await
-                    .map_err(|e| format!("setTdlibParameters bị từ chối: {}", e.replace(&cfg.api_hash, "***")))?;
+                    .map_err(|e| format!("setTdlibParameters bị từ chối: {}", e.message.replace(&cfg.api_hash, "***")))?;
             }
             "authorizationStateWaitPhoneNumber" => {
                 if cfg.phone.is_empty() {
@@ -155,7 +155,7 @@ pub async fn run(client: &TdClient, cfg: &LoginConfig) -> Result<(), String> {
                 client
                     .request(json!({"@type": "setAuthenticationPhoneNumber", "phone_number": cfg.phone}))
                     .await
-                    .map_err(|e| format!("Telegram từ chối số điện thoại: {e}"))?;
+                    .map_err(|e| format!("Telegram từ chối số điện thoại: {}", e.message.replace(&cfg.phone, "***")))?;
             }
             "authorizationStateWaitCode" => {
                 eprintln!("[td] chờ mã đăng nhập: submit_code() hoặc ghi vào {}", cfg.code_file().display());
@@ -210,7 +210,7 @@ async fn submit(
         });
         if let Some(v) = value {
             // TDLib có thể nhắc lại input trong message lỗi; che trước khi log hoặc trả lên CLI.
-            match client.request(json!({"@type": kind, (field): v})).await.map_err(|e| e.replace(&v, "***")) {
+            match client.request(json!({"@type": kind, (field): v})).await.map_err(|e| e.message.replace(&v, "***")) {
                 Ok(_) => return Ok(true),
                 Err(e) => return Err(format!("{kind}: {e}")),
             }

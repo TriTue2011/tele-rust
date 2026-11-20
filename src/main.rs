@@ -59,7 +59,7 @@ async fn run_login(path: &str) -> Result<(), String> {
     let client = td::TdClient::open(path)?;
     let result = async {
         td::login::run(&client, &cfg).await?;
-        let me = client.request(serde_json::json!({"@type": "getMe"})).await?;
+        let me = client.request(serde_json::json!({"@type": "getMe"})).await.map_err(|e| e.message)?;
         let name = [me.get("first_name").and_then(|v| v.as_str()).unwrap_or_default(),
                     me.get("last_name").and_then(|v| v.as_str()).unwrap_or_default()]
             .into_iter()

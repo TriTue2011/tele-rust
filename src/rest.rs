@@ -130,10 +130,12 @@ fn json_resp(status: StatusCode, v: &Value) -> Response {
     (status, [(header::CONTENT_TYPE, "application/json")], body).into_response()
 }
 
-/// `ApiError` → JSON như `_api_error_handler` (errors.py). `retry_after_seconds` không có trong `GwError`.
+/// `ApiError` → JSON như `_api_error_handler` (errors.py).
 fn error_resp(e: &GwError) -> Response {
     let status = StatusCode::from_u16(e.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-    json_resp(status, &json!({"error": {"code": e.code, "message": e.message}}))
+    let mut error = json!({"code": e.code, "message": e.message});
+    if let Some(seconds) = e.retry_after_seconds { error["retry_after_seconds"] = json!(seconds); }
+    json_resp(status, &json!({"error": error}))
 }
 
 async fn not_found() -> Response {
@@ -715,7 +717,7 @@ mod tests {
         assert_eq!(send(&app, ok("GET", "/api/contacts", Body::empty())).await, (404, err("NOT_FOUND", "Không có.")));
         *chat.reply.lock().unwrap() = Some(Err(GwError::new(503, "ACCOUNT_OFFLINE", "m")));
         assert_eq!(send(&app, ok("GET", "/api/chats", Body::empty())).await, (503, err("ACCOUNT_OFFLINE", "m")));
-        // Toàn bộ mã trong errors.py; FLOOD_WAIT chỉ chuyển được code/message vì GwError không mang thời gian chờ.
+        // Trường retry chỉ xuất hiện khi Telegram cung cấp thời gian chờ.
         for (status, code) in [
             (400, "BAD_REQUEST"), (404, "NOT_FOUND"), (409, "ACCOUNT_BUSY"),
             (409, "CALL_NOT_ACTIVE"), (409, "ENDPOINT_BUSY"), (429, "FLOOD_WAIT"),
@@ -726,6 +728,16 @@ mod tests {
             assert_eq!(send(&app, ok("GET", "/api/chats", Body::empty())).await,
                        (status, err(code, "Thông báo từ trait.")));
         }
+        *chat.reply.lock().unwrap() = Some(Err(GwError::from_tdlib(
+            crate::contract::TdError::telegram(429, "FLOOD_WAIT_17"),
+        )));
+        let response = app.oneshot(ok("GET", "/api/chats", Body::empty())).await.unwrap();
+        assert_eq!(response.status(), 429);
+        assert!(!response.headers().contains_key(header::RETRY_AFTER));
+        let raw = to_bytes(response.into_body(), 4096).await.unwrap();
+        assert_eq!(serde_json::from_slice::<Value>(&raw).unwrap(), json!({"error":{
+            "code":"FLOOD_WAIT", "message":"Telegram yêu cầu chờ trước khi thử lại.", "retry_after_seconds":17
+        }}));
     }
 
     #[tokio::test]

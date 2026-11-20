@@ -2,17 +2,20 @@ use std::{collections::VecDeque, sync::Mutex};
 use tokio::sync::broadcast;
 
 use super::*;
+use crate::contract::TdError;
+
+type FakeReply = (Value, Result<Value, TdError>);
 
 mod catalog;
 mod writing;
 
 struct FakeTd {
-    calls: Mutex<VecDeque<(Value, Result<Value, String>)>>,
+    calls: Mutex<VecDeque<FakeReply>>,
     updates: broadcast::Sender<Value>,
 }
 
 impl TdLink for FakeTd {
-    fn request(&self, req: Value) -> BoxFut<'_, Result<Value, String>> {
+    fn request(&self, req: Value) -> BoxFut<'_, Result<Value, TdError>> {
         Box::pin(async move {
             let (expected, result) = self.calls.lock().unwrap().pop_front().expect("TDLib request ngoài dự kiến");
             writing::check_request(req, expected);
@@ -28,13 +31,13 @@ impl Drop for FakeTd {
     }
 }
 
-fn setup(calls: Vec<(Value, Result<Value, String>)>) -> (ChatService, Arc<FakeTd>) {
+fn setup(calls: Vec<FakeReply>) -> (ChatService, Arc<FakeTd>) {
     let td = Arc::new(FakeTd { calls: Mutex::new(calls.into()), updates: broadcast::channel(64).0 });
     (ChatService::new(td.clone(), "+000123", "target/chat-tests"), td)
 }
 
-fn ok(req: Value, resp: Value) -> (Value, Result<Value, String>) { (req, Ok(resp)) }
-fn err(req: Value, error: &str) -> (Value, Result<Value, String>) { (req, Err(error.into())) }
+fn ok(req: Value, resp: Value) -> FakeReply { (req, Ok(resp)) }
+fn err(req: Value, code: i64, message: &str) -> FakeReply { (req, Err(TdError::telegram(code, message))) }
 async fn get(chat: &ChatService, path: &str, query: &str) -> Reply { chat.handle("GET", path, query, Value::Null).await }
 async fn post(chat: &ChatService, path: &str, query: &str, body: Value) -> Reply { chat.handle("POST", path, query, body).await }
 
@@ -62,9 +65,9 @@ async fn chats_and_search_summarize_and_skip_missing_chats() {
         "unread_count":2,"unread_mention_count":1,"positions":[{"is_pinned":true}],"photo":{"small":{"id":10}},"notification_settings":{"mute_for":30}});
     let list = json!({"@type":"chatListMain"});
     let (chat, _) = setup(vec![
-        err(json!({"@type":"loadChats","chat_list":list,"limit":200}),"lỗi TDLib 404"),
+        err(json!({"@type":"loadChats","chat_list":list,"limit":200}),404,""),
         ok(json!({"@type":"getChats","chat_list":list,"limit":200}),json!({"chat_ids":[5,9]})),
-        ok(json!({"@type":"getChat","chat_id":5}),td_chat.clone()),err(json!({"@type":"getChat","chat_id":9}),"Chat not found"),
+        ok(json!({"@type":"getChat","chat_id":5}),td_chat.clone()),err(json!({"@type":"getChat","chat_id":9}),404,"Chat not found"),
         ok(json!({"@type":"searchChats","query":"nhóm a","limit":20}),json!({"chat_ids":[5]})),
         ok(json!({"@type":"getChat","chat_id":5}),td_chat),
     ]);
@@ -125,13 +128,17 @@ async fn invalid_arguments_unknown_account_and_binary_routes_never_call_tdlib() 
 #[tokio::test]
 async fn tdlib_errors_map_to_gateway_errors() {
     let req = json!({"@type":"getMe"});
-    let (chat, _) = setup(vec![err(req.clone(),"FLOOD_WAIT_5"),err(req.clone(),"lỗi TDLib 403"),
-        err(req.clone(),"lỗi TDLib 500"),err(req.clone(),"TDLib không trả lời getMe sau 30 giây"),err(req.clone(),"USER_INVALID"),
-        err(req,"mất kết nối TDLib (luồng nhận đã dừng)")]);
-    for (status, code) in [(429,"FLOOD_WAIT"),(403,"TELEGRAM_ERROR"),(502,"MEDIA_ENGINE_ERROR"),
-        (504,"TELEGRAM_TIMEOUT"),(400,"TELEGRAM_ERROR"),(503,"ACCOUNT_OFFLINE")] {
+    let (chat, _) = setup(vec![err(req.clone(),429,"FLOOD_WAIT_5"),err(req.clone(),403,""),
+        err(req.clone(),401,"Unauthorized"),err(req.clone(),404,"Chat not found"),
+        err(req.clone(),500,"Internal"),err(req.clone(),400,"USER_INVALID"),err(req.clone(),429,"Slow down"),
+        (req.clone(),Err(TdError::transport("TDLib không trả lời getMe sau 30 giây"))),
+        (req,Err(TdError::transport("mất kết nối TDLib (luồng nhận đã dừng)")))]);
+    for (status, code, retry) in [(429,"FLOOD_WAIT",Some(5)),(403,"TELEGRAM_ERROR",None),
+        (401,"TELEGRAM_ERROR",None),(404,"TELEGRAM_ERROR",None),(502,"MEDIA_ENGINE_ERROR",None),
+        (400,"TELEGRAM_ERROR",None),(429,"TELEGRAM_ERROR",None),(504,"TELEGRAM_TIMEOUT",None),
+        (503,"ACCOUNT_OFFLINE",None)] {
         let e = get(&chat,"/api/me", "").await.unwrap_err();
-        assert_eq!((e.status,e.code.as_str()),(status,code));
+        assert_eq!((e.status,e.code.as_str(),e.retry_after_seconds),(status,code,retry));
     }
 }
 

@@ -13,17 +13,59 @@ use serde_json::Value;
 
 pub type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
+/// Lỗi TDLib: giữ nguyên mã HTTP của TDLib và message để tầng API ánh xạ đúng
+/// hợp đồng Python. Lỗi vận chuyển không có mã.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TdError {
+    pub code: Option<i64>,
+    pub message: String,
+}
+
+impl TdError {
+    pub fn telegram(code: i64, message: impl Into<String>) -> Self {
+        Self { code: Some(code), message: message.into() }
+    }
+
+    pub fn transport(message: impl Into<String>) -> Self {
+        Self { code: None, message: message.into() }
+    }
+}
+
 /// Lỗi nghiệp vụ, mang sẵn mã HTTP + mã chữ như bản Python (`ApiError(status, code, message)`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct GwError {
     pub status: u16,
     pub code: String,
     pub message: String,
+    pub retry_after_seconds: Option<u64>,
 }
 
 impl GwError {
     pub fn new(status: u16, code: &str, message: impl Into<String>) -> Self {
-        Self { status, code: code.to_owned(), message: message.into() }
+        Self { status, code: code.to_owned(), message: message.into(), retry_after_seconds: None }
+    }
+
+    pub fn with_retry_after(mut self, seconds: u64) -> Self {
+        self.retry_after_seconds = Some(seconds);
+        self
+    }
+
+    pub fn from_tdlib(error: TdError) -> Self {
+        let message = if error.message.is_empty() {
+            error.code.map_or_else(|| "Unknown error".to_owned(), |code| code.to_string())
+        } else {
+            error.message
+        };
+        if error.code == Some(429) {
+            if let Some(seconds) = flood_wait_seconds(&message) {
+                return Self::new(429, "FLOOD_WAIT", "Telegram yêu cầu chờ trước khi thử lại.")
+                    .with_retry_after(seconds);
+            }
+        }
+        match error.code {
+            Some(code @ 400..=499) => Self::new(code as u16, "TELEGRAM_ERROR", format!("Telegram từ chối: {message}")),
+            _ => Self::new(502, "MEDIA_ENGINE_ERROR", format!("Lỗi phía Telegram: {message}")),
+        }
     }
     pub fn bad_request(m: impl Into<String>) -> Self {
         Self::new(400, "BAD_REQUEST", m)
@@ -36,10 +78,18 @@ impl GwError {
 /// Đường tới TDLib cho các module khác (module `td` hiện thực; test dùng bản giả).
 pub trait TdLink: Send + Sync + 'static {
     /// Gửi một yêu cầu TDLib (JSON có `@type`), chờ đúng câu trả lời của nó (ghép bằng `@extra`).
-    /// `Err` khi TDLib trả `{"@type":"error"}` (chuỗi = message) hoặc mất kết nối.
-    fn request(&self, req: Value) -> BoxFut<'_, Result<Value, String>>;
+    /// `Err` khi TDLib trả `{"@type":"error"}` (giữ cả code/message) hoặc mất kết nối.
+    fn request(&self, req: Value) -> BoxFut<'_, Result<Value, TdError>>;
     /// Mọi bản tin KHÔNG phải câu trả lời (update*) — mỗi người đăng ký nhận một bản sao.
     fn updates(&self) -> tokio::sync::broadcast::Receiver<Value>;
+}
+
+fn flood_wait_seconds(message: &str) -> Option<u64> {
+    message.match_indices("FLOOD_WAIT_").find_map(|(offset, marker)| {
+        let suffix = &message[offset + marker.len()..];
+        let digits = suffix.split(|c: char| !c.is_ascii_digit()).next()?;
+        digits.parse().ok()
+    })
 }
 
 /// Điều khiển cuộc gọi — đúng các đường `/api/live/*` mà tích hợp HA gọi (xem gateway Python `chat_routes.py`).

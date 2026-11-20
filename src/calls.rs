@@ -311,10 +311,11 @@ impl Actor {
     }
 
     async fn td_request(&self, req: Value) -> Result<Value, GwError> {
-        // TDLib có thể nhắc lại dữ liệu đầu vào trong message lỗi: không trả chuỗi đó.
         tokio::time::timeout(Duration::from_secs(15), self.td.request(req)).await
             .map_err(|_| GwError::new(504, "TDLIB_TIMEOUT", "TDLib không phản hồi"))?
-            .map_err(|_| GwError::new(502, "TDLIB_FAILED", "Yêu cầu TDLib thất bại"))
+            .map_err(|e| if e.code.is_some() { GwError::from_tdlib(e) } else {
+                GwError::new(502, "TDLIB_FAILED", "Yêu cầu TDLib thất bại")
+            })
     }
 
     async fn api(&mut self, action: Action, body: Value) -> Reply {

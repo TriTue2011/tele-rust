@@ -146,7 +146,7 @@ async fn loi_tdlib_thanh_err_message() {
         (req["@type"] == "getMe").then(|| json!({"@type": "error", "code": 401, "message": "Unauthorized"}))
     }));
     let r = client.request(json!({"@type": "getMe"})).await;
-    assert_eq!(r, Err("Unauthorized".to_owned()));
+    assert_eq!(r, Err(crate::contract::TdError::telegram(401, "Unauthorized")));
 }
 
 #[tokio::test]
@@ -159,7 +159,8 @@ async fn dong_tdlib_ngat_yeu_cau_dang_cho_va_tu_choi_yeu_cau_moi() {
     api.wait_sent("getMe", 1).await;
     api.auth("authorizationStateClosed");
     let error = tokio::time::timeout(Duration::from_secs(2), task).await.unwrap().unwrap().unwrap_err();
-    assert!(error.contains("mất kết nối TDLib"));
+    assert_eq!(error.code, None);
+    assert!(error.message.contains("mất kết nối TDLib"));
     let update = tokio::time::timeout(Duration::from_secs(2), first.recv()).await.unwrap().unwrap();
     assert_eq!(update["authorization_state"]["@type"], "authorizationStateClosed");
     assert_eq!(second.recv().await.unwrap(), update, "mọi subscriber nhận một bản sao");
@@ -190,7 +191,7 @@ async fn het_gio_tra_err_va_tra_loi_muon_khong_lan_vao_update() {
     let (api, client) = start();
     let mut updates = client.updates();
     let r = client.request_timeout(json!({"@type": "getMe"}), Duration::from_millis(100)).await;
-    assert!(r.unwrap_err().contains("getMe"));
+    assert!(r.unwrap_err().message.contains("getMe"));
     let e = extra_of(&api.sent_of("getMe")[0]);
     api.push(json!({"@type": "user", "@extra": e}));
     tokio::time::sleep(Duration::from_millis(200)).await;

@@ -32,7 +32,7 @@ fn ft(s: &str) -> Value { json!({"@type":"formattedText","text":s,"entities":[]}
 fn file(name: &str, bytes: &str) -> Value { json!({"@type":"inputFileLocal","path":name,"bytes":bytes}) }
 fn send(content: Value) -> Value { json!({"@type":"sendMessage","chat_id":5,"input_message_content":content}) }
 fn private(user: i64) -> Value { json!({"@type":"createPrivateChat","user_id":user,"force":false}) }
-fn success(req: Value) -> (Value, Result<Value, String>) { ok(req,json!({"@type":"ok"})) }
+fn success(req: Value) -> FakeReply { ok(req,json!({"@type":"ok"})) }
 
 #[tokio::test]
 async fn send_edit_read_and_message_mutations_use_the_correct_ids_and_shapes() {

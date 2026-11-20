@@ -25,7 +25,7 @@ use libloading::Library;
 use serde_json::{json, Value};
 use tokio::sync::{broadcast, oneshot, watch, Notify};
 
-use crate::contract::{BoxFut, TdLink};
+use crate::contract::{BoxFut, TdError, TdLink};
 
 type CreateClientId = unsafe extern "C" fn() -> c_int;
 type Send = unsafe extern "C" fn(c_int, *const c_char);
@@ -319,34 +319,31 @@ impl TdClient {
     }
 
     /// Gửi yêu cầu, chờ câu trả lời cùng `@extra` (tối đa `timeout`). `Err` khi TDLib trả error, hết giờ hoặc luồng nhận dừng.
-    pub async fn request_timeout(&self, mut req: Value, timeout: Duration) -> Result<Value, String> {
+    pub async fn request_timeout(&self, mut req: Value, timeout: Duration) -> Result<Value, TdError> {
         let kind = req.get("@type").and_then(Value::as_str).unwrap_or("?").to_owned();
         let Some(obj) = req.as_object_mut() else {
-            return Err("yêu cầu TDLib phải là đối tượng JSON".into());
+            return Err(TdError::transport("yêu cầu TDLib phải là đối tượng JSON"));
         };
         let extra = format!("r{}", self.next_extra.fetch_add(1, Ordering::Relaxed));
         obj.insert("@extra".into(), Value::String(extra.clone()));
         let (tx, rx) = oneshot::channel();
         match self.shared.pending.lock().unwrap().as_mut() {
             Some(m) => m.insert(extra.clone(), tx),
-            None => return Err("mất kết nối TDLib (luồng nhận đã dừng)".into()),
+            None => return Err(TdError::transport("mất kết nối TDLib (luồng nhận đã dừng)")),
         };
         let _pending = PendingRequest { pending: &self.shared.pending, key: extra };
         self.shared.api.send(self.shared.client_id, &req);
         let reply = match tokio::time::timeout(timeout, rx).await {
             Ok(Ok(v)) => v,
-            Ok(Err(_)) => return Err("mất kết nối TDLib (luồng nhận đã dừng)".into()),
+            Ok(Err(_)) => return Err(TdError::transport("mất kết nối TDLib (luồng nhận đã dừng)")),
             Err(_) => {
-                return Err(format!("TDLib không trả lời {kind} sau {} giây", timeout.as_secs()));
+                return Err(TdError::transport(format!("TDLib không trả lời {kind} sau {} giây", timeout.as_secs())));
             }
         };
         if reply.get("@type").and_then(Value::as_str) == Some("error") {
+            let code = reply.get("code").and_then(Value::as_i64).unwrap_or(400);
             let msg = reply.get("message").and_then(Value::as_str).unwrap_or_default();
-            if msg.is_empty() {
-                let code = reply.get("code").and_then(Value::as_i64).unwrap_or(0);
-                return Err(format!("lỗi TDLib {code}"));
-            }
-            return Err(msg.to_owned());
+            return Err(TdError::telegram(code, msg));
         }
         Ok(reply)
     }
@@ -369,7 +366,7 @@ impl Drop for TdClient {
 }
 
 impl TdLink for TdClient {
-    fn request(&self, req: Value) -> BoxFut<'_, Result<Value, String>> {
+    fn request(&self, req: Value) -> BoxFut<'_, Result<Value, TdError>> {
         Box::pin(self.request_timeout(req, REQUEST_TIMEOUT))
     }
 
