@@ -1,6 +1,7 @@
 //! Gateway Telegram bản Rust — cột mốc 0: mở libtdjson và đọc phiên bản TDLib.
 //!
 //! Chạy: `TDJSON_LIB=/đường/tới/libtdjson.so tggw version`
+mod contract;
 mod td;
 
 fn main() {
