@@ -13,6 +13,15 @@ use serde_json::Value;
 
 pub type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
+/// Nội dung hữu hạn và metadata công khai. Không truyền đường dẫn tệp tới REST.
+#[derive(Debug)]
+pub struct Binary {
+    pub bytes: Vec<u8>,
+    pub content_type: String,
+    pub cache_control: &'static str,
+    pub disposition: Option<String>,
+}
+
 /// Lỗi TDLib: giữ nguyên mã HTTP của TDLib và message để tầng API ánh xạ đúng
 /// hợp đồng Python. Lỗi vận chuyển không có mã.
 #[derive(Debug, Clone, PartialEq)]
@@ -112,4 +121,8 @@ pub trait CallControl: Send + Sync + 'static {
 pub trait ChatControl: Send + Sync + 'static {
     /// `method` ("GET"/"POST"), `path` (vd "/api/chats/123/send"), `query` (chuỗi query thô), `body` JSON (Null nếu không có).
     fn handle(&self, method: &str, path: &str, query: &str, body: Value) -> BoxFut<'_, Result<Value, GwError>>;
+    /// GET ảnh/tệp hoặc nhật ký. Backend chỉ JSON có thể giữ mặc định 501.
+    fn bytes(&self, _path: &str, _query: &str) -> BoxFut<'_, Result<Binary, GwError>> {
+        Box::pin(async { Err(GwError::new(501, "NOT_IMPLEMENTED", "Chưa có phản hồi nhị phân cho đường này.")) })
+    }
 }

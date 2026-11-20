@@ -367,7 +367,8 @@ impl Drop for TdClient {
 
 impl TdLink for TdClient {
     fn request(&self, req: Value) -> BoxFut<'_, Result<Value, TdError>> {
-        Box::pin(self.request_timeout(req, REQUEST_TIMEOUT))
+        let timeout = if req["@type"] == "downloadFile" { Duration::from_secs(60) } else { REQUEST_TIMEOUT };
+        Box::pin(self.request_timeout(req, timeout))
     }
 
     fn updates(&self) -> broadcast::Receiver<Value> {

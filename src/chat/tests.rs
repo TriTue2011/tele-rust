@@ -116,13 +116,14 @@ async fn invalid_arguments_unknown_account_and_binary_routes_never_call_tdlib() 
     for (path, query, status, code) in [
         ("/api/chats", "limit=x",400,"BAD_REQUEST"),("/api/chats/5/messages","before=x",400,"BAD_REQUEST"),
         ("/api/feed","wait=x",400,"BAD_REQUEST"),("/api/me","account=wrong",404,"NOT_FOUND"),
-        ("/api/unknown","",404,"NOT_FOUND"),("/api/file/2","",501,"NOT_IMPLEMENTED"),
-        ("/api/live/view/abc","",501,"NOT_IMPLEMENTED"),("/api/live/snapshot/abc","",501,"NOT_IMPLEMENTED"),
+        ("/api/unknown","",404,"NOT_FOUND"),
+        ("/api/live/view/abc","",501,"NOT_IMPLEMENTED"),
     ] {
         let e = get(&chat,path,query).await.unwrap_err();
         assert_eq!((e.status,e.code.as_str()),(status,code));
     }
     assert_eq!(post(&chat,"/api/contacts/open","",json!({})).await.unwrap_err().status,400);
+    assert_eq!(chat.bytes("/api/file/2", "account=wrong").await.unwrap_err().status, 404);
 }
 
 #[tokio::test]
@@ -159,7 +160,6 @@ async fn rest_passes_raw_upload_and_maps_chat_results() {
     for (method, path, body, status, expected) in [
         ("POST","/api/chats/5/send_file?kind=audio&name=sample.mp3&caption=b%E1%BA%A3n+th%E1%BB%AD&account=%2B000123",
             "raw audio",200,normalized(31,"")),
-        ("GET","/api/file/31","",501,json!({"error":{"code":"NOT_IMPLEMENTED","message":no_bytes().message}})),
         ("GET","/api/me?account=wrong","",404,json!({"error":{"code":"NOT_FOUND","message":"Không rõ tài khoản."}})),
     ] {
         let request = Request::builder().method(method).uri(path).header("Authorization","Bearer test-token").body(Body::from(body)).unwrap();
@@ -168,6 +168,62 @@ async fn rest_passes_raw_upload_and_maps_chat_results() {
         let bytes = to_bytes(response.into_body(), 1_000_000).await.unwrap();
         assert_eq!(serde_json::from_slice::<Value>(&bytes).unwrap(),expected);
     }
+}
+
+#[tokio::test]
+async fn downloads_are_bounded_private_and_never_follow_symlinks() {
+    use axum::{body::{to_bytes, Body}, http::{header, Request}};
+    use std::{fs, os::unix::fs::symlink};
+    use tower::ServiceExt;
+    use crate::rest::{self, RestConfig};
+
+    let root = PathBuf::from("target").join(format!("file-test-{}", std::process::id()));
+    let data = root.join("data");
+    let media = data.join("tdlib/files/photos");
+    fs::create_dir_all(&media).unwrap();
+    let valid = media.join("photo.jpg");
+    fs::write(&valid, b"fake JPEG").unwrap();
+    let large = media.join("large.jpg");
+    fs::File::create(&large).unwrap().set_len(files::MAX_FILE_BYTES + 1).unwrap();
+    let outside = root.join("outside.jpg");
+    fs::write(&outside, b"private").unwrap();
+    let link = media.join("link.jpg");
+    symlink(std::path::absolute(&outside).unwrap(), &link).unwrap();
+    let escape = media.join("../../../../outside.jpg");
+    let traces = data.join("calltrace");
+    fs::create_dir(&traces).unwrap();
+    fs::write(traces.join("abcdef.log"), b"trace").unwrap();
+    let req = |id| json!({"@type":"downloadFile","file_id":id,"priority":16,"offset":0,"limit":0,"synchronous":true});
+    let downloaded = |id, path: &Path| ok(req(id), json!({"local":{"path":path,"is_downloading_completed":true}}));
+    let (chat, td) = setup(vec![downloaded(1, &valid), err(req(2), 404, "/private/backend/path"),
+        downloaded(3, &large), downloaded(4, &link), downloaded(5, &outside), downloaded(6, &escape)]);
+    drop(chat);
+    let chat = ChatService::new(td, "+000123", &data);
+    let app = rest::router(Arc::new(rest::ChuaCo), Arc::new(chat), RestConfig {
+        token:"test-token".into(), rate_limit_per_minute:120,version:"test".into(),
+    });
+    let get = |uri| app.clone().oneshot(Request::builder().uri(uri)
+        .header(header::AUTHORIZATION, "Bearer test-token").body(Body::empty()).unwrap());
+    let response = get("/api/file/1").await.unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.headers()[header::CONTENT_TYPE], "image/jpeg");
+    assert_eq!(response.headers()[header::CONTENT_LENGTH], "9");
+    assert_eq!(response.headers()[header::CACHE_CONTROL], "private, max-age=86400");
+    assert!(!response.headers().contains_key(header::CONTENT_DISPOSITION));
+    assert_eq!(to_bytes(response.into_body(), 100).await.unwrap(), "fake JPEG");
+    for (uri, status) in [("/api/file/2",404),("/api/file/3",413),("/api/file/4",404),
+        ("/api/file/5",404),("/api/file/6",404),("/api/file/-1",404),("/api/file/xyz",422)] {
+        let response = get(uri).await.unwrap();
+        assert_eq!(response.status(), status, "{uri}");
+        let bytes = to_bytes(response.into_body(), 4096).await.unwrap();
+        let body = std::str::from_utf8(&bytes).unwrap();
+        assert!(!body.contains("private") && !body.contains("file-test-"), "{body}");
+    }
+    let response = get("/api/calltrace/abcdef").await.unwrap();
+    assert_eq!(response.headers()[header::CONTENT_DISPOSITION], "inline; filename=\"calltrace-abcdef.log\"");
+    assert_eq!(to_bytes(response.into_body(), 100).await.unwrap(), "trace");
+    assert_eq!(get("/api/calltrace/ABCDEF").await.unwrap().status(), 404);
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]

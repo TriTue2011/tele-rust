@@ -10,7 +10,7 @@ use tokio::task::JoinHandle;
 
 use crate::calls::CallManager;
 use crate::chat::ChatService;
-use crate::contract::{BoxFut, CallControl, ChatControl, GwError, TdLink};
+use crate::contract::{Binary, BoxFut, CallControl, ChatControl, GwError, TdLink};
 use crate::{rest, td};
 
 const CALLS_SHUTDOWN_WAIT: Duration = Duration::from_secs(10);
@@ -35,7 +35,7 @@ impl Session {
     }
 }
 
-fn account_offline<'a>() -> BoxFut<'a, Result<Value, GwError>> {
+fn account_offline<'a, T: 'a>() -> BoxFut<'a, Result<T, GwError>> {
     Box::pin(async {
         Err(GwError::new(503, "ACCOUNT_OFFLINE", "Tài khoản đang mất kết nối tới Telegram."))
     })
@@ -107,6 +107,11 @@ struct ReadyChat {
 impl ChatControl for ReadyChat {
     fn handle(&self, method: &str, path: &str, query: &str, body: Value) -> BoxFut<'_, Result<Value, GwError>> {
         if self.session.is_ready() { self.inner.handle(method, path, query, body) } else { account_offline() }
+    }
+    fn bytes(&self, path: &str, query: &str) -> BoxFut<'_, Result<Binary, GwError>> {
+        if path.starts_with("/api/calltrace/") || self.session.is_ready() {
+            self.inner.bytes(path, query)
+        } else { account_offline() }
     }
 }
 

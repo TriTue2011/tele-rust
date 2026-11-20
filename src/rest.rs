@@ -16,7 +16,7 @@
 //! - `/api/live/*` (trừ `GET /api/live/calls`): `?account=` không có chỗ trong [`CallControl`] nên được chép vào thân là
 //!   `"account"` (bản Python chọn tài khoản theo query).
 //! - `GET /api/live/settings` không có hàm trong [`CallControl`] → chuyển cho [`ChatControl::handle`].
-//! - Các đường tải tệp/video/nhật ký chuyển cho `ChatControl` nhưng hợp đồng hiện chỉ trả được JSON, chưa chở luồng nhị phân.
+//! - Đường tải tệp/nhật ký dùng `ChatControl::bytes`.
 //! - `/health` lấy số tài khoản từ `ChatControl::handle("GET", "/api/accounts", …)` (`{"tai_khoan":[{status}]}`); lỗi = 0.
 
 use std::collections::VecDeque;
@@ -35,7 +35,7 @@ use base64::Engine as _;
 use serde_json::{json, Value};
 use subtle::ConstantTimeEq;
 
-use crate::contract::{BoxFut, CallControl, ChatControl, GwError};
+use crate::contract::{Binary, BoxFut, CallControl, ChatControl, GwError};
 
 /// Như `MAX_BODY_BYTES` của routes.py.
 const MAX_BODY_BYTES: usize = 400_000;
@@ -116,6 +116,7 @@ enum Kind {
     ChatPost,
     /// POST tệp thô → `ChatControl::handle(POST, …, {"data_b64"})`.
     SendFile,
+    ChatBytes,
 }
 
 #[derive(Clone, Copy)]
@@ -128,6 +129,21 @@ struct Spec {
 fn json_resp(status: StatusCode, v: &Value) -> Response {
     let body = serde_json::to_vec(v).unwrap_or_default();
     (status, [(header::CONTENT_TYPE, "application/json")], body).into_response()
+}
+
+fn bytes_resp(result: Result<Binary, GwError>) -> Response {
+    match result {
+        Err(error) => error_resp(&error),
+        Ok(content) => {
+            let mut response = ([(header::CONTENT_TYPE, content.content_type),
+                (header::CACHE_CONTROL, content.cache_control.to_owned()),
+                (header::CONTENT_LENGTH, content.bytes.len().to_string())], content.bytes).into_response();
+            if let Some(disposition) = content.disposition {
+                response.headers_mut().insert(header::CONTENT_DISPOSITION, disposition.parse().unwrap());
+            }
+            response
+        }
+    }
 }
 
 /// `ApiError` → JSON như `_api_error_handler` (errors.py).
@@ -181,6 +197,7 @@ async fn handle(ctx: Arc<Ctx>, spec: Spec, req: Request) -> Response {
         return error_resp(&e);
     }
     let out = match spec.kind {
+        Kind::ChatBytes => return bytes_resp(ctx.chat.bytes(&path, &query).await),
         Kind::LiveCalls => ctx.call.calls().await,
         Kind::Live(op) => match body_dict(body).await {
             Err(e) => Err(e),
@@ -289,8 +306,8 @@ fn router_with(ctx: Arc<Ctx>) -> Router {
     }
     r = r
         .route("/api/chats/:chat_id/messages", route(get, s_id(ChatGet, "chat_id")))
-        .route("/api/file/:file_id", route(get, s_id(ChatGet, "file_id")))
-        .route("/api/calltrace/:call_id", route(get, s(ChatGet)));
+        .route("/api/file/:file_id", route(get, s_id(ChatBytes, "file_id")))
+        .route("/api/calltrace/:call_id", route(get, s(ChatBytes)));
     // Ghi, thân JSON → ChatControl.
     for p in ["/api/send_message", "/api/send_media", "/api/send_voice", "/api/call", "/api/answer_call",
               "/api/hangup_call", "/api/audio/in", "/api/audio/upload", "/api/messages/edit", "/api/messages/delete",
@@ -484,6 +501,14 @@ mod tests {
     impl ChatControl for Fake {
         fn handle(&self, m: &str, p: &str, q: &str, b: Value) -> BoxFut<'_, Result<Value, GwError>> {
             self.rec(m, p, q, b)
+        }
+        fn bytes(&self, p: &str, q: &str) -> BoxFut<'_, Result<Binary, GwError>> {
+            let reply = self.rec("GET", p, q, Value::Null);
+            Box::pin(async move {
+                reply.await?;
+                Ok(Binary { bytes: vec![1, 2, 3], content_type: "application/octet-stream".into(),
+                    cache_control: "no-store", disposition: None })
+            })
         }
     }
 
@@ -763,8 +788,14 @@ mod tests {
     async fn duong_nhi_phan_va_cast() {
         let (app, _, chat) = app();
         assert_eq!(send(&app, req("GET", "/api/live/view/c1", None, Body::empty())).await.0, 401);
-        for path in ["/api/live/view/c1", "/api/live/snapshot/c1", "/api/file/12", "/api/calltrace/c1"] {
+        for path in ["/api/live/view/c1", "/api/live/snapshot/c1"] {
             assert_eq!(send(&app, ok("GET", path, Body::empty())).await.0, 200);
+            assert_eq!(chat.last(), ("GET".into(), path.into(), "".into(), Value::Null));
+        }
+        for path in ["/api/file/12", "/api/calltrace/c1"] {
+            let response = app.clone().oneshot(ok("GET", path, Body::empty())).await.unwrap();
+            assert_eq!(response.status(), 200);
+            assert_eq!(to_bytes(response.into_body(), 3).await.unwrap().as_ref(), &[1, 2, 3]);
             assert_eq!(chat.last(), ("GET".into(), path.into(), "".into(), Value::Null));
         }
         let cast = send(&app, req("GET", "/api/live/cast/c1/tok.mp3", None, Body::empty())).await;

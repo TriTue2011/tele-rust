@@ -1,5 +1,6 @@
 //! HTTP chat cho một tài khoản TDLib đã đăng nhập.
 mod feed;
+mod files;
 mod services;
 mod shape;
 mod write;
@@ -10,7 +11,7 @@ use std::{path::{Path, PathBuf}, sync::Arc, time::Duration};
 
 use serde_json::{json, Value};
 
-use crate::contract::{BoxFut, ChatControl, GwError, TdLink};
+use crate::contract::{Binary, BoxFut, ChatControl, GwError, TdLink};
 use feed::State;
 use shape::{message, summarize, user_name};
 
@@ -19,6 +20,7 @@ type Reply = Result<Value, GwError>;
 pub struct ChatService {
     td: Arc<dyn TdLink>,
     account: String,
+    data_dir: PathBuf,
     uploads: PathBuf,
     state: Arc<State>,
     updates: tokio::task::JoinHandle<()>,
@@ -29,7 +31,8 @@ impl ChatService {
     pub fn new(td: Arc<dyn TdLink>, account: impl Into<String>, data_dir: impl AsRef<Path>) -> Self {
         let state = Arc::new(State::default());
         let updates = tokio::spawn(state.clone().receive(td.updates()));
-        Self { td, account: account.into(), uploads: data_dir.as_ref().join("uploads"), state, updates }
+        let data_dir = data_dir.as_ref().to_path_buf();
+        Self { td, account: account.into(), uploads: data_dir.join("uploads"), data_dir, state, updates }
     }
 
     async fn request(&self, req: Value) -> Reply {
@@ -154,11 +157,8 @@ impl ChatService {
                 let wait = if wait.is_nan() { 25.0 } else { wait.clamp(0.0, 25.0) };
                 Ok(self.state.since(q.int("since", 0)?, Duration::from_secs_f64(wait)).await)
             }
-            ("GET", ["", "api", "file" | "files", id]) => {
-                path_id(id)?;
-                Err(no_bytes())
-            }
-            ("GET", ["", "api", "live", "view" | "snapshot", _]) => Err(no_bytes()),
+            ("GET", ["", "api", "live", "view", _]) => Err(GwError::new(
+                501, "NOT_IMPLEMENTED", "Chưa có luồng MJPEG cho cuộc gọi.")),
             ("POST", ["", "api", "chats", id, op @ ("send" | "send_file" | "send_album" | "read")]) =>
                 self.write_chat(path_id(id)?, op, &q, &body).await,
             ("POST", ["", "api", "messages", op @ ("edit" | "delete" | "forward" | "react")]) =>
@@ -175,6 +175,10 @@ impl ChatService {
 impl ChatControl for ChatService {
     fn handle(&self, method: &str, path: &str, query: &str, body: Value) -> BoxFut<'_, Reply> {
         Box::pin(self.route(method.to_owned(), path.to_owned(), query.to_owned(), body))
+    }
+
+    fn bytes(&self, path: &str, query: &str) -> BoxFut<'_, Result<Binary, GwError>> {
+        Box::pin(self.binary(path.to_owned(), query.to_owned()))
     }
 }
 
@@ -226,10 +230,6 @@ fn truth(v: &Value) -> bool {
         Value::Array(a) => !a.is_empty(),
         Value::Object(o) => !o.is_empty(),
     }
-}
-
-fn no_bytes() -> GwError {
-    GwError::new(501, "NOT_IMPLEMENTED", "ChatControl chỉ trả JSON; đường này cần phản hồi tệp nhị phân hoặc luồng.")
 }
 
 fn telegram_error(error: crate::contract::TdError) -> GwError {
