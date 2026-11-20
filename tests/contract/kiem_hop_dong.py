@@ -92,15 +92,12 @@ def main():
         print(f"{label}: HTTP 401, JSON đúng khóa và kiểu")
 
     status, calls = request(base_url, "/api/live/calls", token)
-    require(status == 200, f"GET /api/live/calls: HTTP {status}, cần 200")
-    require(isinstance(calls, dict) and set(calls) == {"calls"},
-            "GET /api/live/calls phải có duy nhất khóa calls")
-    require(isinstance(calls["calls"], list), "calls phải là array")
-    for call in calls["calls"]:
-        call_shape(call)
-    print("GET /api/live/calls: HTTP 200, JSON đúng khóa và kiểu")
-    if not calls["calls"]:
-        print("Danh sách calls rỗng: chưa kiểm được hình dạng cuộc gọi thực tế")
+    require(status == 503, f"GET /api/live/calls khi chưa đăng nhập: HTTP {status}, cần 503")
+    object_shape(calls, {"error": (dict,)}, "Lỗi tài khoản chưa đăng nhập")
+    object_shape(calls["error"], {"code": (str,), "message": (str,)}, "error")
+    require(calls["error"]["code"] == "ACCOUNT_OFFLINE",
+            "GET /api/live/calls khi chưa đăng nhập phải là ACCOUNT_OFFLINE")
+    print("GET /api/live/calls: HTTP 503 ACCOUNT_OFFLINE, JSON đúng khóa và kiểu")
 
 
 if __name__ == "__main__":

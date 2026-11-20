@@ -241,6 +241,27 @@ fn cfg(dir: &TmpDir) -> LoginConfig {
     LoginConfig { data_dir: dir.0.clone(), api_id: 12345, api_hash: "hash-bi-mat".into(), phone: "+84900000000".into() }
 }
 
+#[test]
+fn cau_hinh_thieu_tu_choi_bang_tieng_viet_khong_lo_gia_tri_bi_mat() {
+    let old_api_id = std::env::var_os("TG_API_ID");
+    let old_api_hash = std::env::var_os("TG_API_HASH");
+    std::env::remove_var("TG_API_ID");
+    std::env::set_var("TG_API_HASH", "api-hash-khong-lo");
+
+    let error = LoginConfig::from_env().unwrap_err();
+
+    match old_api_id {
+        Some(value) => std::env::set_var("TG_API_ID", value),
+        None => std::env::remove_var("TG_API_ID"),
+    }
+    match old_api_hash {
+        Some(value) => std::env::set_var("TG_API_HASH", value),
+        None => std::env::remove_var("TG_API_HASH"),
+    }
+    assert!(error.contains("TG_API_ID") && error.contains("thiếu"), "{error}");
+    assert!(!error.contains("api-hash-khong-lo"), "{error}");
+}
+
 /// Trả lời `ok` cho mọi yêu cầu, trừ mã "11111" (sai) → PHONE_CODE_INVALID.
 fn ok_responder() -> Responder {
     Box::new(|req| {
