@@ -5,8 +5,9 @@
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 DEST=/opt/telegram-gateway-rs-build
-RUST_IMG=rust:1.86-slim-bookworm
+RUST_IMG=tggw-builder:1.90
 CMD=${1:-build}
+ssh ha200 "docker image inspect $RUST_IMG >/dev/null 2>&1" || ssh ha200 "docker build -q -t $RUST_IMG -" < "$HERE/docker/builder.Dockerfile"
 tar -C "$HERE" --exclude=./target --exclude=./.git -cf - . | ssh ha200 "mkdir -p $DEST && tar -C $DEST -xf -"
 case "$CMD" in
   build) ARGS="cargo build --release --locked 2>&1 || cargo build --release 2>&1" ;;

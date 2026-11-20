@@ -13,8 +13,11 @@ path = "src/main.rs"
 # Mở libtdjson (TDLib 1.8.69, lấy từ wheel tdjson==1.8.69 — cùng bản với gateway Python) lúc chạy, nói chuyện bằng JSON.
 libloading = "=0.8.6"
 serde_json = "=1.0.133"
+# Gọi thoại/video P2P (WebRTC + báo hiệu tgcalls). ĐÚNG 3.0.7 = bản Python đang chạy ổn; build.rs tải ntgcalls.linux-x86_64-static_libs.zip
+# chính thức của pytgcalls (GitHub release v3.0.7) và liên kết TĨNH (LGPL-3.0: phát hành công khai thì cân nhắc NTGCALLS_DYLIB).
+ntgcalls = "=3.0.7"
 
 [profile.release]
-lto = "thin"
+lto = false            # thư viện tĩnh C++ của NTgCalls không chứa bitcode LLVM → LTO của rustc lỗi «Can't find section .llvmbc»
 codegen-units = 4
 strip = true

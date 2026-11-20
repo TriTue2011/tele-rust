@@ -6,6 +6,9 @@ mod td;
 fn main() {
     let path = std::env::var("TDJSON_LIB").unwrap_or_else(|_| "libtdjson.so".into());
     let cmd = std::env::args().nth(1).unwrap_or_else(|| "version".into());
+    if cmd == "protocol" {
+        return run_protocol();
+    }
     let td = match td::TdJson::open(&path) {
         Ok(t) => t,
         Err(e) => {
@@ -26,8 +29,20 @@ fn main() {
             }
         }
         other => {
-            eprintln!("lệnh lạ: {other} (có: version)");
+            eprintln!("lệnh lạ: {other} (có: version, protocol)");
             std::process::exit(64);
+        }
+    }
+}
+
+fn run_protocol() {
+    match ntgcalls::NTgCalls::get_protocol() {
+        // Kiểm liên kết ntgcalls: phiên bản NTgCalls + các phiên bản tgcalls hỗ trợ (bản Python khai 8.0.0, 9.0.0, 12.0.0, 13.0.0).
+        Ok(p) => println!("NTgCalls {} | tgcalls {:?} | udp_p2p={} udp_reflector={} layer {}..{}",
+                          ntgcalls::version(), p.library_versions, p.udp_p2p, p.udp_reflector, p.min_layer, p.max_layer),
+        Err(e) => {
+            eprintln!("LỖI ntgcalls: {e:?}");
+            std::process::exit(3);
         }
     }
 }
