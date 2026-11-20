@@ -3,6 +3,7 @@ use tokio::sync::broadcast;
 
 use super::*;
 
+mod catalog;
 mod writing;
 
 struct FakeTd {

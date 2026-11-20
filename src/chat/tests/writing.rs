@@ -3,7 +3,11 @@ use std::{fs, os::unix::fs::PermissionsExt, path::Path};
 
 pub(super) fn check_request(mut request: Value, mut expected: Value) {
     fn uploads(actual: &mut Value, expected: &mut Value) {
-        if expected["@type"] == "inputFileLocal" {
+        if let Some(offset) = expected.as_str().and_then(|s| s.strip_prefix("now+")).and_then(|s| s.parse::<i64>().ok()) {
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+            assert!((now+offset-5..=now+offset).contains(&actual.as_i64().unwrap()));
+            *expected = actual.clone();
+        } else if expected["@type"] == "inputFileLocal" {
             let name = expected["path"].as_str().unwrap();
             let path = Path::new(actual["path"].as_str().unwrap());
             assert_eq!(actual["@type"], "inputFileLocal");

@@ -1,5 +1,6 @@
 //! HTTP chat cho một tài khoản TDLib đã đăng nhập.
 mod feed;
+mod services;
 mod shape;
 mod write;
 #[cfg(test)]
@@ -164,6 +165,7 @@ impl ChatService {
                 self.write_message(op, &body).await,
             ("POST", ["", "api", "resolve"]) => self.resolve(&body).await,
             ("POST", ["", "api", "translate"]) => self.translate(&body).await,
+            ("POST", ["", "api", "do", name]) => self.service(name, &body).await,
             ("POST", ["", "api", op @ ("send_voice" | "send_message" | "send_media")]) => self.legacy_send(op, &body).await,
             _ => Err(GwError::not_found("Không có đường dẫn này.")),
         }
