@@ -468,23 +468,28 @@ async fn say_requires_active_call_valid_input_and_reports_unavailable_tts() {
 
 #[tokio::test]
 async fn speech_writes_wav_then_restores_mic_unless_user_changed_it() {
-    for changed in [false,true] {
+    for change in [json!({"camera_off":true}), json!({"mic":"silence"})] {
         let f=Fixture::new(false); let (mut actor,mut commands)=local_actor(&f);
         fs::create_dir_all(f.dir.join("live")).unwrap();
         let devices=Devices{mic:"http://r1/mic?k=secret".into(),mic_format:"s16le16k".into(),..Devices::default()};
-        let mut c=LiveCall::new(42,true,false,devices,&f.dir);
+        let mut c=LiveCall::new(42,true,true,devices,&f.dir);
         c.state="active"; c.media_created=true; c.td_id=Some(7); c.active=Some(Instant::now());
         actor.calls.push(c);
         let reply=actor.start_speech(0,&vec![0;9600]).await.unwrap(); assert_eq!(reply,json!({"seconds":0.1}));
         let path=PathBuf::from(&actor.calls[0].devices.mic);
         let bytes=fs::read(&path).unwrap(); assert_eq!(&bytes[..4],b"RIFF"); assert_eq!(u32::from_le_bytes(bytes[24..28].try_into().unwrap()),48000); assert_eq!(bytes.len(),9644);
-        if changed { actor.set_media(json!({"id":actor.calls[0].id,"mic":"silence"})).await.unwrap(); }
+        let mut body = change;
+        body["id"] = json!(actor.calls[0].id);
+        actor.set_media(body.clone()).await.unwrap();
         let restore=tokio::time::timeout(Duration::from_secs(2),commands.recv()).await.unwrap().unwrap();
         if let Command::RestoreMic(id,revision,mic,fmt,path)=restore { actor.restore_mic(&id,revision,mic,fmt,path).await; } else { panic!("restore"); }
         assert!(!path.exists()); assert!(actor.calls[0].speech_revision.is_none());
-        if changed { assert_eq!(actor.calls[0].devices.mic,"silence"); }
-        else { assert_eq!(actor.calls[0].devices.mic,"http://r1/mic?k=secret"); assert_eq!(actor.calls[0].devices.mic_format,"s16le16k"); }
-        assert_eq!(f.ops().iter().filter(|op|matches!(op,MediaOp::Sources(_,StreamMode::Capture,_))).count(),2);
+        if body["mic"] == "silence" { assert_eq!(actor.calls[0].devices.mic,"silence"); }
+        else {
+            assert_eq!(actor.calls[0].devices.mic,"http://r1/mic?k=secret");
+            assert_eq!(actor.calls[0].devices.mic_format,"s16le16k");
+            assert!(matches!(f.ops().last().unwrap(), MediaOp::Sources(_,StreamMode::Capture,d) if d.camera.is_none()));
+        }
         actor.end(0,"test xong").await;
     }
 }

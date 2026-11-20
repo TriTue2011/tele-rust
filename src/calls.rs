@@ -551,10 +551,12 @@ impl Actor {
         let mut capture = json!({});
         for key in ["mic","camera","mic_format"] { if let Some(v) = body.get(key) { capture[key] = v.clone(); } }
         devices.update(&capture)?;
+        if devices.mic != c.devices.mic {
+            c.capture_revision += 1;
+        }
         c.devices = devices;
         if let Some(value) = cam_off { c.cam_off = value; }
         if body["video"] == true { c.video = true; c.cam_off = false; }
-        c.capture_revision += 1;
         self.capture(i).await?;
         self.calls[i].log("đổi nguồn gửi đi");
         Ok(self.calls[i].info())
