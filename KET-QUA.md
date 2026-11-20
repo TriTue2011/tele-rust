@@ -1,0 +1,14 @@
+# Kết quả module td
+- Tiếp tục từ `cf439d6`, giữ mã dùng được; không đổi `src/contract.rs`, không thêm crate.
+- `TdClient: TdLink`: một luồng nhận thật/tiến trình, ghép `@extra` bằng oneshot, broadcast update, error → `Err(message)`; dọn người chờ khi hủy/đóng phiên.
+- Đăng nhập theo update: tham số như Python ở `<data>/tdlib/files`, API từ cấu hình; điện thoại → mã → 2FA → ready; có `auth_state()`, submit và đọc tệp mỗi giây.
+- `tggw login` đọc đủ năm env trong BRIEF, in trạng thái và tên từ getMe, chờ đóng phiên cả khi lỗi; giữ khoảng trắng mật khẩu, che bí mật trong lỗi đăng nhập.
+- Kiểm: `TGGW_BUILD_DIR=/opt/tggw-build-td ./build.sh test` — mã thoát 0.
+- `test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.55s`
+- Dựng: `TGGW_BUILD_DIR=/opt/tggw-build-td ./build.sh build` — ``Finished `release` profile [optimized] target(s) in 3.90s``; `BUILD_EXIT=0` (7 cảnh báo dead_code).
+- Kiểm phiên bản: `ssh ha200 'docker run --rm --network none -v /opt/tggw-build-td/target/release/tggw:/tggw:ro -e TDJSON_LIB=/usr/local/lib/python3.12/site-packages/tdjson.libs/libtdjson-ecd064cf.so.1.8.69 --entrypoint /tggw telegram-gateway:local-200 version'`
+- Kết quả phiên bản: `TDLib 1.8.69`; `VERSION_EXIT=0`.
+- Commit từng bước: `17703b7` mã thoát; `dc084de` mật khẩu/bí mật; `cbff946` độc quyền nhận; `e4e96eb` hủy/đóng; `c45663e` trạng thái/CLI.
+- Giới hạn: chỉ một tài khoản TDLib hoạt động/tiến trình; client thật thứ hai trả Err. Không yêu cầu đổi hợp đồng.
+- Chưa chạy `tggw login` thật hoặc xác minh getMe với tài khoản chủ máy; máy trạng thái đã kiểm bằng transport giả không cần libtdjson.
+- Chỉ commit cục bộ, không push; kiểm thử/dựng trong container tạm trên .200, không sửa bản Python hay container dịch vụ.
