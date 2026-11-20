@@ -323,6 +323,7 @@ impl Actor {
 
     async fn resolve_user(&self, body: &Value) -> Result<i64, GwError> {
         let bad = || GwError::bad_request("Thiếu người nhận: user_id (số) hoặc peer (@username, +số điện thoại).");
+        if let Some(id) = body["peer"].as_i64().filter(|id| *id > 0) { return Ok(id); }
         if let Some(peer) = body["peer"].as_str().filter(|s| !s.trim().is_empty()) {
             let peer = peer.trim();
             if let Ok(id) = peer.parse::<i64>() { if !peer.starts_with('+') && id > 0 { return Ok(id); } }
@@ -342,7 +343,20 @@ impl Actor {
         let user = self.resolve_user(&body).await?;
         if self.calls.iter().any(|c| c.user_id == user && c.state != "ended") { return Err(GwError::new(409, "CALL_BUSY", "đang có cuộc gọi với người này")); }
         let mut devices = self.defaults.clone();
-        devices.update(&body)?;
+        let mut overrides = body.as_object().unwrap().clone();
+        for key in ["mic", "camera"] {
+            if overrides.get(key).is_some_and(|v| v.is_null() || v.as_str() == Some("")) {
+                overrides.remove(key);
+            }
+        }
+        if let Some(speaker) = overrides.remove("speaker") {
+            let speaker = speaker.as_str().ok_or_else(|| GwError::bad_request("speaker phải là chuỗi"))?.trim();
+            if !speaker.is_empty() && !valid_speaker_url(speaker) {
+                return Err(GwError::bad_request("speaker phải là cửa bộ đàm hoặc cast:// nội bộ"));
+            }
+            devices.speaker = speaker.to_owned();
+        }
+        devices.update(&Value::Object(overrides))?;
         if body["playback"] == "shell" { devices.playback = "shell".into(); }
         let video = body["video"].as_bool().unwrap_or(false);
         let call = LiveCall::new(user, true, video, devices, &self.data_dir);

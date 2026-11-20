@@ -389,6 +389,23 @@ async fn push_validates_url_and_cannot_take_cmd_override_or_leak_it() {
 }
 
 #[tokio::test]
+async fn outgoing_overrides_use_defaults_for_empty_capture_but_can_clear_speaker() {
+    let f = Fixture::new(false);
+    f.manager().settings(json!({"mic":"silence","camera":"black","speaker":R1})).await.unwrap();
+    let masked = f.manager().settings(Value::Null).await.unwrap()["speaker"].clone();
+    assert_eq!(f.manager().call_out(json!({"user_id":42,"speaker":masked})).await.unwrap_err().status, 400);
+    assert!(f.requests("createCall").is_empty());
+
+    let info = f.manager().call_out(json!({"peer":42,"video":true,"mic":"","camera":"","speaker":""})).await.unwrap();
+    assert_eq!(info["user_id"], 42);
+    assert_eq!(info["mic_muted"], true);
+    assert_eq!(info["playback"]["kind"], "file");
+    f.ready(7, 42, true, &["8.0.0"]).await;
+    assert!(matches!(&f.ops()[1], MediaOp::Sources(_, StreamMode::Capture, d)
+        if d.camera.as_ref().unwrap().input.contains("color=c=black")));
+}
+
+#[tokio::test]
 async fn cast_returns_explicit_501_before_tdlib_or_media_side_effects() {
     let f=Fixture::new(false);
     assert_eq!(f.manager().call_out(json!({"user_id":42,"speaker":"cast://192.168.1.50"})).await.unwrap_err().status,501);
