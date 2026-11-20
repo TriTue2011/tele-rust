@@ -120,6 +120,20 @@ const RECEIVE_TIMEOUT: f64 = 1.0;
 
 type Pending = Mutex<Option<HashMap<String, oneshot::Sender<Value>>>>;
 
+/// Huỷ future (ví dụ REST ngắt kết nối) cũng phải gỡ người chờ khỏi bảng.
+struct PendingRequest<'a> {
+    pending: &'a Pending,
+    key: String,
+}
+
+impl Drop for PendingRequest<'_> {
+    fn drop(&mut self) {
+        if let Some(pending) = self.pending.lock().unwrap().as_mut() {
+            pending.remove(&self.key);
+        }
+    }
+}
+
 /// Phần dùng chung giữa TdClient và luồng nhận.
 struct Shared {
     api: Arc<dyn TdApi>,
@@ -159,7 +173,15 @@ impl Shared {
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_owned();
-            self.auth.send_replace(state);
+            if state == "authorizationStateClosed" {
+                self.pending.lock().unwrap().take();
+                self.stop.store(true, Ordering::Relaxed);
+            }
+            self.auth.send_if_modified(|current| {
+                if *current == state { return false; }
+                *current = state;
+                true
+            });
         }
         let _ = self.updates.send(msg); // không ai đăng ký thì thôi
     }
@@ -309,14 +331,12 @@ impl TdClient {
             Some(m) => m.insert(extra.clone(), tx),
             None => return Err("mất kết nối TDLib (luồng nhận đã dừng)".into()),
         };
+        let _pending = PendingRequest { pending: &self.shared.pending, key: extra };
         self.shared.api.send(self.shared.client_id, &req);
         let reply = match tokio::time::timeout(timeout, rx).await {
             Ok(Ok(v)) => v,
             Ok(Err(_)) => return Err("mất kết nối TDLib (luồng nhận đã dừng)".into()),
             Err(_) => {
-                if let Some(m) = self.shared.pending.lock().unwrap().as_mut() {
-                    m.remove(&extra);
-                }
                 return Err(format!("TDLib không trả lời {kind} sau {} giây", timeout.as_secs()));
             }
         };

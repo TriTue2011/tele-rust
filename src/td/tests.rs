@@ -150,6 +150,42 @@ async fn loi_tdlib_thanh_err_message() {
 }
 
 #[tokio::test]
+async fn dong_tdlib_ngat_yeu_cau_dang_cho_va_tu_choi_yeu_cau_moi() {
+    let (api, client) = start();
+    let mut first = client.updates();
+    let mut second = client.updates();
+    let c = client.clone();
+    let task = tokio::spawn(async move { c.request(json!({"@type": "getMe"})).await });
+    api.wait_sent("getMe", 1).await;
+    api.auth("authorizationStateClosed");
+    let error = tokio::time::timeout(Duration::from_secs(2), task).await.unwrap().unwrap().unwrap_err();
+    assert!(error.contains("mất kết nối TDLib"));
+    let update = tokio::time::timeout(Duration::from_secs(2), first.recv()).await.unwrap().unwrap();
+    assert_eq!(update["authorization_state"]["@type"], "authorizationStateClosed");
+    assert_eq!(second.recv().await.unwrap(), update, "mọi subscriber nhận một bản sao");
+    assert_eq!(client.auth_state(), "authorizationStateClosed");
+    assert!(client.request(json!({"@type": "getMe"})).await.is_err());
+    assert_eq!(api.sent_of("getMe").len(), 1);
+}
+
+#[tokio::test]
+async fn huy_yeu_cau_go_nguoi_cho_va_khong_phat_tra_loi_muon() {
+    let (api, client) = start();
+    let mut updates = client.updates();
+    let c = client.clone();
+    let task = tokio::spawn(async move { c.request(json!({"@type": "getMe"})).await });
+    let sent = api.wait_sent("getMe", 1).await;
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    assert!(client.shared.pending.lock().unwrap().as_ref().unwrap().is_empty());
+    api.push(json!({"@type": "user", "@extra": extra_of(&sent[0])}));
+    api.push(json!({"@type": "updateOption", "name": "sau-huy"}));
+    let update = tokio::time::timeout(Duration::from_secs(2), updates.recv()).await.unwrap().unwrap();
+    assert_eq!(update["@type"], "updateOption");
+    assert_eq!(update["name"], "sau-huy");
+}
+
+#[tokio::test]
 async fn het_gio_tra_err_va_tra_loi_muon_khong_lan_vao_update() {
     let (api, client) = start();
     let mut updates = client.updates();
