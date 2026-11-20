@@ -1,10 +1,11 @@
 //! HTTP chat cho một tài khoản TDLib đã đăng nhập.
 mod feed;
 mod shape;
+mod write;
 #[cfg(test)]
 mod tests;
 
-use std::{sync::Arc, time::Duration};
+use std::{path::{Path, PathBuf}, sync::Arc, time::Duration};
 
 use serde_json::{json, Value};
 
@@ -17,16 +18,17 @@ type Reply = Result<Value, GwError>;
 pub struct ChatService {
     td: Arc<dyn TdLink>,
     account: String,
+    uploads: PathBuf,
     state: Arc<State>,
     updates: tokio::task::JoinHandle<()>,
 }
 
 impl ChatService {
     /// Tạo trong Tokio runtime của gateway, dùng số tài khoản mà tầng đăng nhập đã chọn.
-    pub fn new(td: Arc<dyn TdLink>, account: impl Into<String>) -> Self {
+    pub fn new(td: Arc<dyn TdLink>, account: impl Into<String>, data_dir: impl AsRef<Path>) -> Self {
         let state = Arc::new(State::default());
         let updates = tokio::spawn(state.clone().receive(td.updates()));
-        Self { td, account: account.into(), state, updates }
+        Self { td, account: account.into(), uploads: data_dir.as_ref().join("uploads"), state, updates }
     }
 
     async fn request(&self, req: Value) -> Reply {
@@ -48,7 +50,7 @@ impl ChatService {
     }
 
     async fn user(&self, id: i64) -> Reply {
-        if let Some(user) = self.state.user(id, true) {
+        if let Some(user) = self.state.user(id) {
             return Ok(user);
         }
         let user = self.request(json!({"@type":"getUser","user_id":id})).await?;
@@ -156,6 +158,13 @@ impl ChatService {
                 Err(no_bytes())
             }
             ("GET", ["", "api", "live", "view" | "snapshot", _]) => Err(no_bytes()),
+            ("POST", ["", "api", "chats", id, op @ ("send" | "send_file" | "send_album" | "read")]) =>
+                self.write_chat(path_id(id)?, op, &q, &body).await,
+            ("POST", ["", "api", "messages", op @ ("edit" | "delete" | "forward" | "react")]) =>
+                self.write_message(op, &body).await,
+            ("POST", ["", "api", "resolve"]) => self.resolve(&body).await,
+            ("POST", ["", "api", "translate"]) => self.translate(&body).await,
+            ("POST", ["", "api", op @ ("send_voice" | "send_message" | "send_media")]) => self.legacy_send(op, &body).await,
             _ => Err(GwError::not_found("Không có đường dẫn này.")),
         }
     }
@@ -196,6 +205,14 @@ fn int(value: &Value, name: &str) -> Result<i64, GwError> {
 }
 
 fn text(v: &Value) -> &str { v.as_str().unwrap_or_default() }
+fn string(v: &Value) -> String {
+    if !truth(v) { return String::new(); }
+    match v {
+        Value::String(s) => s.clone(),
+        Value::Bool(true) => "True".into(),
+        _ => v.to_string(),
+    }
+}
 fn array(v: &Value) -> &[Value] { v.as_array().map_or(&[], Vec::as_slice) }
 fn field(v: &Value, key: &str, default: Value) -> Value { v.get(key).cloned().unwrap_or(default) }
 fn truth(v: &Value) -> bool {

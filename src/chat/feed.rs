@@ -48,11 +48,22 @@ impl Inner {
 impl State {
     pub(super) fn remember_user(&self, user: &Value) { self.inner.lock().unwrap().remember_user(user); }
 
-    pub(super) fn user(&self, id: i64, touch: bool) -> Option<Value> {
+    pub(super) fn user(&self, id: i64) -> Option<Value> {
         let mut s = self.inner.lock().unwrap();
         let user = s.users.get(&id)?.clone();
-        if touch { s.touch_user(id); }
+        s.touch_user(id);
         Some(user)
+    }
+
+    pub(super) async fn final_id(&self, id: i64, wait: Duration) -> i64 {
+        let deadline = Instant::now() + wait;
+        loop {
+            let notified = self.changed.notified();
+            if let Some((_, final_id)) = self.inner.lock().unwrap().sent.iter().find(|(old, _)| *old == id) {
+                return *final_id;
+            }
+            if id & 0xfffff == 0 || timeout_at(deadline, notified).await.is_err() { return id; }
+        }
     }
 
     pub(super) async fn receive(self: Arc<Self>, mut updates: broadcast::Receiver<Value>) {

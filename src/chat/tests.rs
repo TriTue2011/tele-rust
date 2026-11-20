@@ -3,6 +3,8 @@ use tokio::sync::broadcast;
 
 use super::*;
 
+mod writing;
+
 struct FakeTd {
     calls: Mutex<VecDeque<(Value, Result<Value, String>)>>,
     updates: broadcast::Sender<Value>,
@@ -12,7 +14,7 @@ impl TdLink for FakeTd {
     fn request(&self, req: Value) -> BoxFut<'_, Result<Value, String>> {
         Box::pin(async move {
             let (expected, result) = self.calls.lock().unwrap().pop_front().expect("TDLib request ngoài dự kiến");
-            assert_eq!(req, expected);
+            writing::check_request(req, expected);
             result
         })
     }
@@ -27,7 +29,7 @@ impl Drop for FakeTd {
 
 fn setup(calls: Vec<(Value, Result<Value, String>)>) -> (ChatService, Arc<FakeTd>) {
     let td = Arc::new(FakeTd { calls: Mutex::new(calls.into()), updates: broadcast::channel(64).0 });
-    (ChatService::new(td.clone(), "+000123"), td)
+    (ChatService::new(td.clone(), "+000123", "target/chat-tests"), td)
 }
 
 fn ok(req: Value, resp: Value) -> (Value, Result<Value, String>) { (req, Ok(resp)) }
