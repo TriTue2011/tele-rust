@@ -22,7 +22,6 @@ subtle = "=2.6.1"
 ntgcalls = "=3.0.7"
 # Chạy bất đồng bộ (ntgcalls 3.0.7 cũng dùng tokio).
 tokio = { version = "=1.41.1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "process", "io-util", "signal"] }
-base64 = "=0.22.1"
 regex = "=1.11.1"
 
 [dev-dependencies]
