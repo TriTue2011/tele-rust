@@ -5,7 +5,7 @@
 use std::time::Duration;
 
 use telegram_gateway_rs::contract::TdLink;
-use telegram_gateway_rs::{rest, td};
+use telegram_gateway_rs::td;
 
 #[tokio::main]
 async fn main() {
@@ -22,8 +22,7 @@ async fn main() {
         return;
     }
     if cmd == "serve" {
-        let stub = std::sync::Arc::new(rest::ChuaCo);
-        if let Err(e) = rest::serve_from_env(stub.clone(), stub) {
+        if let Err(e) = telegram_gateway_rs::app::App::start().await {
             eprintln!("LỖI: {e}");
             std::process::exit(2);
         }

@@ -189,7 +189,7 @@ struct Input<'a> {
 }
 
 /// Chờ mã/mật khẩu rồi gửi `kind`. `Ok(true)` khi TDLib nhận; `Ok(false)` khi trạng thái đổi trong lúc chờ.
-/// Bị từ chối (vd PHONE_CODE_INVALID) thì chờ giá trị MỚI — không gửi lại giá trị cũ. FLOOD_WAIT → `Err`.
+/// Bị từ chối (mã sai/FLOOD_WAIT) → `Err`; không tự gửi lại thông tin đăng nhập.
 async fn submit(
     client: &TdClient,
     rx: &mut watch::Receiver<String>,
@@ -212,10 +212,8 @@ async fn submit(
             // TDLib có thể nhắc lại input trong message lỗi; che trước khi log hoặc trả lên CLI.
             match client.request(json!({"@type": kind, (field): v})).await.map_err(|e| e.replace(&v, "***")) {
                 Ok(_) => return Ok(true),
-                Err(e) if e.contains("FLOOD_WAIT") => return Err(format!("{kind}: {e}")),
-                Err(e) => eprintln!("[td] {} bị từ chối ({e}); chờ {} mới", input.what, input.what),
+                Err(e) => return Err(format!("{kind}: {e}")),
             }
-            continue;
         }
         tokio::select! {
             _ = input.slot.notified() => {}

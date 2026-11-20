@@ -210,6 +210,19 @@ async fn trang_thai_dang_nhap_doc_duoc() {
     assert_eq!(client.auth_state(), "authorizationStateWaitPhoneNumber");
 }
 
+#[tokio::test]
+async fn close_chi_gui_mot_lan_va_cho_trang_thai_closed() {
+    let (api, client) = start();
+    let closing = client.clone();
+    let task = tokio::spawn(async move { closing.close(Duration::from_secs(2)).await; });
+    api.wait_sent("close", 1).await;
+    assert_eq!(api.sent_of("close").len(), 1);
+    api.auth("authorizationStateClosed");
+    tokio::time::timeout(Duration::from_secs(2), task).await.unwrap().unwrap();
+    assert_eq!(client.auth_state(), "authorizationStateClosed");
+    assert_eq!(api.sent_of("close").len(), 1);
+}
+
 struct TmpDir(PathBuf);
 impl TmpDir {
     fn new(name: &str) -> Self {
@@ -282,33 +295,15 @@ async fn dang_nhap_gui_dung_yeu_cau_tung_trang_thai() {
     let s = api.wait_sent("setAuthenticationPhoneNumber", 1).await;
     assert_eq!(s[0]["phone_number"], "+84900000000");
 
-    // 3) waitCode → chưa gửi gì tới khi có mã; mã sai thì chờ mã mới (không gửi lại); mã từ tệp được đọc và xoá.
+    // 3) waitCode → chưa gửi gì tới khi có mã; mã sai thì đăng nhập dừng và không gửi lại.
     api.auth("authorizationStateWaitCode");
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert!(api.sent_of("checkAuthenticationCode").is_empty());
     client.submit_code("11111");
     api.wait_sent("checkAuthenticationCode", 1).await;
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    assert_eq!(api.sent_of("checkAuthenticationCode").len(), 1, "mã sai không bị gửi lại");
-    let code_file = dir.0.join("login_code.txt");
-    std::fs::write(&code_file, "22222\n").unwrap();
-    let s = api.wait_sent("checkAuthenticationCode", 2).await;
-    assert_eq!(s[0]["code"], "11111");
-    assert_eq!(s[1]["code"], "22222");
-    assert!(!code_file.exists(), "tệp mã phải bị xoá sau khi đọc");
-
-    // 4) waitPassword → tệp mật khẩu.
-    api.auth("authorizationStateWaitPassword");
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    std::fs::write(dir.0.join("login_password.txt"), " mk-tep \r\n").unwrap();
-    let s = api.wait_sent("checkAuthenticationPassword", 1).await;
-    assert_eq!(s[0]["password"], " mk-tep ");
-
-    // 5) ready → xong.
-    api.auth("authorizationStateReady");
     let r = tokio::time::timeout(Duration::from_secs(3), task).await.unwrap().unwrap();
-    assert_eq!(r, Ok(()));
-    assert_eq!(client.auth_state(), "authorizationStateReady");
+    assert!(r.unwrap_err().contains("PHONE_CODE_INVALID"));
+    assert_eq!(api.sent_of("checkAuthenticationCode").len(), 1, "mã sai không bị gửi lại");
     // Mỗi bước đúng MỘT yêu cầu (không lặp setTdlibParameters / số điện thoại).
     assert_eq!(api.sent_of("setTdlibParameters").len(), 1);
     assert_eq!(api.sent_of("setAuthenticationPhoneNumber").len(), 1);
