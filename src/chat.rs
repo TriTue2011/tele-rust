@@ -12,6 +12,7 @@ use std::{path::{Path, PathBuf}, sync::Arc, time::Duration};
 use serde_json::{json, Value};
 
 use crate::contract::{Binary, BoxFut, ChatControl, GwError, TdLink};
+use crate::events::EventSink;
 use feed::State;
 use shape::{message, summarize, user_name};
 
@@ -29,8 +30,12 @@ pub struct ChatService {
 impl ChatService {
     /// Tạo trong Tokio runtime của gateway, dùng số tài khoản mà tầng đăng nhập đã chọn.
     pub fn new(td: Arc<dyn TdLink>, account: impl Into<String>, data_dir: impl AsRef<Path>) -> Self {
+        Self::with_events(td, account, data_dir, None)
+    }
+
+    pub(crate) fn with_events(td: Arc<dyn TdLink>, account: impl Into<String>, data_dir: impl AsRef<Path>, events: Option<EventSink>) -> Self {
         let state = Arc::new(State::default());
-        let updates = tokio::spawn(state.clone().receive(td.updates()));
+        let updates = tokio::spawn(state.clone().receive(td.updates(), events));
         let data_dir = data_dir.as_ref().to_path_buf();
         Self { td, account: account.into(), uploads: data_dir.join("uploads"), data_dir, state, updates }
     }

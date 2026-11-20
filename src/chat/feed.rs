@@ -3,6 +3,7 @@ use std::{collections::{HashMap, VecDeque}, sync::{Arc, Mutex}, time::{Duration,
 use serde_json::{json, Value};
 use tokio::{sync::{broadcast, Notify}, time::{timeout_at, Instant}};
 
+use crate::events::{mask_peer_id, EventSink};
 use super::{array, field, shape::{message, user_name}, text, truth};
 
 #[derive(Default)]
@@ -66,10 +67,13 @@ impl State {
         }
     }
 
-    pub(super) async fn receive(self: Arc<Self>, mut updates: broadcast::Receiver<Value>) {
+    pub(super) async fn receive(self: Arc<Self>, mut updates: broadcast::Receiver<Value>, events: Option<EventSink>) {
         loop {
             match updates.recv().await {
-                Ok(update) => self.update(&update),
+                Ok(update) => {
+                    self.update(&update);
+                    if let Some(events) = &events { bridge_update(events, &update); }
+                }
                 Err(broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(broadcast::error::RecvError::Closed) => break,
             }
@@ -129,6 +133,29 @@ impl State {
             }
             let _ = timeout_at(deadline, notified).await;
         }
+    }
+}
+
+fn bridge_update(events: &EventSink, update: &Value) {
+    let message = &update["message"];
+    match text(&update["@type"]) {
+        "updateNewMessage" if !message["sending_state"].is_null() => (),
+        "updateNewMessage" | "updateMessageSendSucceeded" => {
+            let Some(id) = message["id"].as_i64() else { return };
+            let peer = mask_peer_id(&message["chat_id"]);
+            events.emit("message_new", json!({"peer":peer,"tin_id":id.to_string()}));
+            if message["content"]["@type"] == "messageContactRegistered" {
+                events.emit("contact_joined", json!({"peer":peer}));
+            }
+        }
+        "updateMessageEdited" => {
+            let Some(id) = update["message_id"].as_i64() else { return };
+            events.emit("message_edited", json!({"chat_id":update["chat_id"],"message_id":id}));
+        }
+        "updateDeleteMessages" if update["is_permanent"] == true => {
+            events.emit("message_deleted", json!({"chat_id":update["chat_id"],"ids":update["message_ids"]}));
+        }
+        _ => (),
     }
 }
 

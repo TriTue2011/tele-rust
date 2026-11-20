@@ -36,6 +36,7 @@ use serde_json::{json, Value};
 use subtle::ConstantTimeEq;
 
 use crate::contract::{Binary, BoxFut, CallControl, ChatControl, GwError};
+use crate::events::EventStore;
 
 /// Như `MAX_BODY_BYTES` của routes.py.
 const MAX_BODY_BYTES: usize = 400_000;
@@ -52,6 +53,7 @@ pub struct RestConfig {
 struct Ctx {
     call: Arc<dyn CallControl>,
     chat: Arc<dyn ChatControl>,
+    events: Option<EventStore>,
     token: String,
     limit: usize,
     hits: Mutex<VecDeque<Instant>>,
@@ -118,6 +120,7 @@ enum Kind {
     SendFile,
     ChatBytes,
     Snapshot,
+    Events,
 }
 
 #[derive(Clone, Copy)]
@@ -194,12 +197,28 @@ async fn handle(ctx: Arc<Ctx>, spec: Spec, req: Request) -> Response {
             return json_resp(StatusCode::UNPROCESSABLE_ENTITY, &detail);
         }
     }
+    let mut since = 0;
+    if matches!(spec.kind, Kind::Events) {
+        if let Some(raw) = query_get(&query, "since") {
+            match raw.trim().parse() {
+                Ok(cursor) => since = cursor,
+                Err(_) => return json_resp(StatusCode::UNPROCESSABLE_ENTITY, &json!({"detail":[{
+                    "type":"int_parsing", "loc":["query", "since"],
+                    "msg":"Input should be a valid integer, unable to parse string as an integer", "input":raw
+                }]})),
+            }
+        }
+    }
     if let Err(e) = ctx.auth(&parts.headers) {
         return error_resp(&e);
     }
     let out = match spec.kind {
         Kind::ChatBytes => return bytes_resp(ctx.chat.bytes(&path, &query).await),
         Kind::Snapshot => return bytes_resp(ctx.call.snapshot(path.rsplit('/').next().unwrap()).await),
+        Kind::Events => match &ctx.events {
+            Some(store) => store.poll(since).await,
+            None => Err(GwError::new(501, "NOT_IMPLEMENTED", "Chưa có bộ lưu sự kiện.")),
+        },
         Kind::LiveCalls => ctx.call.calls().await,
         Kind::Live(op) => match body_dict(body).await {
             Err(e) => Err(e),
@@ -302,11 +321,12 @@ fn router_with(ctx: Arc<Ctx>) -> Router {
     let post = MethodFilter::POST;
     let mut r = Router::new().route("/health", on(get, health).on(MethodFilter::HEAD, method_not_allowed).fallback(method_not_allowed));
     // Chỉ đọc → ChatControl (routes.py + chat_routes.py).
-    for p in ["/api/accounts", "/api/me", "/api/chats", "/api/contacts", "/api/search", "/api/feed", "/api/events",
+    for p in ["/api/accounts", "/api/me", "/api/chats", "/api/contacts", "/api/search", "/api/feed",
               "/api/calls", "/api/calltrace"] {
         r = r.route(p, route(get, s(ChatGet)));
     }
     r = r
+        .route("/api/events", route(get, s(Events)))
         .route("/api/chats/:chat_id/messages", route(get, s_id(ChatGet, "chat_id")))
         .route("/api/file/:file_id", route(get, s_id(ChatBytes, "file_id")))
         .route("/api/calltrace/:call_id", route(get, s(ChatBytes)));
@@ -337,9 +357,14 @@ fn router_with(ctx: Arc<Ctx>) -> Router {
 
 /// Router HTTP hoàn chỉnh. Gọi với token rỗng là lỗi của người gọi (`serve` từ chối khởi động trước đó).
 pub fn router(call: Arc<dyn CallControl>, chat: Arc<dyn ChatControl>, cfg: RestConfig) -> Router {
+    router_with_events(call, chat, cfg, None)
+}
+
+pub(crate) fn router_with_events(call: Arc<dyn CallControl>, chat: Arc<dyn ChatControl>, cfg: RestConfig, events: Option<EventStore>) -> Router {
     router_with(Arc::new(Ctx {
         call,
         chat,
+        events,
         token: cfg.token,
         limit: cfg.rate_limit_per_minute,
         hits: Mutex::new(VecDeque::new()),
@@ -627,6 +652,7 @@ mod tests {
     fn cua_so_truot_bo_moc_cu_khong_gia_han_khi_tu_choi() {
         let fake = Arc::new(Fake::default());
         let ctx = Ctx {
+            events: None,
             call: fake.clone(), chat: fake, token: TOK.into(), limit: 2,
             hits: Mutex::new(VecDeque::from([
                 Instant::now() - Duration::from_secs(61), Instant::now(),

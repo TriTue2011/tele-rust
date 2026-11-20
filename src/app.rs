@@ -11,6 +11,7 @@ use tokio::task::JoinHandle;
 use crate::calls::CallManager;
 use crate::chat::ChatService;
 use crate::contract::{Binary, BoxFut, CallControl, ChatControl, GwError, TdLink};
+use crate::events::EventBridge;
 use crate::{rest, td};
 
 const CALLS_SHUTDOWN_WAIT: Duration = Duration::from_secs(10);
@@ -126,6 +127,7 @@ impl App {
         let login_config = td::login::LoginConfig::from_env()
             .map_err(|e| format!("Cấu hình đăng nhập không hợp lệ: {e}"))?;
         let (addr, rest_config) = rest::serve_config_from_env()?;
+        let events = EventBridge::start(&login_config.data_dir, &login_config.phone).await?;
         let library = std::env::var("TDJSON_LIB").unwrap_or_else(|_| "libtdjson.so".into());
         let client = td::TdClient::open(&library)
             .map_err(|e| format!("Không khởi tạo được TDLib: {e}"))?;
@@ -148,6 +150,7 @@ impl App {
         };
 
         let (login_tx, login_rx) = watch::channel(LoginStatus::Starting);
+        let mut call_events = tokio::spawn(events.sink.clone().follow_calls(manager.events()));
         let auth_rx = client.auth_watch();
         let call_control: Arc<dyn CallControl> = Arc::new(ReadyCalls {
             session: Session { auth: auth_rx.clone(), status: login_rx.clone() },
@@ -155,14 +158,18 @@ impl App {
         });
         let chat: Arc<dyn ChatControl> = Arc::new(ReadyChat {
             session: Session { auth: auth_rx, status: login_rx },
-            inner: Arc::new(ChatService::new(td_link, login_config.phone.clone(), &login_config.data_dir)),
+            inner: Arc::new(ChatService::with_events(td_link, login_config.phone.clone(), &login_config.data_dir, Some(events.sink.clone()))),
         });
-        let app = rest::router(call_control, chat, rest_config);
+        let app = rest::router_with_events(call_control, chat, rest_config, Some(events.store.clone()));
         let (stop_tx, stop_rx) = oneshot::channel();
         let mut server = tokio::spawn(rest::serve(listener, app, async move { let _ = stop_rx.await; }));
         let login_client = client.clone();
+        let login_events = events.sink.clone();
         let login_task = spawn_login(async move {
-            td::login::run(&login_client, &login_config).await
+            let result = td::login::run(&login_client, &login_config).await;
+            let status = if result.is_ok() { "online" } else { "offline" };
+            login_events.emit("account_status", serde_json::json!({"status":status}));
+            result
         }, login_tx);
 
         let result = tokio::select! {
@@ -187,6 +194,9 @@ impl App {
             manager.shutdown(CALLS_SHUTDOWN_WAIT),
             async { client.close(TDLIB_CLOSE_WAIT).await },
         ).await;
+        drop(manager);
+        if tokio::time::timeout(Duration::from_secs(1), &mut call_events).await.is_err() { call_events.abort(); }
+        events.shutdown().await;
         result
     }
 }

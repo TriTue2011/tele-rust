@@ -4,5 +4,6 @@ pub mod app;
 pub mod calls;
 pub mod chat;
 pub mod contract;
+mod events;
 pub mod rest;
 pub mod td;

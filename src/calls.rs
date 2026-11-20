@@ -20,6 +20,7 @@ use serde_json::{json, Value};
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::contract::{Binary, BoxFut, CallControl, GwError, TdLink};
+use crate::events::{mask_peer, mask_peer_id};
 use media::{Media, MediaEvent, MediaOp, NativeMedia, Ready};
 use sources::{Devices, playback_description, video_profile};
 
@@ -428,6 +429,9 @@ impl Actor {
                     Ok(id) => {
                         self.calls[i].td_id = Some(id);
                         self.calls[i].log("TDLib: createCall");
+                        let peer = body["peer"].as_str().filter(|s| !s.trim().is_empty())
+                            .map_or_else(|| mask_peer_id(&json!(user)), |s| mask_peer(s.trim()));
+                        let _ = self.events.send(json!({"kind":"started","call":self.calls[i].info(),"peer":peer}));
                         // Phản hồi createCall cũng là Call; ready/discard có thể đã tới ở đây.
                         if reply["state"].is_object() { self.update(json!({"@type":"updateCall","call":reply})).await?; }
                         Ok(self.calls[i].info())
@@ -485,7 +489,8 @@ impl Actor {
         if let Some(revision) = c.speech_revision.take() {
             let _ = fs::remove_file(self.data_dir.join("live").join(format!("{}_say_{revision}.wav", c.id)));
         }
-        self.event("ended", i);
+        let reason = c.td_id.map(|_| sources::mask(why));
+        let _ = self.events.send(json!({"kind":"ended","call":c.info(),"reason":reason}));
     }
 
     async fn fail(&mut self, i: usize, why: &str) {

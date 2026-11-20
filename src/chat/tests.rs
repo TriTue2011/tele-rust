@@ -111,6 +111,33 @@ async fn feed_long_poll_wakes_for_update_without_network_calls() {
 }
 
 #[tokio::test]
+async fn chat_feed_emits_only_final_message_metadata_to_events() {
+    use crate::events::EventBridge;
+    let data = PathBuf::from(format!("target/chat-event-test-{}", std::process::id()));
+    let bridge = EventBridge::start(&data, "+000123").await.unwrap();
+    let (chat, td) = setup(vec![]);
+    drop(chat);
+    let chat = ChatService::with_events(td.clone(), "+000123", &data, Some(bridge.sink.clone()));
+    let mut draft = td_message(4);
+    draft["sending_state"] = json!({"@type":"messageSendingStatePending"});
+    td.updates.send(json!({"@type":"updateNewMessage","message":draft})).unwrap();
+    td.updates.send(json!({"@type":"updateMessageSendSucceeded","old_message_id":4,"message":td_message(7)})).unwrap();
+    let value = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let value = bridge.store.poll(0).await.unwrap();
+            if value["cursor"].as_u64().unwrap() > 0 { break value; }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }).await.unwrap();
+    assert_eq!(value["events"].as_array().unwrap().len(), 1);
+    assert_eq!(value["events"][0]["type"], "message_new");
+    assert_eq!(value["events"][0]["data"], json!({"peer":"••••","tin_id":"7"}));
+    drop(chat);
+    bridge.shutdown().await;
+    std::fs::remove_dir_all(data).unwrap();
+}
+
+#[tokio::test]
 async fn invalid_arguments_unknown_account_and_binary_routes_never_call_tdlib() {
     let (chat, _) = setup(vec![]);
     for (path, query, status, code) in [
