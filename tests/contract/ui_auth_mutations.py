@@ -107,6 +107,10 @@ def copy_source(snapshot):
 def main():
     assert sys.argv[1:] in ([], ["--positive-only"], ["--static-only"]), "Use --positive-only, --static-only or no arguments"
     source = fingerprint()
+    build_env = {**os.environ, "TGGW_BUILD_DIR": "/opt/tggw-build-dn"}
+    local_host = ROOT / ".tggw-build-host"
+    if not build_env.get("TGGW_BUILD_HOST") and local_host.is_file():
+        build_env["TGGW_BUILD_HOST"] = local_host.read_text().strip()
     print(f"SOURCE_SHA256 {source}", flush=True)
     for filename in (() if sys.argv[1:] == ["--positive-only"] else ("src/ui_auth.rs", "src/rest.rs")):
         with TemporaryDirectory(prefix=".h2-static-", dir=ROOT) as directory:
@@ -132,7 +136,7 @@ def main():
                          f'ARGS="cargo test --release --test {suite} {test} -- --exact 2>&1"')
             print(f"RUN {case}: {test}", flush=True)
             result = subprocess.run(["./build.sh", "test"], cwd=snapshot,
-                                    env={**os.environ, "TGGW_BUILD_DIR": "/opt/tggw-build-dn"},
+                                    env=build_env,
                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
             (ROOT / f".h2-mutation-{case.lower()}.log").write_text(result.stdout)
             assert fingerprint() == source, "Worktree changed during mutation verification"
@@ -146,7 +150,7 @@ def main():
         snapshot = Path(directory)
         copy_source(snapshot)
         result = subprocess.run(["./build.sh", "test"], cwd=snapshot,
-                                env={**os.environ, "TGGW_BUILD_DIR": "/opt/tggw-build-dn"},
+                                env=build_env,
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         (ROOT / ".h2-mutation-positive.log").write_text(result.stdout)
         assert fingerprint() == source, "Worktree changed during positive control"

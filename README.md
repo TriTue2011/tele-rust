@@ -6,8 +6,10 @@ Python (`Telegram-calling/telegram-gateway`). TDLib 1.8.69 (`libtdjson`, gọi q
 > **Trạng thái: đang làm (cột mốc 0 xong).** `tggw version` → TDLib 1.8.69; `tggw protocol` → NTgCalls 3.0.7, tgcalls 8/9/12/13.
 > Đang viết: client TDLib + đăng nhập, REST đúng hợp đồng bản Python, quản lý cuộc gọi (`src/contract.rs` là hợp đồng giữa các phần).
 
-Dựng: đặt `TGGW_BUILD_HOST` thành SSH alias của máy dựng (mặc định `builder`), rồi chạy `./build.sh build`
-(container `rust:1.90` + g++/zlib; tắt LTO vì thư viện C++ của NTgCalls không có bitcode).
+Dựng: đặt `TGGW_BUILD_HOST` thành SSH alias của máy dựng, hoặc ghi alias đó vào `.tggw-build-host`
+ở gốc worktree, rồi chạy `./build.sh build` (mặc định `builder` nếu chưa cấu hình).
+Tệp `.tggw-build-host` được Git bỏ qua và không gửi trong gói nguồn; biến môi trường được ưu tiên.
+Lệnh dùng container `rust:1.90` + g++/zlib; tắt LTO vì thư viện C++ của NTgCalls không có bitcode.
 Lưu ý giấy phép: NTgCalls là LGPL-3.0 liên kết tĩnh — phát hành nhị phân cần xem lại điều khoản liên kết lại. Giấy phép mã của kho này: chưa chọn.
 
 ## Nhiều tài khoản và đăng nhập trên web

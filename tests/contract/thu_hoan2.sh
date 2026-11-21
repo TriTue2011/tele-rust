@@ -4,7 +4,12 @@ set -euo pipefail
 exec 9<"$0"
 flock 9
 BUILD_DIR=${TGGW_BUILD_DIR:-/opt/tggw-build-h2}
-REMOTE_HOST=${TGGW_BUILD_HOST:-builder}
+ROOT=$(cd "$(dirname "$0")/../.." && pwd)
+REMOTE_HOST=${TGGW_BUILD_HOST:-}
+if [[ -z "$REMOTE_HOST" && -f "$ROOT/.tggw-build-host" ]]; then
+  IFS= read -r REMOTE_HOST < "$ROOT/.tggw-build-host" || [[ -n "$REMOTE_HOST" ]]
+fi
+REMOTE_HOST=${REMOTE_HOST:-builder}
 ssh "$REMOTE_HOST" "test -d '$BUILD_DIR/tests/contract' && docker run --rm -v '$BUILD_DIR:/src' -w /src tggw-builder:1.90 gcc -shared -fPIC tests/contract/tdjson_rong.c -o libtdjson-rong.so"
 cleanup() { ssh "$REMOTE_HOST" 'docker stop -t 15 tggw-h2-thu' >/dev/null; }
 trap cleanup EXIT
