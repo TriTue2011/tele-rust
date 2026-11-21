@@ -54,41 +54,52 @@ async fn contacts_name_folds_accents_and_sections_and_handles_empty_names() {
     assert_eq!(get(&chat, "/api/contacts", "sort=invalid").await.unwrap_err().status, 400);
 }
 
-// Cùng số giả được phép trong các bộ kiểm quyền riêng tư hiện có của repo.
-const TEST_PHONE: &str = "+84900000000";
+// Sinh dữ liệu tổng hợp từ chỉ số ca thử; không lưu số liên hệ trong mã nguồn.
+fn phone_fixture(case: u8) -> (String, String) {
+    let subscriber = format!("9{case:08}");
+    (format!("+84{subscriber}"), format!("0{subscriber}"))
+}
 
 fn contact(phone: &str, first: &str, last: &str) -> Value {
     json!({"@type":"importedContact","phone_number":phone,"first_name":first,"last_name":last})
 }
 
-fn import_phone() -> Value { json!({"@type":"importContacts","contacts":[contact(TEST_PHONE,"An", "")]}) }
+fn import_phone(phone: &str) -> Value { json!({"@type":"importContacts","contacts":[contact(phone,"An", "")]}) }
 
 #[tokio::test]
 async fn contacts_add_validates_normalizes_and_distinguishes_unregistered_numbers() {
-    let (chat, _) = setup(vec![
-        ok(import_phone(), json!({"user_ids":[0]})),
-        ok(import_phone(), json!({"user_ids":[7]})),
-        success(json!({"@type":"addContact","user_id":7,"contact":contact(TEST_PHONE,"An",""),"share_phone_number":true})),
-        ok(get_user(7), json!({"id":7,"first_name":"An"})),
-        err(import_phone(), 500, "Unexpected import failure"),
-    ]);
-    for phone in ["", "badnumber", "++84900000000", "+0000000"] {
-        let error = post(&chat,"/api/contacts/add","",json!({"first_name":"An","phone":phone})).await.unwrap_err();
-        assert_eq!(error.status, 422);
+    for case in [0, 1, 42] {
+        let (international, domestic) = phone_fixture(case);
+        let formatted_international = format!("+84 {}-{}.{}", &domestic[1..4], &domestic[4..7], &domestic[7..]);
+        let formatted_domestic = format!("{} ({}) {}", &domestic[..4], &domestic[4..7], &domestic[7..]);
+        let (chat, _) = setup(vec![
+            ok(import_phone(&international), json!({"user_ids":[0]})),
+            ok(import_phone(&international), json!({"user_ids":[7]})),
+            success(json!({"@type":"addContact","user_id":7,"contact":contact(&international,"An",""),"share_phone_number":true})),
+            ok(get_user(7), json!({"id":7,"first_name":"An"})),
+            err(import_phone(&international), 500, "Unexpected import failure"),
+        ]);
+        let duplicate_plus = format!("+{international}");
+        for phone in ["", "badnumber", &duplicate_plus, "+0000000"] {
+            let error = post(&chat,"/api/contacts/add","",json!({"first_name":"An","phone":phone})).await.unwrap_err();
+            assert_eq!(error.status, 422);
+        }
+        let missing = post(&chat,"/api/contacts/add","",json!({"first_name":"An","phone":formatted_international})).await.unwrap_err();
+        assert_eq!((missing.status, missing.code.as_str()), (404, "not_telegram_user"));
+        let added = post(&chat,"/api/contacts/add","",json!({"first_name":"An","phone":formatted_domestic,"share_my_phone":true})).await.unwrap();
+        assert_eq!(added["contact"]["id"], 7);
+        let unusual = post(&chat,"/api/contacts/add","",json!({"first_name":"An","phone":international})).await.unwrap_err();
+        assert_eq!((unusual.status, unusual.code.as_str()), (502, "MEDIA_ENGINE_ERROR"));
     }
-    let missing = post(&chat,"/api/contacts/add","",json!({"first_name":"An","phone":"+84 900-000.000"})).await.unwrap_err();
-    assert_eq!((missing.status, missing.code.as_str()), (404, "not_telegram_user"));
-    let added = post(&chat,"/api/contacts/add","",json!({"first_name":"An","phone":"0900 (000) 000","share_my_phone":true})).await.unwrap();
-    assert_eq!(added["contact"]["id"], 7);
-    let unusual = post(&chat,"/api/contacts/add","",json!({"first_name":"An","phone":TEST_PHONE})).await.unwrap_err();
-    assert_eq!((unusual.status, unusual.code.as_str()), (502, "MEDIA_ENGINE_ERROR"));
 }
 
 #[tokio::test]
 async fn contacts_edit_remove_block_and_unblock_send_versioned_requests() {
+    let (international, _) = phone_fixture(4);
+    let tdlib_phone = &international[1..];
     let (chat, _) = setup(vec![
-        ok(get_user(7), json!({"id":7,"is_contact":true,"phone_number":"84900000000"})),
-        success(json!({"@type":"addContact","user_id":7,"contact":contact("84900000000","An","Bình"),"share_phone_number":false})),
+        ok(get_user(7), json!({"id":7,"is_contact":true,"phone_number":tdlib_phone})),
+        success(json!({"@type":"addContact","user_id":7,"contact":contact(tdlib_phone,"An","Bình"),"share_phone_number":false})),
         success(json!({"@type":"removeContacts","user_ids":[7,8]})),
         ok(json!({"@type":"createPrivateChat","user_id":7,"force":false}), json!({"id":9})),
         ok(json!({"@type":"reportChat","chat_id":9,"option_id":"","message_ids":[],"text":""}), json!({"@type":"reportChatResultOk"})),
@@ -148,12 +159,14 @@ async fn contacts_phone_is_not_logged_or_echoed_by_tdlib_errors() {
     log::set_logger(&CaptureLog).unwrap();
     log::set_max_level(log::LevelFilter::Trace);
     log::debug!("contact log fixture is active");
-    let (chat, _) = setup(vec![err(import_phone(),500,&format!("Unexpected input {TEST_PHONE}"))]);
-    let error = post(&chat,"/api/contacts/add","",json!({"first_name":"An","phone":"0900 000 000"})).await.unwrap_err();
-    assert!(!error.message.contains("84900000000"));
+    let (international, domestic) = phone_fixture(5);
+    let spaced = format!("{} {} {}", &domestic[..4], &domestic[4..7], &domestic[7..]);
+    let (chat, _) = setup(vec![err(import_phone(&international),500,&format!("Unexpected input {international}"))]);
+    let error = post(&chat,"/api/contacts/add","",json!({"first_name":"An","phone":spaced})).await.unwrap_err();
+    assert!(!error.message.contains(&international[1..]));
     LOG_LINES.with(|lines| {
         let lines = lines.borrow();
         assert_eq!(lines.first().map(String::as_str), Some("contact log fixture is active"));
-        assert!(!lines.iter().any(|line| ["84900000000", "0900 000 000", "0900000000"].iter().any(|phone| line.contains(phone))), "log chứa số điện thoại");
+        assert!(!lines.iter().any(|line| [&international[1..], &spaced, &domestic].iter().any(|phone| line.contains(phone))), "log chứa số điện thoại");
     });
 }
