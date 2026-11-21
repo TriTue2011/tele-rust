@@ -48,6 +48,13 @@
   .m.out { align-self:flex-end; background:var(--out); }
   .m .who { font-size:13px; font-weight:600; color:var(--acc); }
   .m .txt { white-space:pre-wrap; }
+  .m .txt code { font-family:ui-monospace,monospace; }
+  .m .txt pre { margin:4px 0; padding:6px 8px; background:var(--bg); border-radius:6px; overflow-x:auto; white-space:pre; overflow-wrap:normal; }
+  .m .txt blockquote { margin:4px 0; padding:2px 8px; border-left:3px solid var(--acc); }
+  .m .txt .mention { color:var(--acc); }
+  .m .txt .spoiler:not(.revealed) { background:var(--mut); border-radius:3px; cursor:pointer; }
+  .m .txt .spoiler:not(.revealed) > span { visibility:hidden; }
+  .m .txt .spoiler:focus-visible { outline:2px solid var(--acc); outline-offset:2px; }
   .m .foot { color:var(--mut); font-size:11px; text-align:right; margin-top:1px; }
   .m .rep { border-left:3px solid var(--acc); padding:1px 8px; margin-bottom:3px; color:var(--mut); font-size:13px; }
   .m img.pic, .m video { max-width:100%; max-height:340px; border-radius:8px; display:block; cursor:pointer; }
@@ -308,8 +315,103 @@
 
   // ---- tin nhắn --------------------------------------------------------------------------------
   const URL_RE = /(https?:\/\/[^\s<>"']+)/g;
+  function messageLink(href, text) {
+    const a = el("a", "", text); a.href = href; a.target = "_blank"; a.rel = "noopener noreferrer";
+    return a;
+  }
   function linkify(parent, text) {
-    text.split(URL_RE).forEach((part, i) => { if (i % 2) { const a = el("a", "", part); a.href = part; a.target = "_blank"; a.rel = "noopener noreferrer"; parent.appendChild(a); } else if (part) parent.appendChild(document.createTextNode(part)); });
+    text.split(URL_RE).forEach((part, i) => { if (i % 2) parent.appendChild(messageLink(part, part)); else if (part) parent.appendChild(document.createTextNode(part)); });
+  }
+  const entityTags = new Map([
+    ["bold", "strong"], ["italic", "em"], ["underline", "u"], ["strikethrough", "s"],
+    ["code", "code"], ["pre", "pre"], ["blockquote", "blockquote"], ["spoiler", "span"],
+    ["mention", "span"], ["text_mention", "span"], ["url", "a"], ["text_link", "a"],
+  ]);
+  function revealableSpoiler(range) {
+    const node = el("span", "spoiler"); node.tabIndex = 0;
+    node.setAttribute("role", "button"); node.setAttribute("aria-label", "Hiện nội dung ẩn");
+    (range.fragments ??= []).push(node);
+    const reveal = (e) => {
+      if (range.revealed) return;
+      e.preventDefault();
+      range.revealed = true;
+      for (const fragment of range.fragments) {
+        fragment.className = "spoiler revealed";
+        for (const attr of ["role", "aria-label", "tabindex"]) fragment.removeAttribute(attr);
+      }
+    };
+    node.addEventListener("click", reveal);
+    node.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") reveal(e); });
+    return node;
+  }
+  function entityNodes(range) {
+    const { tag, type, href, language, user_id } = range;
+    if (tag === "a") {
+      try {
+        const url = new URL(href);
+        if (url.protocol === "http:" || url.protocol === "https:") return [messageLink(url.href)];
+      } catch (e) { /* URL sai cú pháp: giữ nguyên nhãn dưới dạng chữ. */ }
+      return [];
+    }
+    if (type === "spoiler") return [revealableSpoiler(range), el("span")];
+    if (type === "pre") {
+      const code = el("code"); if (language) code.dataset.language = language;
+      return [el("pre"), code];
+    }
+    const node = el(tag, type === "mention" || type === "text_mention" ? "mention" : "");
+    if (type === "text_mention" && user_id != null) node.dataset.userId = String(user_id);
+    return [node];
+  }
+  function renderText(parent, text, entities) {
+    if (!Array.isArray(entities) || !entities.length) { linkify(parent, text); return; }
+    const ranges = [];
+    for (const entity of entities) {
+      const tag = entityTags.get(entity?.type);
+      if (!tag) continue;
+      const { offset: start, length, type, url, language, user_id } = entity;
+      const end = start + length;
+      if (!Number.isInteger(start) || !Number.isInteger(length) || start < 0 || length < 1 || end > text.length) continue;
+      ranges.push({ start, end, tag, type, href: type === "url" ? text.slice(start, end) : url, language, user_id });
+    }
+    if (!ranges.length) { linkify(parent, text); return; }
+
+    // Dò link tự động theo cả đoạn chữ tự do để định dạng giữa URL không cắt đôi link.
+    const autoLinks = (start, end) => {
+      for (const match of text.slice(start, end).matchAll(URL_RE)) {
+        const href = match[0], from = start + match.index;
+        ranges.push({ start: from, end: from + href.length, tag: "a", href });
+      }
+    };
+    let free = 0;
+    for (const range of ranges.filter((r) => r.tag === "a").sort((a, b) => a.start - b.start)) {
+      if (free < range.start) autoLinks(free, range.start);
+      free = Math.max(free, range.end);
+    }
+    autoLinks(free, text.length);
+
+    ranges.sort((a, b) => a.start - b.start || b.end - a.end);
+    const boundaries = [...new Set([0, text.length, ...ranges.flatMap(({ start, end }) => [start, end])])].sort((a, b) => a - b);
+    let stack = [];
+    for (let i = 0; i < boundaries.length - 1; i++) {
+      const start = boundaries[i];
+      let linked = false;
+      const active = ranges.filter((r) => {
+        if (r.start > start || r.end <= start || (r.tag === "a" && linked)) return false;
+        if (r.tag === "a") linked = true;
+        return true;
+      });
+      // Giữ các lớp còn chung. Nếu hai vùng giao nhau, mở lại lớp còn hiệu lực.
+      let depth = 0;
+      while (depth < active.length && stack[depth]?.range === active[depth]) depth++;
+      stack.length = depth;
+      let target = stack.at(-1)?.target || parent;
+      for (const range of active.slice(depth)) {
+        const [node, inner] = entityNodes(range);
+        if (node) { target.appendChild(node); target = inner ? node.appendChild(inner) : node; }
+        stack.push({ range, target });
+      }
+      target.appendChild(document.createTextNode(text.slice(start, boundaries[i + 1])));
+    }
   }
   function fileSize(n) { return n > 1048576 ? (n / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(n / 1024)) + " KB"; }
 
@@ -330,7 +432,7 @@
       w.appendChild(row); }
     else if (f && f.id && m.kind === "document") { const a = el("a", "", "📎 " + (f.name || "Tệp") + (f.size ? " (" + fileSize(f.size) + ")" : "")); a.href = "#"; a.addEventListener("click", (e) => { e.preventDefault(); blobUrl(f.id).then((u) => { const d = document.createElement("a"); d.href = u; d.download = f.name || "tep"; d.click(); }).catch(() => toast("Chưa tải được tệp")); }); w.appendChild(a); }
     else if (m.kind !== "text") w.appendChild(el("div", "txt", m.summary));
-    if (m.text) { const t = el("div", "txt"); linkify(t, m.text); w.appendChild(t); }
+    if (m.text) { const t = el("div", "txt"); renderText(t, m.text, m.entities); w.appendChild(t); }
     if (m.reactions && m.reactions.length) { const rx = el("div", "rx"); m.reactions.forEach((r) => { const s = el("span", r.mine ? "mine" : "", r.emoji + " " + r.count); s.addEventListener("click", () => react(m, r.emoji, !r.mine)); rx.appendChild(s); }); w.appendChild(rx); }
     w.appendChild(el("div", "foot", hhmm(m.date) + (m.edit_date ? " · đã sửa" : "")));
     const acts = el("div", "acts");
