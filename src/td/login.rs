@@ -19,6 +19,7 @@ use tokio::sync::watch;
 
 use super::{Secret, TdClient};
 use crate::contract::TdLink;
+use crate::contract::TdError;
 
 /// Cấu hình đăng nhập. `Debug` che api_hash và số điện thoại.
 #[derive(Clone)]
@@ -104,18 +105,26 @@ mod config_tests {
 /// Tạo `<data>/tdlib/files` (0700) và khoá DB `<data>/tdlib/khoa` (0600, 16 byte ngẫu nhiên dạng hex — như
 /// `store.ensure_session_dir` bản Python) nếu chưa có. KHÔNG BAO GIỜ ghi đè khoá có sẵn. Trả khoá dạng byte.
 pub fn ensure_session(cfg: &LoginConfig) -> io::Result<Vec<u8>> {
-    let files = cfg.files_dir();
+    ensure_session_dir(&cfg.session_dir())
+}
+
+pub(crate) fn ensure_session_dir(session: &Path) -> io::Result<Vec<u8>> {
+    let files = session.join("files");
     fs::create_dir_all(&files)?;
-    fs::set_permissions(cfg.session_dir(), fs::Permissions::from_mode(0o700))?;
+    fs::set_permissions(session, fs::Permissions::from_mode(0o700))?;
     fs::set_permissions(&files, fs::Permissions::from_mode(0o700))?;
-    let key_path = cfg.key_path();
+    let key_path = session.join("khoa");
     if !key_path.exists() {
         let mut raw = [0u8; 16];
         fs::File::open("/dev/urandom")?.read_exact(&mut raw)?;
         let mut f = fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&key_path)?;
         f.write_all(hex(&raw).as_bytes())?;
     }
-    Ok(decode_key(fs::read_to_string(&key_path)?.trim()))
+    let mut key = fs::File::open(key_path)?;
+    key.set_permissions(fs::Permissions::from_mode(0o600))?;
+    let mut raw = String::new();
+    key.read_to_string(&mut raw)?;
+    Ok(decode_key(raw.trim()))
 }
 
 /// Giống `TdlibClient._read_key` bản Python: chuỗi hex → byte; không phải hex → byte UTF-8 nguyên văn.
@@ -136,7 +145,11 @@ fn hex(b: &[u8]) -> String {
 
 /// `setTdlibParameters` — trường PHẲNG, cùng giá trị với `TdlibClient.open()` bản Python.
 pub fn tdlib_parameters(cfg: &LoginConfig, key: &[u8]) -> Value {
-    let files = cfg.files_dir().to_string_lossy().into_owned();
+    parameters_for(cfg, &cfg.session_dir(), key)
+}
+
+pub(crate) fn parameters_for(cfg: &LoginConfig, session: &Path, key: &[u8]) -> Value {
+    let files = session.join("files").to_string_lossy().into_owned();
     json!({
         "@type": "setTdlibParameters",
         "use_test_dc": false,
@@ -159,6 +172,10 @@ pub fn tdlib_parameters(cfg: &LoginConfig, key: &[u8]) -> Value {
 /// Chạy đăng nhập tới `authorizationStateReady`. `Err` khi TDLib từ chối tham số/số điện thoại, bị FLOOD_WAIT,
 /// thiếu cấu hình, hoặc gặp trạng thái chưa hỗ trợ (QR, email, đăng ký mới, đóng phiên).
 pub async fn run(client: &TdClient, cfg: &LoginConfig) -> Result<(), String> {
+    run_in(client, cfg, &cfg.session_dir(), false).await
+}
+
+pub(crate) async fn run_in(client: &TdClient, cfg: &LoginConfig, session: &Path, restore: bool) -> Result<(), String> {
     let mut rx = client.auth_watch();
     loop {
         let state = rx.borrow_and_update().clone();
@@ -168,14 +185,11 @@ pub async fn run(client: &TdClient, cfg: &LoginConfig) -> Result<(), String> {
         match state.as_str() {
             "" => {} // TDLib chưa báo trạng thái đầu tiên
             "authorizationStateWaitTdlibParameters" => {
-                let key = ensure_session(cfg)
-                    .map_err(|e| format!("không tạo được phiên ở {}: {e}", cfg.session_dir().display()))?;
-                client
-                    .request(tdlib_parameters(cfg, &key))
-                    .await
+                set_parameters(client,cfg,session).await
                     .map_err(|e| format!("setTdlibParameters bị từ chối: {}", e.message.replace(&cfg.api_hash, "***")))?;
             }
             "authorizationStateWaitPhoneNumber" => {
+                if restore { return Err("phiên đã hết hạn, cần đăng nhập lại qua HTTP".into()); }
                 if cfg.phone.is_empty() {
                     return Err("chưa có phiên đăng nhập và chưa đặt TG_PHONE".into());
                 }
@@ -186,6 +200,7 @@ pub async fn run(client: &TdClient, cfg: &LoginConfig) -> Result<(), String> {
                     .map_err(|e| format!("Telegram từ chối số điện thoại: {}", e.message.replace(&cfg.phone, "***")))?;
             }
             "authorizationStateWaitCode" => {
+                if restore { return Err("phiên đã hết hạn, cần đăng nhập lại qua HTTP".into()); }
                 log::info!("[td] chờ mã đăng nhập: submit_code() hoặc ghi vào {}", cfg.code_file().display());
                 let input = Input { slot: &client.code, file: cfg.code_file(), what: "mã" };
                 if !submit(client, &mut rx, input, "checkAuthenticationCode", "code").await? {
@@ -193,6 +208,7 @@ pub async fn run(client: &TdClient, cfg: &LoginConfig) -> Result<(), String> {
                 }
             }
             "authorizationStateWaitPassword" => {
+                if restore { return Err("phiên đã hết hạn, cần đăng nhập lại qua HTTP".into()); }
                 log::info!("[td] chờ mật khẩu 2FA: submit_password() hoặc ghi vào {}", cfg.password_file().display());
                 let input = Input { slot: &client.password, file: cfg.password_file(), what: "mật khẩu" };
                 if !submit(client, &mut rx, input, "checkAuthenticationPassword", "password").await? {
@@ -208,6 +224,49 @@ pub async fn run(client: &TdClient, cfg: &LoginConfig) -> Result<(), String> {
         // Đã xử lý trạng thái này → chờ trạng thái KHÁC (đừng gửi lại cùng yêu cầu).
         rx.changed().await.map_err(|_| "mất kết nối TDLib".to_owned())?;
     }
+}
+
+async fn set_parameters(client:&TdClient,cfg:&LoginConfig,session:&Path)->Result<(),TdError> {
+    let key=ensure_session_dir(session).map_err(|_|TdError::transport("Không tạo được phiên TDLib."))?;
+    client.request(parameters_for(cfg,session,&key)).await.map(|_|())
+}
+
+/// Cùng các bước khởi tạo với CLI; HTTP chỉ thay nguồn nhập và giữ lỗi TDLib để ánh xạ FLOOD_WAIT.
+pub(crate) async fn begin_http(client:&TdClient,cfg:&LoginConfig,session:&Path,qr:bool)->Result<(),TdError> {
+    let mut rx=client.auth_watch();
+    tokio::time::timeout(Duration::from_secs(30),async {
+        let mut phone_sent=false;
+        loop {
+            let state=rx.borrow_and_update().clone();
+            match state.as_str() {
+                ""=>(),
+                "authorizationStateWaitTdlibParameters"=>set_parameters(client,cfg,session).await?,
+                "authorizationStateWaitPhoneNumber" if !phone_sent=>{
+                    let request=if qr { json!({"@type":"requestQrCodeAuthentication","other_user_ids":[]}) }
+                        else { json!({"@type":"setAuthenticationPhoneNumber","phone_number":cfg.phone}) };
+                    client.request(request).await?;
+                    phone_sent=true;
+                }
+                "authorizationStateWaitCode"|"authorizationStateWaitPassword"|"authorizationStateWaitOtherDeviceConfirmation"|"authorizationStateReady"=>return Ok(()),
+                "authorizationStateWaitPhoneNumber"=>(),
+                _=>return Err(TdError::transport("Trạng thái đăng nhập chưa hỗ trợ.")),
+            }
+            rx.changed().await.map_err(|_|TdError::transport("Mất kết nối TDLib."))?;
+        }
+    }).await.map_err(|_|TdError::transport("Telegram chưa trả trạng thái đăng nhập."))?
+}
+
+pub(crate) async fn verify_http(client:&TdClient,kind:&str,field:&str,value:&str)->Result<String,TdError> {
+    client.request(json!({"@type":kind,(field):value})).await?;
+    // Lấy trạng thái sau phản hồi: không phụ thuộc thứ tự giữa phản hồi và update.
+    let state=client.request(json!({"@type":"getAuthorizationState"})).await?;
+    let name=state["@type"].as_str().unwrap_or_default().to_owned();
+    if matches!(name.as_str(),"authorizationStateReady"|"authorizationStateWaitPassword") { return Ok(name); }
+    let mut rx=client.auth_watch();
+    let result=tokio::time::timeout(Duration::from_secs(10),rx.wait_for(|s| s=="authorizationStateReady"||s=="authorizationStateWaitPassword"))
+        .await.map_err(|_|TdError::transport("Trạng thái đăng nhập chưa xong."))?
+        .map(|v|v.clone()).map_err(|_|TdError::transport("Mất kết nối TDLib."));
+    result
 }
 
 struct Input<'a> {

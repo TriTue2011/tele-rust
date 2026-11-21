@@ -17,6 +17,7 @@ axum = "=0.7.9"
 base64 = "=0.22.1"
 form_urlencoded = "=1.2.1"
 subtle = "=2.6.1"
+ring = "=0.17.14" # SHA-256 cho tên phiên tương thích Python; cũng là backend của rustls
 # Gọi thoại/video P2P (WebRTC + báo hiệu tgcalls). ĐÚNG 3.0.7 = bản Python đang chạy ổn; build.rs tải ntgcalls.linux-x86_64-static_libs.zip
 # chính thức của pytgcalls (GitHub release v3.0.7) và liên kết TĨNH (LGPL-3.0: phát hành công khai thì cân nhắc NTGCALLS_DYLIB).
 ntgcalls = "=3.0.7"

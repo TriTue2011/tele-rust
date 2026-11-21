@@ -3,6 +3,7 @@
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex};
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 
 use serde_json::{json, Value};
@@ -16,6 +17,7 @@ type Responder = Box<dyn Fn(&Value) -> Option<Value> + Send + Sync>;
 /// libtdjson giả: ghi lại mọi yêu cầu gửi đi; `receive` chặn trên condvar tới khi có bản tin hoặc hết giờ.
 #[derive(Default)]
 struct FakeApi {
+    next_id: AtomicI32,
     sent: Mutex<Vec<Value>>,
     inbox: Mutex<VecDeque<Value>>,
     cv: Condvar,
@@ -57,15 +59,14 @@ impl FakeApi {
 
 impl TdApi for FakeApi {
     fn create_client_id(&self) -> i32 {
-        1
+        self.next_id.fetch_add(1, Ordering::Relaxed) + 1
     }
     fn send(&self, client_id: i32, request: &Value) {
-        assert_eq!(client_id, 1);
         self.sent.lock().unwrap().push(request.clone());
         let reply = self.responder.lock().unwrap().as_ref().and_then(|f| f(request));
         if let Some(mut r) = reply {
             r["@extra"] = request["@extra"].clone();
-            r["@client_id"] = json!(1);
+            r["@client_id"] = json!(client_id);
             self.push(r);
         }
     }
@@ -83,8 +84,10 @@ impl TdApi for FakeApi {
 }
 
 fn start() -> (Arc<FakeApi>, Arc<TdClient>) {
+    static NEXT: AtomicI32 = AtomicI32::new(0);
+    let dir = TmpDir::new(&format!("receiver-{}", NEXT.fetch_add(1, Ordering::Relaxed)));
     let api = Arc::new(FakeApi::default());
-    let client = TdClient::start(api.clone(), None);
+    let client = TdClient::start(super::Receiver::start(api.clone()), &dir.0).unwrap();
     (api, client)
 }
 
@@ -92,14 +95,40 @@ fn extra_of(v: &Value) -> Value {
     v["@extra"].clone()
 }
 
-#[test]
-fn chi_mot_client_that_duoc_nhan_va_quyen_duoc_nha_sau_khi_dung() {
-    let guard = super::ReceiverGuard::acquire().unwrap();
-    assert!(TdClient::open("thu-vien-khong-ton-tai.so").err().unwrap().contains("đã có một TdClient"));
-    drop(guard);
-    // Mở thư viện thất bại cũng phải nhả quyền, để lần sau còn khởi tạo lại được.
-    assert!(TdClient::open("thu-vien-khong-ton-tai.so").err().unwrap().contains("không mở được"));
-    assert!(super::ReceiverGuard::acquire().is_ok());
+#[tokio::test]
+async fn hai_client_khong_lan_phan_hoi_va_giu_khoa_phien_toi_khi_dong() {
+    let dir = TmpDir::new("multi");
+    let api = Arc::new(FakeApi::default());
+    let receiver = super::Receiver::start(api.clone());
+    let p = dir.0.join("mot");
+    let a = TdClient::start(receiver.clone(), &p).unwrap();
+    let b = TdClient::start(receiver.clone(), &dir.0.join("hai")).unwrap();
+    assert!(TdClient::start(receiver.clone(), &p.join(".")).is_err());
+
+    let mut au = a.updates();
+    let mut bu = b.updates();
+    let fetch = |c: Arc<TdClient>| tokio::spawn(async move { c.request(json!({"@type":"getMe"})).await.unwrap() });
+    let (ax, bx) = (fetch(a.clone()), fetch(b.clone()));
+    let sent = api.wait_sent("getMe", 2).await;
+    assert_eq!(sent[0]["@extra"], sent[1]["@extra"]);
+    for (client, value) in [(&b, 22), (&a, 11)] {
+        api.push(json!({"@client_id":client.client_id(), "@extra":sent[0]["@extra"], "id":value}));
+        api.push(json!({"@client_id":client.client_id(), "@type":"updateNewMessage", "id":value}));
+    }
+    let wait = Duration::from_secs(2);
+    assert_eq!(tokio::time::timeout(wait, ax).await.unwrap().unwrap()["id"], 11);
+    assert_eq!(tokio::time::timeout(wait, bx).await.unwrap().unwrap()["id"], 22);
+    assert_eq!(tokio::time::timeout(wait, au.recv()).await.unwrap().unwrap()["id"], 11);
+    assert_eq!(tokio::time::timeout(wait, bu.recv()).await.unwrap().unwrap()["id"], 22);
+
+    let closing = a.clone();
+    let task = tokio::spawn(async move { closing.close(wait).await });
+    api.wait_sent("close", 1).await;
+    assert!(TdClient::start(receiver.clone(), &p).is_err());
+    api.auth("authorizationStateClosed");
+    task.await.unwrap();
+    assert!(TdClient::start(receiver, &p).is_ok());
+    assert_ne!(b.auth_state(), "authorizationStateClosed");
 }
 
 #[tokio::test]
@@ -179,8 +208,8 @@ async fn huy_yeu_cau_go_nguoi_cho_va_khong_phat_tra_loi_muon() {
     task.abort();
     assert!(task.await.unwrap_err().is_cancelled());
     assert!(client.shared.pending.lock().unwrap().as_ref().unwrap().is_empty());
-    api.push(json!({"@type": "user", "@extra": extra_of(&sent[0])}));
-    api.push(json!({"@type": "updateOption", "name": "sau-huy"}));
+    api.push(json!({"@type": "user", "@extra": extra_of(&sent[0]), "@client_id": 1}));
+    api.push(json!({"@type": "updateOption", "name": "sau-huy", "@client_id": 1}));
     let update = tokio::time::timeout(Duration::from_secs(2), updates.recv()).await.unwrap().unwrap();
     assert_eq!(update["@type"], "updateOption");
     assert_eq!(update["name"], "sau-huy");
@@ -193,7 +222,7 @@ async fn het_gio_tra_err_va_tra_loi_muon_khong_lan_vao_update() {
     let r = client.request_timeout(json!({"@type": "getMe"}), Duration::from_millis(100)).await;
     assert!(r.unwrap_err().message.contains("getMe"));
     let e = extra_of(&api.sent_of("getMe")[0]);
-    api.push(json!({"@type": "user", "@extra": e}));
+    api.push(json!({"@type": "user", "@extra": e, "@client_id": 1}));
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert!(updates.try_recv().is_err());
 }

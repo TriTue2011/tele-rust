@@ -7,11 +7,11 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 
-def request(base_url, path, token=None):
+def request(base_url, path, token=None, method="GET", raw=False):
     headers = {}
     if token is not None:
         headers["Authorization"] = f"Bearer {token}"
-    req = Request(base_url.rstrip("/") + path, headers=headers)
+    req = Request(base_url.rstrip("/") + path, headers=headers, method=method)
     try:
         response = urlopen(req, timeout=10)
     except HTTPError as error:
@@ -20,6 +20,8 @@ def request(base_url, path, token=None):
         raise AssertionError(f"Không kết nối được {path}: {error}") from error
     with response:
         status = response.status
+        if raw:
+            return status, (response.headers, response.read().decode("utf-8"))
         try:
             body = json.loads(response.read())
         except (UnicodeDecodeError, json.JSONDecodeError) as error:
@@ -68,6 +70,25 @@ def main():
     if len(sys.argv) != 3:
         raise SystemExit(f"Cách dùng: {sys.argv[0]} BASE_URL TOKEN")
     base_url, token = sys.argv[1:]
+
+    for path in ("/", "/ui/app.html", "/ui/index.html"):
+        status, (headers, html) = request(base_url, path, raw=True)
+        require(status == 200 and "<!DOCTYPE html>" in html, f"GET {path} phải trả HTML 200")
+        require(headers.get("X-Content-Type-Options") == "nosniff", "Thiếu nosniff")
+        require(headers.get("Referrer-Policy") == "no-referrer", "Thiếu no-referrer")
+        require("connect-src 'self'" in headers.get("Content-Security-Policy", ""), "Thiếu CSP")
+        print(f"GET {path}: HTTP 200, HTML và tiêu đề an toàn đạt")
+
+    status, unauthorized = request(base_url, "/ui/api/accounts", method="POST")
+    require(status == 401 and unauthorized["error"]["code"] == "UNAUTHORIZED", "Đăng nhập HTTP thiếu token phải trả 401")
+    print("POST /ui/api/accounts: HTTP 401 khi thiếu token")
+
+    status, accounts = request(base_url, "/api/accounts", token)
+    require(status == 200, "GET /api/accounts phải trả 200")
+    object_shape(accounts, {"tai_khoan": (list,)}, "accounts")
+    for account in accounts["tai_khoan"]:
+        object_shape(account, {"phone": (str,), "display_name": (str,), "status": (str,)}, "tai_khoan[]")
+    print("GET /api/accounts: HTTP 200, danh sách đúng khóa và kiểu")
 
     status, health = request(base_url, "/health")
     require(status == 200, f"GET /health: HTTP {status}, cần 200")

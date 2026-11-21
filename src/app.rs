@@ -1,22 +1,22 @@
 //! Khởi tạo và quản lý vòng đời của tiến trình `tggw serve`.
 
-use std::future::Future;
-use std::sync::Arc;
+#[cfg(test)]
+use std::{future::Future,sync::Arc};
 use std::time::Duration;
 
+#[cfg(test)]
 use serde_json::Value;
-use tokio::sync::{oneshot, watch};
+use tokio::sync::oneshot;
+#[cfg(test)]
+use tokio::sync::watch;
+#[cfg(test)]
 use tokio::task::JoinHandle;
 
-use crate::calls::CallManager;
-use crate::chat::ChatService;
-use crate::contract::{Binary, BoxFut, CallControl, CastAudio, ChatControl, GwError, TdLink, VideoFrames};
-use crate::events::{EventBridge, Webhook};
+#[cfg(test)]
+use crate::contract::{Binary, BoxFut, CallControl, CastAudio, ChatControl, GwError, VideoFrames};
 use crate::{rest, td};
 
-const CALLS_SHUTDOWN_WAIT: Duration = Duration::from_secs(10);
-const TDLIB_CLOSE_WAIT: Duration = Duration::from_secs(10);
-
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum LoginStatus {
     Starting,
@@ -24,24 +24,28 @@ enum LoginStatus {
     Failed,
 }
 
+#[cfg(test)]
 #[derive(Clone)]
 struct Session {
     auth: watch::Receiver<String>,
     status: watch::Receiver<LoginStatus>,
 }
 
+#[cfg(test)]
 impl Session {
     fn is_ready(&self) -> bool {
         *self.auth.borrow() == "authorizationStateReady" && *self.status.borrow() == LoginStatus::Ready
     }
 }
 
+#[cfg(test)]
 fn account_offline<'a, T: 'a>() -> BoxFut<'a, Result<T, GwError>> {
     Box::pin(async {
         Err(GwError::new(503, "ACCOUNT_OFFLINE", "Tài khoản đang mất kết nối tới Telegram."))
     })
 }
 
+#[cfg(test)]
 fn spawn_login<F>(login: F, status: watch::Sender<LoginStatus>) -> JoinHandle<()>
 where
     F: Future<Output = Result<(), String>> + Send + 'static,
@@ -57,6 +61,7 @@ where
     })
 }
 
+#[cfg(test)]
 async fn stop_services<C, F>(calls: C, close_tdlib: F)
 where
     C: Future<Output = Result<(), String>>,
@@ -68,11 +73,13 @@ where
     close_tdlib.await;
 }
 
+#[cfg(test)]
 struct ReadyCalls {
     session: Session,
     inner: Arc<dyn CallControl>,
 }
 
+#[cfg(test)]
 impl CallControl for ReadyCalls {
     fn calls(&self) -> BoxFut<'_, Result<Value, GwError>> {
         if self.session.is_ready() { self.inner.calls() } else { account_offline() }
@@ -109,11 +116,13 @@ impl CallControl for ReadyCalls {
     }
 }
 
+#[cfg(test)]
 struct ReadyChat {
     session: Session,
     inner: Arc<dyn ChatControl>,
 }
 
+#[cfg(test)]
 impl ChatControl for ReadyChat {
     fn handle(&self, method: &str, path: &str, query: &str, body: Value) -> BoxFut<'_, Result<Value, GwError>> {
         if path == "/api/calltrace" || self.session.is_ready() { self.inner.handle(method, path, query, body) } else { account_offline() }
@@ -133,42 +142,18 @@ impl App {
         let login_config = td::login::LoginConfig::from_env()
             .map_err(|e| format!("Cấu hình đăng nhập không hợp lệ: {e}"))?;
         let (addr, rest_config) = rest::serve_config_from_env()?;
-        let events = EventBridge::start(&login_config.data_dir, &login_config.phone, Webhook::from_env()).await?;
         let listener = tokio::net::TcpListener::bind(addr).await.map_err(|e| format!("Không nghe được {addr}: {e}"))?;
         let cast_port = listener.local_addr().map_err(|_| "Không đọc được cổng HTTP.")?.port();
         let library = std::env::var("TDJSON_LIB").unwrap_or_else(|_| "libtdjson.so".into());
-        let client = td::TdClient::open(&library)
-            .map_err(|e| format!("Không khởi tạo được TDLib: {e}"))?;
-        let td_link: Arc<dyn TdLink> = client.clone();
-        let manager = match CallManager::with_cast(td_link.clone(), &login_config.data_dir, Some(cast_port)) {
-            Ok(manager) => manager,
-            Err(e) => {
-                client.close(TDLIB_CLOSE_WAIT).await;
-                return Err(format!("Không khởi tạo được CallManager: {}", e.message));
-            }
-        };
-
-        let (login_tx, login_rx) = watch::channel(LoginStatus::Starting);
-        let mut call_events = tokio::spawn(events.sink.clone().follow_calls(manager.events()));
-        let auth_rx = client.auth_watch();
-        let call_control: Arc<dyn CallControl> = Arc::new(ReadyCalls {
-            session: Session { auth: auth_rx.clone(), status: login_rx.clone() },
-            inner: Arc::new(manager.clone()),
-        });
-        let chat: Arc<dyn ChatControl> = Arc::new(ReadyChat {
-            session: Session { auth: auth_rx, status: login_rx },
-            inner: Arc::new(ChatService::with_events(td_link, login_config.phone.clone(), &login_config.data_dir, Some(events.sink.clone())).follow_calls(manager.events())),
-        });
-        let app = rest::router_with_events(call_control, chat, rest_config, Some(events.store.clone()));
+        let accounts = crate::account_router::Accounts::new(login_config, library, cast_port).await?;
+        let app = rest::router_accounts(accounts.clone(), rest_config);
         let (stop_tx, stop_rx) = oneshot::channel();
         let mut server = tokio::spawn(rest::serve(listener, app, async move { let _ = stop_rx.await; }));
-        let login_client = client.clone();
-        let login_events = events.sink.clone();
-        let login_task = spawn_login(async move {
-            let result = td::login::run(&login_client, &login_config).await;
-            login_events.account_login(result.is_ok());
-            result
-        }, login_tx);
+        let sweeping=accounts.clone();
+        let sweeper=tokio::spawn(async move {
+            let mut tick=tokio::time::interval(Duration::from_secs(1));
+            loop { tick.tick().await; sweeping.logins.get().unwrap().expire().await; }
+        });
 
         let result = tokio::select! {
             response = &mut server => server_result(response),
@@ -186,15 +171,8 @@ impl App {
             }
         };
 
-        login_task.abort();
-        let _ = login_task.await;
-        stop_services(
-            manager.shutdown(CALLS_SHUTDOWN_WAIT),
-            async { client.close(TDLIB_CLOSE_WAIT).await },
-        ).await;
-        drop(manager);
-        if tokio::time::timeout(Duration::from_secs(1), &mut call_events).await.is_err() { call_events.abort(); }
-        events.shutdown().await;
+        sweeper.abort();
+        accounts.shutdown().await;
         result
     }
 }
