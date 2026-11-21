@@ -616,7 +616,7 @@ fn router_with(ctx: Arc<Ctx>) -> Router {
     }
     // Chỉ đọc → ChatControl (routes.py + chat_routes.py).
     for p in ["/api/accounts", "/api/me", "/api/chats", "/api/contacts", "/api/search", "/api/feed",
-              "/api/calls", "/api/calltrace"] {
+              "/api/calls", "/api/calltrace", "/api/contacts/blocked"] {
         r = r.route(p, route(get, s(ChatGet)));
     }
     r = r
@@ -628,6 +628,7 @@ fn router_with(ctx: Arc<Ctx>) -> Router {
     for p in ["/api/send_message", "/api/send_media", "/api/send_voice", "/api/call", "/api/answer_call",
               "/api/hangup_call", "/api/audio/in", "/api/audio/upload", "/api/messages/edit", "/api/messages/delete",
               "/api/messages/forward", "/api/messages/react", "/api/resolve", "/api/translate", "/api/contacts/open",
+              "/api/contacts/add", "/api/contacts/edit", "/api/contacts/remove", "/api/contacts/block", "/api/contacts/unblock",
               "/api/do/:name"] {
         r = r.route(p, route(post, s(ChatPost)));
     }

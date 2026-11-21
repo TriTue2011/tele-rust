@@ -7,6 +7,7 @@ use crate::contract::TdError;
 type FakeReply = (Value, Result<Value, TdError>);
 
 mod catalog;
+mod contacts;
 mod writing;
 
 struct FakeTd {
@@ -79,17 +80,20 @@ async fn chats_and_search_summarize_and_skip_missing_chats() {
 }
 
 #[tokio::test]
-async fn history_paginates_sorts_and_reuses_sender_for_contacts() {
+async fn history_paginates_sorts_and_contacts_refresh_user_details() {
     let req = |from, limit| json!({"@type":"getChatHistory","chat_id":5,"from_message_id":from,"offset":0,"limit":limit,"only_local":false});
     let (chat, _) = setup(vec![ok(req(11,3),json!({"messages":[td_message(10)]})),ok(req(10,2),json!({"messages":[td_message(8)]})),
         ok(req(8,1),json!({"messages":[]})),ok(json!({"@type":"getUser","user_id":7}),json!({"id":7,"first_name":"Zed"})),
         ok(json!({"@type":"getContacts"}),json!({"user_ids":[7,8]})),
+        ok(json!({"@type":"getUser","user_id":7}),json!({"id":7,"first_name":"Zed"})),
         ok(json!({"@type":"getUser","user_id":8}),json!({"id":8,"usernames":{"active_usernames":["amy"]}})),
+        ok(json!({"@type":"getBlockedMessageSenders","block_list":{"@type":"blockListMain"},"offset":0,"limit":100}),json!({"senders":[]})),
         ok(json!({"@type":"createPrivateChat","user_id":7,"force":false}),json!({"id":5})),
     ]);
     assert_eq!(get(&chat,"/api/chats/5/messages","before=11&limit=3").await.unwrap(),json!({"messages":[normalized(8,"Zed"),normalized(10,"Zed")]}));
-    assert_eq!(get(&chat,"/api/contacts", "").await.unwrap(),json!({"contacts":[{"id":8,"name":"@amy","phone":"","username":"amy"},
-        {"id":7,"name":"Zed","phone":"","username":""}]}));
+    let contacts = get(&chat,"/api/contacts", "").await.unwrap();
+    assert_eq!(contacts["contacts"][0]["name"], "Zed");
+    assert_eq!(contacts["contacts"][1]["username"], "amy");
     assert_eq!(post(&chat,"/api/contacts/open","",json!({"user_id":"7"})).await.unwrap(),json!({"chat_id":5}));
 }
 
