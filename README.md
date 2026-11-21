@@ -6,7 +6,8 @@ Python (`Telegram-calling/telegram-gateway`). TDLib 1.8.69 (`libtdjson`, gọi q
 > **Trạng thái: đang làm (cột mốc 0 xong).** `tggw version` → TDLib 1.8.69; `tggw protocol` → NTgCalls 3.0.7, tgcalls 8/9/12/13.
 > Đang viết: client TDLib + đăng nhập, REST đúng hợp đồng bản Python, quản lý cuộc gọi (`src/contract.rs` là hợp đồng giữa các phần).
 
-Dựng: `./build.sh build` (container `rust:1.90` + g++/zlib, ssh tới máy dựng; tắt LTO vì thư viện C++ của NTgCalls không có bitcode).
+Dựng: đặt `TGGW_BUILD_HOST` thành SSH alias của máy dựng (mặc định `builder`), rồi chạy `./build.sh build`
+(container `rust:1.90` + g++/zlib; tắt LTO vì thư viện C++ của NTgCalls không có bitcode).
 Lưu ý giấy phép: NTgCalls là LGPL-3.0 liên kết tĩnh — phát hành nhị phân cần xem lại điều khoản liên kết lại. Giấy phép mã của kho này: chưa chọn.
 
 ## Nhiều tài khoản và đăng nhập trên web
@@ -35,6 +36,10 @@ hoặc hỏi mật khẩu mới trong terminal và ẩn nội dung nhập. Mọi
 Token gateway vẫn là thông tin xác thực máy-gọi-máy: Home Assistant và các tích hợp hiện có tiếp tục dùng
 `Authorization: Bearer …` không thay đổi. Các API `/ui/api/accounts*` cũng chấp nhận Bearer như trước; giao diện web
 không giữ hoặc gửi token sau lần thiết lập.
+
+Tệp nhận từ Telegram được cô lập bằng CSP và `nosniff`. Chỉ ảnh raster PNG/JPEG/GIF/WebP, âm thanh và video
+hiển thị trực tiếp; các kiểu khác (kể cả HTML, SVG, PDF và nhật ký cuộc gọi) được tải xuống.
+Thư viện vẽ QR được nhúng trong gateway, không tải mã từ CDN trên trang đăng nhập.
 
 Chọn tài khoản trong giao diện trò chuyện, hoặc truyền
 `?account=<phone>` vào API; các lệnh `/api/live/*` cũng nhận `account` trong JSON. Khi bỏ trống,
