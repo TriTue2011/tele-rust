@@ -139,6 +139,10 @@ pub trait CallControl: Send + Sync + 'static {
     fn audio_out(&self, _id: &str, _token: &str) -> BoxFut<'_, Result<AudioOut, GwError>> {
         Box::pin(async { Err(GwError::not_found("Không có cuộc gọi này.")) })
     }
+    /// Null = danh mục + settings; object = thay toàn bộ danh mục HA đã lọc.
+    fn devices(&self, _body: Value) -> BoxFut<'_, Result<Value, GwError>> {
+        Box::pin(async { Err(GwError::new(501,"NOT_IMPLEMENTED","Chưa có danh mục thiết bị.")) })
+    }
     fn snapshot(&self, _id: &str) -> BoxFut<'_, Result<Binary, GwError>> {
         Box::pin(async { Err(GwError::new(501, "NOT_IMPLEMENTED", "Chưa có ảnh chụp cuộc gọi.")) })
     }

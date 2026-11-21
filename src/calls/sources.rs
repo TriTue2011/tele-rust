@@ -58,7 +58,7 @@ pub fn camera_command(spec: &str, profile: (i16, i16, u8)) -> String {
     let base = "ffmpeg -hide_banner -loglevel error -nostdin";
     let out = format!("-vf scale={w}:{h},fps={fps} -f rawvideo -pix_fmt yuv420p pipe:1");
     match spec {
-        "black" => format!("{base} -re -f lavfi -i \"color=c=black:size={w}x{h}:rate={fps}\" {out}"),
+        "black" | "browser" => format!("{base} -re -f lavfi -i \"color=c=black:size={w}x{h}:rate={fps}\" {out}"),
         "" | "test" => format!("{base} -re -f lavfi -i \"testsrc2=size={w}x{h}:rate={fps}\" {out}"),
         _ if spec.starts_with("rtsp://") || spec.starts_with("rtsps://") => format!("{base} -rtsp_transport tcp -i {} -an {out}", quote(spec)),
         _ => format!("{base} -re -i {} -an {out}", quote(spec)),
@@ -76,7 +76,7 @@ pub(super) fn mask(value: &str) -> String {
 pub(super) fn source(value: &Value, key: &str) -> Result<String, GwError> {
     let s = value.as_str().ok_or_else(|| GwError::bad_request(format!("{key} phải là chuỗi")))?.trim();
     let s = if s.is_empty() { "test" } else { s };
-    let special = s == "test" || (key == "mic" && matches!(s, "silence" | "browser")) || (key == "camera" && s == "black");
+    let special = matches!(s, "test" | "browser") || (key == "mic" && s == "silence") || (key == "camera" && s == "black");
     if s.contains('\0') || !(special || s.starts_with('/') || s.starts_with("./") || ["rtsp://", "rtsps://", "http://", "https://", "rtmp://"].iter().any(|p| s.starts_with(p))) {
         return Err(GwError::bad_request(format!("{key} phải là nguồn thử, URL rtsp/http hoặc đường dẫn tệp")));
     }
@@ -101,7 +101,23 @@ impl Default for Devices {
 impl Devices {
     pub fn json(&self, masked: bool) -> Value {
         let show = |s: &str| if masked { mask(s) } else { s.to_owned() };
-        json!({"mic":show(&self.mic), "mic_format":self.mic_format, "camera":show(&self.camera), "playback":self.playback, "speaker":show(&self.speaker)})
+        let mut value = json!({"mic":show(&self.mic), "mic_format":self.mic_format, "camera":show(&self.camera), "playback":self.playback, "speaker":show(&self.speaker)});
+        if masked { value["auto"] = json!(self.auto()); }
+        value
+    }
+
+    pub fn auto(&self) -> bool {
+        // Các nguồn dựng sẵn (kể cả test của bản cũ) và browser không phải thiết bị do HA cấp.
+        !matches!(self.mic.as_str(), "" | "test" | "silence" | "browser")
+            || !matches!(self.camera.as_str(), "" | "test" | "black" | "browser")
+            || !matches!(self.speaker.as_str(), "" | "browser")
+    }
+
+    pub fn check_camera(&self, video: bool, off: bool) -> Result<(), GwError> {
+        if video && !off && self.camera == "browser" {
+            return Err(GwError::new(501, "BROWSER_VIDEO_UNAVAILABLE", "Camera trình duyệt chưa được hỗ trợ; chọn black hoặc camera HA."));
+        }
+        Ok(())
     }
 
     pub fn update(&mut self, body: &Value) -> Result<(), GwError> {
@@ -119,7 +135,10 @@ impl Devices {
                 self.speaker = value.to_owned();
             }
         }
-        if matches!(body["mic_format"].as_str(), Some("auto" | "s16le16k")) { self.mic_format = body["mic_format"].as_str().unwrap().into(); }
+        if let Some(value) = body.get("mic_format") {
+            self.mic_format = value.as_str().filter(|v| matches!(*v, "auto" | "s16le16k"))
+                .ok_or_else(|| GwError::bad_request("mic_format phải là auto hoặc s16le16k"))?.into();
+        }
         if matches!(body["playback"].as_str(), Some("external" | "file")) { self.playback = body["playback"].as_str().unwrap().into(); }
         Ok(())
     }

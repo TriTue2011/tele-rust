@@ -234,6 +234,38 @@ async fn live_body_account_and_query_override_preserve_python_peer_busy_rule() {
 }
 
 #[tokio::test]
+async fn browser_devices_and_media_stay_with_the_selected_account() {
+    let f=Fixture::new("browser-media").await;
+    f.ready("+84900000001").await;f.ready("+84900000002").await;
+    let second="?account=%2B84900000002";
+    let settings=json!({"mic":"browser","speaker":"browser","camera":"black"});
+    assert_eq!(f.send("POST",&format!("/api/live/settings{second}"),settings).await.0,200);
+    let result=f.send("POST",&format!("/api/live/ha_devices{second}"),json!({"mic":[{"id":"sensor.mic","name":"Mic"}],"speaker":[],"camera":[]})).await;
+    assert_eq!(result.0,200);
+    assert_eq!(f.send("GET",&format!("/api/live/devices{second}"),Value::Null).await.1["catalog"]["mic"].as_array().unwrap().len(),1);
+    assert!(f.send("GET","/api/live/devices",Value::Null).await.1["catalog"]["mic"].as_array().unwrap().is_empty());
+    assert_eq!(f.send("GET",&format!("/api/live/settings{second}"),Value::Null).await.1["auto"],false);
+    let first=f.send("POST","/api/live/call",json!({"user_id":701})).await.1;
+    let other=f.send("POST",&format!("/api/live/call{second}"),json!({"user_id":702})).await.1;
+    let mut urls=Vec::new();
+    for c in [&first,&other] {
+        let response=f.send("POST","/api/live/media",json!({"id":c["id"],"action":"audio_out"})).await;
+        assert_eq!(response.0,200);urls.push(response.1["audio_out"]["url"].as_str().unwrap().to_owned());
+    }
+    let path=&urls[1];
+    let response=f.router.clone().oneshot(Request::builder().uri(path).body(Body::empty()).unwrap()).await.unwrap();
+    assert_eq!(response.status(),200);assert_eq!(response.headers()["content-type"],"audio/wav");drop(response);
+    let wrong=format!("/api/live/audio/out/{}?t={}",other["id"].as_str().unwrap(),urls[0].split("?t=").nth(1).unwrap());
+    assert_eq!(send(&f.router,"GET",&wrong,Value::Null,false).await.0,403);
+    let request=Request::builder().method("POST").uri(format!("/api/live/audio/in/{}",other["id"].as_str().unwrap()))
+        .header("Authorization","Bearer test-token").body(Body::from(vec![0u8;3200])).unwrap();
+    assert_eq!(f.router.clone().oneshot(request).await.unwrap().status(),409);
+    assert_eq!(f.send("POST","/api/live/hangup",json!({"id":other["id"]})).await.0,200);
+    assert_eq!(send(&f.router,"GET",path,Value::Null,false).await.0,404);
+    f.finish().await;
+}
+
+#[tokio::test]
 async fn authenticated_ui_2fa_qr_and_archive_contract() {
     let f=Fixture::new("login").await;
     for (method,path) in [("POST","/ui/api/accounts"),("POST","/ui/api/accounts/qr"),("GET","/ui/api/accounts/id"),

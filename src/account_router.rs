@@ -276,6 +276,7 @@ impl Accounts {
         let selected = param(query,"account").filter(|s| !s.is_empty()).unwrap_or_else(||body["account"].as_str().unwrap_or_default().into());
         let (phone,e) = self.select(&selected)?;
         if path == "/api/live/settings" { return e.calls.settings(Value::Null).await; }
+        if path == "/api/live/devices" { return e.calls.devices(Value::Null).await; }
         let _=phone;
         e.chat.handle(method,path,query,body).await
     }
@@ -361,6 +362,13 @@ impl CallControl for Accounts {
     }
     route_call!(accept); route_call!(hangup); route_call!(settings);
     route_call!(media); route_call!(playback); route_call!(say);
+    fn devices(&self, mut body:Value)->BoxFut<'_,Result<Value,GwError>> {
+        Box::pin(async move {
+            let (_,e)=self.select(body["account"].as_str().unwrap_or_default())?;
+            if let Some(map)=body.as_object_mut() { map.remove("account"); }
+            e.calls.devices(body).await
+        })
+    }
     fn audio_in(&self,id:&str,pcm:Vec<u8>)->BoxFut<'_,Result<Value,GwError>> {
         let id=id.to_owned(); Box::pin(async move {
             let (_,e)=self.select_call(&json!({"id":id})).await?;

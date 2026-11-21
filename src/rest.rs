@@ -111,12 +111,14 @@ enum LiveOp {
     Media,
     Playback,
     Say,
+    Devices,
 }
 
 #[derive(Clone, Copy)]
 enum Kind {
     /// GET /api/live/calls → `CallControl::calls`.
     LiveCalls,
+    LiveDevices,
     /// POST /api/live/* → `CallControl`.
     Live(LiveOp),
     /// GET → `ChatControl::handle(GET, …, Null)`.
@@ -250,6 +252,8 @@ async fn handle(ctx: Arc<Ctx>, spec: Spec, req: Request) -> Response {
         },
         Kind::LiveCalls if ctx.accounts => ctx.chat.handle("GET", "/api/live/calls", &query, Value::Null).await,
         Kind::LiveCalls => ctx.call.calls().await,
+        Kind::LiveDevices if ctx.accounts => ctx.chat.handle("GET", "/api/live/devices", &query, Value::Null).await,
+        Kind::LiveDevices => ctx.call.devices(Value::Null).await,
         Kind::Ui => match if parts.method == axum::http::Method::GET || parts.method == axum::http::Method::DELETE {
             Ok(json!({}))
         } else { body_dict(body).await } {
@@ -271,6 +275,7 @@ async fn handle(ctx: Arc<Ctx>, spec: Spec, req: Request) -> Response {
                     LiveOp::Media => c.media(b),
                     LiveOp::Playback => c.playback(b),
                     LiveOp::Say => c.say(b),
+                    LiveOp::Devices => c.devices(b),
                 };
                 fut.await
             }
@@ -471,6 +476,8 @@ fn router_with(ctx: Arc<Ctx>) -> Router {
         .route("/api/live/audio/in/:call_id", route(post, s(AudioIn)))
         .route("/api/live/audio/out/:call_id", on(get, audio_out_stream).on(MethodFilter::HEAD, method_not_allowed).fallback(method_not_allowed))
         .route("/api/live/settings", add(route(get, s(ChatGet)), post, s(Live(Settings))))
+        .route("/api/live/devices", route(get, s(LiveDevices)))
+        .route("/api/live/ha_devices", route(post, s(Live(Devices))))
         .route("/api/live/view/:call_id", route(get, s(LiveView)))
         .route("/api/live/snapshot/:call_id", route(get, s(Snapshot)))
         .route("/api/live/cast/:call_id/:file", on(get, cast_stream).on(MethodFilter::HEAD, method_not_allowed).fallback(method_not_allowed));
@@ -652,6 +659,9 @@ mod tests {
         }
         fn settings(&self, b: Value) -> BoxFut<'_, Result<Value, GwError>> {
             self.rec("settings", "", "", b)
+        }
+        fn devices(&self, b: Value) -> BoxFut<'_, Result<Value, GwError>> {
+            self.rec("devices", "", "", b)
         }
         fn media(&self, b: Value) -> BoxFut<'_, Result<Value, GwError>> {
             self.rec("media", "", "", b)
@@ -883,6 +893,18 @@ mod tests {
         assert_eq!(call.last(), ("audio_in".into(), "c1".into(), "".into(), json!([1,2,3,4])));
         assert_eq!(send(&app, ok("GET", "/api/live/calls", Body::empty())).await.0, 200);
         assert_eq!(send(&app, ok("GET", "/api/live/calls", Body::empty())).await.0, 429);
+    }
+
+    #[tokio::test]
+    async fn device_catalog_routes_require_bearer_and_pass_account() {
+        let (app,call,_) = app();
+        for (method,path) in [("GET","/api/live/devices"),("POST","/api/live/ha_devices")] {
+            assert_eq!(send(&app,req(method,path,None,Body::empty())).await.0,401);
+        }
+        assert_eq!(send(&app,ok("GET","/api/live/devices",Body::empty())).await.0,200);
+        assert_eq!(call.last(),("devices".into(),"".into(),"".into(),Value::Null));
+        assert_eq!(send(&app,ok("POST","/api/live/ha_devices?account=second",r#"{"mic":[]}"#)).await.0,200);
+        assert_eq!(call.last().3,json!({"mic":[],"account":"second"}));
     }
 
     #[tokio::test]

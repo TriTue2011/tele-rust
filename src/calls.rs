@@ -9,6 +9,7 @@ mod sources;
 mod snapshot;
 mod browser;
 mod browser_audio;
+mod catalog;
 pub(crate) mod trace;
 pub mod versions;
 
@@ -31,7 +32,7 @@ use sources::{Devices, playback_description, video_profile};
 type Reply = Result<Value, GwError>;
 
 #[derive(Clone, Copy)]
-enum Action { Calls, Resolve, CallOut, Accept, Hangup, Settings, Media, Playback, Say }
+enum Action { Calls, Resolve, CallOut, Accept, Hangup, Settings, Devices, Media, Playback, Say }
 
 enum Command {
     Api(Action, Value, oneshot::Sender<Reply>),
@@ -102,8 +103,9 @@ impl CallManager {
                     Err(_) => { let _ = startup_tx.send(Err(io_error())); return; }
                 }
                 media.callbacks(sender.clone(), frame_sender);
+                let catalog = match catalog::load(&data_dir) { Ok(c) => c, Err(e) => { let _ = startup_tx.send(Err(e)); return; } };
                 let mut actor = Actor { td, media, protocol, p2p, data_dir, defaults, calls: Vec::new(),
-                    handled: HashSet::new(), events, sender, profile: video_profile(&std::env::var("VIDEO_PROFILE").unwrap_or_default()), cast_port };
+                    catalog, handled: HashSet::new(), events, sender, profile: video_profile(&std::env::var("VIDEO_PROFILE").unwrap_or_default()), cast_port };
                 let _ = startup_tx.send(Ok(()));
                 actor.run(receiver, updates, frame_receiver).await;
             });
@@ -152,6 +154,7 @@ impl CallControl for CallManager {
     fn hangup(&self, body: Value) -> BoxFut<'_, Reply> { Box::pin(self.request(Action::Hangup, body)) }
     /// Null = GET; object = POST, cùng hình dạng JSON của Python.
     fn settings(&self, body: Value) -> BoxFut<'_, Reply> { Box::pin(self.request(Action::Settings, body)) }
+    fn devices(&self, body: Value) -> BoxFut<'_, Reply> { Box::pin(self.request(Action::Devices, body)) }
     fn media(&self, body: Value) -> BoxFut<'_, Reply> { Box::pin(self.request(Action::Media, body)) }
     fn playback(&self, body: Value) -> BoxFut<'_, Reply> { Box::pin(self.request(Action::Playback, body)) }
     fn say(&self, body: Value) -> BoxFut<'_, Reply> { Box::pin(self.request(Action::Say, body)) }
@@ -328,6 +331,7 @@ struct Actor {
     p2p: bool,
     data_dir: PathBuf,
     defaults: Devices,
+    catalog: Value,
     calls: Vec<LiveCall>,
     // Tombstone tách khỏi lịch sử hiển thị: prune không làm cuộc gọi cũ sống lại.
     handled: HashSet<i64>,
@@ -407,7 +411,7 @@ impl Actor {
                     }
                     Some(Command::AudioOut(id, token, reply)) => {
                         let result = self.calls.iter().find(|c| c.id == id && c.state != "ended").ok_or_else(missing)
-                            .and_then(|c| c.browser_audio.as_ref().ok_or_else(|| GwError::new(409,"NO_AUDIO_OUT","Chưa cấp luồng âm thanh.")))
+                            .and_then(|c| c.browser_audio.as_ref().ok_or_else(|| GwError::new(403,"MEDIA_TOKEN","Thiếu, sai hoặc hết hạn token âm thanh.")))
                             .and_then(|audio| audio.subscribe(&token));
                         let _ = reply.send(result);
                     }
@@ -483,11 +487,15 @@ impl Actor {
     }
 
     async fn api(&mut self, action: Action, body: Value) -> Reply {
-        if !matches!(action, Action::Calls | Action::Settings) && !body.is_object() { return Err(GwError::bad_request("Cần JSON object")); }
+        if !matches!(action, Action::Calls | Action::Settings | Action::Devices) && !body.is_object() { return Err(GwError::bad_request("Cần JSON object")); }
         match action {
             Action::Calls => Ok(json!({"calls":self.calls.iter().skip(self.calls.len().saturating_sub(10)).map(LiveCall::info).collect::<Vec<_>>()})),
             Action::Resolve => self.resolve_user(&body).await.map(|id|json!(id)),
             Action::Settings => self.settings(body),
+            Action::Devices => {
+                if !body.is_null() { self.catalog = catalog::save(&self.data_dir, &body)?; }
+                Ok(json!({"settings":self.defaults.json(true),"auto":self.defaults.auto(),"catalog":self.catalog}))
+            }
             Action::CallOut => self.call_out(body).await,
             Action::Accept => self.accept(body).await,
             Action::Hangup => {
@@ -556,6 +564,7 @@ impl Actor {
         devices.update(&Value::Object(overrides))?;
         if body["playback"] == "shell" { devices.playback = "shell".into(); }
         let video = body["video"].as_bool().unwrap_or(false);
+        devices.check_camera(video, false)?;
         let call = LiveCall::new(user, true, video, devices, &self.data_dir);
         call.check_playback(&call.playback_kind, &call.playback_cmd, self.cast_port)?;
         self.prune();
@@ -589,6 +598,7 @@ impl Actor {
         if c.outgoing || c.accepted || c.ready_done || c.state != "ringing" { return Err(missing()); }
         let mut devices = self.defaults.clone();
         // apply_defaults: chỉ external/file được thừa kế nếu không có speaker.
+        devices.check_camera(c.video, c.cam_off)?;
         if !matches!(devices.playback.as_str(), "external" | "file") { devices.playback = "file".into(); }
         let kind = if devices.speaker == "browser" { "browser".into() } else if devices.speaker.is_empty() { devices.playback.clone() } else { "push".into() };
         c.check_playback(&kind, &devices.speaker, self.cast_port)?;
@@ -792,6 +802,7 @@ impl Actor {
         let mut capture = json!({});
         for key in ["mic","camera","mic_format"] { if let Some(v) = body.get(key) { capture[key] = v.clone(); } }
         devices.update(&capture)?;
+        devices.check_camera(c.video || body["video"] == true, if body["video"] == true { false } else { cam_off.unwrap_or(c.cam_off) })?;
         if devices.mic != c.devices.mic {
             c.capture_revision += 1;
         }

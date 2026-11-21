@@ -43,3 +43,43 @@ Kiểm không dùng Telegram thật: `TGGW_BUILD_DIR=/opt/tggw-build-h2 ./build.
 `TGGW_BUILD_DIR=/opt/tggw-build-h2 ./build.sh build`, sau đó
 `TGGW_BUILD_DIR=/opt/tggw-build-h2 bash tests/contract/thu_hoan2.sh`.
 Hộp đen dựng libtdjson rỗng, dùng container `tggw-h2-thu` tại cổng 3399 và tự dừng khi kết thúc.
+
+## Thiết bị của máy đang mở trình duyệt (hợp đồng máy chủ)
+
+`POST /api/live/call` và `/api/live/settings` nhận `mic: "browser"`, `speaker: "browser"`.
+Mic được lấy từ các khối PCM do trang gửi; speaker browser dùng playback External của NTgCalls,
+không phát tới loa HA. Các khóa JSON cũ của cuộc gọi được giữ nguyên. Đây là phần máy chủ để giao diện nối vào.
+
+| Đường | Yêu cầu và phản hồi |
+| --- | --- |
+| `POST /api/live/audio/in/{call_id}` | Bearer ở header; thân thô PCM s16le 16 kHz mono, không rỗng, số byte chẵn, ≤64 KiB. Thành công `{ok:true,bytes:N}`. Nên gửi 3200 byte mỗi 100 ms. |
+| `POST /api/live/media` | Bearer; `{id,action:"audio_out"}` → `{audio_out:{url,content_type:"audio/wav",expires_in}}`. |
+| `GET /api/live/audio/out/{call_id}?t=…` | URL tương đối được cấp ở trên, dùng cho `<audio src>`. WAV PCM s16le 48 kHz mono; không cần Bearer. |
+| `GET /api/live/settings` | Bearer; thêm `auto` vào các khóa hiện có, nguồn có bí mật vẫn được che như trước. |
+| `GET /api/live/devices` | Bearer; `{settings,auto,catalog:{mic:[],speaker:[],camera:[]}}`. |
+| `POST /api/live/ha_devices` | Bearer; `{mic:[{id,name}],speaker:[{id,name}],camera:[{id,name}]}` thay toàn bộ danh mục; trả cùng hình dạng GET devices. Nhóm thiếu thành mảng rỗng. |
+
+Mic trả 400 nếu khối PCM sai, 401 nếu thiếu/sai Bearer, 404 khi cuộc gọi không còn, 409 khi chưa active hoặc
+không dùng mic browser, 413 khi quá lớn, 429 khi quá nhanh/đầy, 408 nếu thân gửi quá 5 giây.
+Hạn mức riêng là 30 POST/giây, 32.000 byte/giây với burst 64 KiB, hàng chờ 64 KiB mỗi cuộc gọi;
+tối đa 8 request PCM đang nhận và 8 khối chờ actor. Các POST này không tiêu hạn mức điều khiển 120/phút.
+Nguồn NTgCalls chỉ nghe loopback có khóa ngẫu nhiên riêng và luôn bù im lặng khi thiếu dữ liệu.
+
+Token âm thanh là khóa ngẫu nhiên 192 bit, riêng từng cuộc gọi, hạn tối đa 600 giây. Khi luồng hết hạn,
+lấy lại descriptor qua POST media rồi gắn URL mới. Token sai/hết hạn trả 403, cuộc gọi hết trả 404,
+đủ hai người nghe trả 429. Người nghe hiện tại cũng bị ngắt khi hết hạn hoặc kết thúc cuộc gọi.
+Bộ đệm phát có 128 khối tối đa 1920 byte; người nghe tụt hậu bị đóng luồng. Không truyền `GATEWAY_TOKEN` trên query.
+
+`auto` đúng nếu có mic/camera/loa ngoài do cấu hình HA hoặc quy tắc đặt; các nguồn dựng sẵn
+`test`, `silence`, `black`, và `browser` không được tính là tự động. Danh mục HA ban đầu rỗng;
+mỗi nhóm tối đa 64 mục, ID/URL được lọc và khử trùng, tên tối đa 120 ký tự. Tệp `ha_devices.json`
+được ghi nguyên tử với quyền 0600 trong dữ liệu của từng tài khoản. Việc HA đẩy danh mục cần được nối riêng.
+GET thiết bị và POST danh mục nhận `?account=…`; POST cũng nhận `account` trong JSON.
+Âm thanh vào/ra chọn tài khoản theo mã cuộc gọi duy nhất do gateway sinh.
+
+Camera trình duyệt được hoãn: cấu hình nhận `camera:"browser"`, nhưng bật video với nguồn này trả
+501 `BROWSER_VIDEO_UNAVAILABLE` trước khi tạo/đổi media. Chưa có `POST /api/live/video/in/{call_id}`.
+Chọn `black` hoặc camera HA cho cuộc gọi video. Âm thanh với nguồn browser đã được kiểm bằng TDLib/media giả;
+độ trễ, khử vọng và khả năng phát WAV cần kiểm tiếp với trình duyệt và cuộc gọi Telegram thật.
+
+Kiểm hình dạng JSON không cần máy chủ: `python3 tests/contract/kiem_hop_dong.py --self-test`.
