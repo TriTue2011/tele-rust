@@ -1,4 +1,4 @@
-"""Run the eight required auth mutation controls through the approved remote builder.
+"""Run auth and file-security mutation controls through the approved remote builder.
 
 Each mutation gets an isolated copy under this worktree and runs its exact
 integration test. The real source is fingerprinted before and after every run.
@@ -31,8 +31,8 @@ MUTATIONS = [
      'if attempts.len() >= MAX_FAILURES {',
      'if false && attempts.len() >= MAX_FAILURES {'),
     ("TC-07", "tc07_cookie_writes_require_csrf_header_or_matching_origin", "src/rest.rs",
-     'fn csrf_valid(headers: &HeaderMap) -> bool {',
-     'fn csrf_valid(headers: &HeaderMap) -> bool {\n    if !headers.is_empty() { return true; }'),
+     'fn csrf_valid(headers: &HeaderMap, secure: bool) -> bool {',
+     'fn csrf_valid(headers: &HeaderMap, secure: bool) -> bool {\n    if !headers.is_empty() { return true; }'),
     ("TC-11", "tc11_credentials_and_raw_session_tokens_are_not_persisted", "src/ui_auth.rs",
      '        self.save_store(&updated)?;\n        *store = updated;\n        Ok(grant)\n    }\n\n    pub fn login',
      '''        self.save_store(&updated)?;
@@ -49,7 +49,23 @@ MUTATIONS = [
     ("TC-12", "tc12_remembered_session_survives_server_auth_state_reload", "src/ui_auth.rs",
      'let sessions = store.sessions.iter().map(|session| json!({',
      'let sessions = std::iter::empty::<&Session>().map(|session| json!({'),
+    ("CAO-nosniff", "cao01_files_are_isolated_and_only_safe_media_can_be_inline", "src/rest.rs",
+     '        (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),\n', ''),
+    ("CAO-csp", "cao01_files_are_isolated_and_only_safe_media_can_be_inline", "src/rest.rs",
+     '        (header::CONTENT_SECURITY_POLICY, "default-src \'none\'; sandbox"),\n', ''),
+    ("CAO-download", "cao01_files_are_isolated_and_only_safe_media_can_be_inline", "src/rest.rs",
+     '            if !inline {', '            if false && !inline {'),
+    ("LOG-login", "tc06_tc11_serve_accepts_cookie_on_account_and_event_routes_without_logging_secrets", "src/ui_auth.rs",
+     'pub fn login(&self, username: &str, password: &str, remember: bool, ip: &str, secure: bool) -> Result<LoginGrant, AuthError> {',
+     'pub fn login(&self, username: &str, password: &str, remember: bool, ip: &str, secure: bool) -> Result<LoginGrant, AuthError> {\n        log::info!("{}", password);'),
+    ("LOG-password", "tc06_tc11_serve_accepts_cookie_on_account_and_event_routes_without_logging_secrets", "src/ui_auth.rs",
+     'pub fn change_password(&self, token: &str, old: &str, new: &str) -> Result<(), AuthError> {',
+     'pub fn change_password(&self, token: &str, old: &str, new: &str) -> Result<(), AuthError> {\n        log::info!("{} {}", old, new);'),
 ]
+for action in ("logout", "logout-all", "password"):
+    MUTATIONS.append((f"CSRF-{action}", "trung03_every_session_action_requires_csrf_and_keeps_session_on_rejection", "src/rest.rs",
+        'if !csrf_valid(&parts.headers, auth.secure_cookie() || parts.uri.scheme_str() == Some("https"))',
+        'if false && !csrf_valid(&parts.headers, auth.secure_cookie() || parts.uri.scheme_str() == Some("https"))'))
 
 
 def fingerprint():
@@ -65,10 +81,18 @@ def fingerprint():
     return digest.hexdigest()
 
 
-def replace_once(path, before, after):
+def replace_once(path, before, after, case=""):
     text = path.read_text()
-    assert text.count(before) == 1, f"Mutation target is not unique: {path.name}"
-    path.write_text(text.replace(before, after, 1))
+    if case == "TC-02":
+        assert text.count(before) == 2, "Both setup checks must be disabled for this control"
+        path.write_text(text.replace(before, after))
+    elif case.startswith("CSRF-"):
+        start = text.index(f'"{case[5:]}" => {{')
+        index = text.index(before, start)
+        path.write_text(text[:index] + text[index:].replace(before, after, 1))
+    else:
+        assert text.count(before) == 1, f"Mutation target is not unique: {path.name}"
+        path.write_text(text.replace(before, after, 1))
 
 
 def copy_source(snapshot):
@@ -81,24 +105,38 @@ def copy_source(snapshot):
 
 
 def main():
-    assert sys.argv[1:] in ([], ["--positive-only"]), "Use --positive-only or no arguments"
+    assert sys.argv[1:] in ([], ["--positive-only"], ["--static-only"]), "Use --positive-only, --static-only or no arguments"
     source = fingerprint()
     print(f"SOURCE_SHA256 {source}", flush=True)
+    for filename in (() if sys.argv[1:] == ["--positive-only"] else ("src/ui_auth.rs", "src/rest.rs")):
+        with TemporaryDirectory(prefix=".h2-static-", dir=ROOT) as directory:
+            snapshot = Path(directory)
+            copy_source(snapshot)
+            replace_once(snapshot / filename, "bool::from(a.ct_eq(b))", "a == b")
+            result = subprocess.run(["node", "--test", "tests/security_test.cjs"], cwd=snapshot,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            assert result.returncode == 1 and "not ok 2 - secret byte comparisons" in result.stdout, result.stdout
+            print(f"CT-{Path(filename).stem} CAUGHT: exit 1; constant-time source control failed", flush=True)
+    if sys.argv[1:] == ["--static-only"]:
+        assert fingerprint() == source
+        return 0
     for case, test, filename, before, after in ([] if sys.argv[1:] else MUTATIONS):
         assert fingerprint() == source, "Worktree changed during mutation verification"
         with TemporaryDirectory(prefix=".h2-mutant-", dir=ROOT) as directory:
             snapshot = Path(directory)
             copy_source(snapshot)
-            replace_once(snapshot / filename, before, after)
+            replace_once(snapshot / filename, before, after, case)
             # Use the same build script/container; select just the named control.
+            suite = "security" if case.startswith(("CAO-", "CSRF-")) else "ui_auth"
             replace_once(snapshot / "build.sh", 'ARGS="cargo test --release 2>&1"',
-                         f'ARGS="cargo clean -p telegram-gateway-rs && cargo test --release --test ui_auth {test} -- --exact 2>&1"')
+                         f'ARGS="cargo test --release --test {suite} {test} -- --exact 2>&1"')
             print(f"RUN {case}: {test}", flush=True)
             result = subprocess.run(["./build.sh", "test"], cwd=snapshot,
                                     env={**os.environ, "TGGW_BUILD_DIR": "/opt/tggw-build-dn"},
                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
             (ROOT / f".h2-mutation-{case.lower()}.log").write_text(result.stdout)
             assert fingerprint() == source, "Worktree changed during mutation verification"
+            assert "Compiling telegram-gateway-rs" in result.stdout, f"{case}: source snapshot was not rebuilt"
             assert result.returncode == 101, f"{case}: expected test exit 101, got {result.returncode}"
             assert f"test {test} ... FAILED" in result.stdout, f"{case}: did not fail the intended test"
             assert "0 passed; 1 failed;" in result.stdout, f"{case}: missing failed-test summary"
@@ -112,11 +150,12 @@ def main():
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         (ROOT / ".h2-mutation-positive.log").write_text(result.stdout)
         assert fingerprint() == source, "Worktree changed during positive control"
+        assert "Compiling telegram-gateway-rs" in result.stdout, "Positive source snapshot was not rebuilt"
         print(f"POSITIVE_CONTROL_EXIT {result.returncode}", flush=True)
         if result.returncode:
             return result.returncode
     print("PASS: pristine full suite; source fingerprint unchanged" if sys.argv[1:] else
-          "PASS: 8/8 mutation controls caught; pristine full suite; source fingerprint unchanged", flush=True)
+          f"PASS: {len(MUTATIONS) + 2}/{len(MUTATIONS) + 2} mutation controls caught; pristine full suite; source fingerprint unchanged", flush=True)
     return 0
 
 

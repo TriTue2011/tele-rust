@@ -273,7 +273,9 @@ async fn downloads_are_bounded_private_and_never_follow_symlinks() {
     }
     let response = get("/api/file/7").await.unwrap();
     assert_eq!(response.status(), 200);
-    assert_eq!(response.headers()[header::CONTENT_TYPE], "text/plain; charset=utf-8");
+    // The security policy now downloads all non-media content, including text and traces.
+    assert_eq!(response.headers()[header::CONTENT_TYPE], "application/octet-stream");
+    assert_eq!(response.headers()[header::CONTENT_DISPOSITION], "attachment");
     assert_eq!(response.headers()[header::CONTENT_LENGTH], "8");
     assert_eq!(to_bytes(response.into_body(), 100).await.unwrap().as_ref(), "ghi chú".as_bytes());
     let response = get("/api/calltrace/abcdef").await.unwrap();
@@ -284,7 +286,7 @@ async fn downloads_are_bounded_private_and_never_follow_symlinks() {
     assert_eq!(listing["keep"], 3);
     assert_eq!(listing["calls"][0]["id"], "abcdef");
     assert_eq!(listing["calls"][0]["live"], false);
-    assert_eq!(response.headers()[header::CONTENT_DISPOSITION], "inline; filename=\"calltrace-abcdef.log\"");
+    assert_eq!(response.headers()[header::CONTENT_DISPOSITION], "attachment; filename=\"calltrace-abcdef.log\"");
     assert_eq!(to_bytes(response.into_body(), 100).await.unwrap(), "trace");
     assert_eq!(get("/api/calltrace/ABCDEF").await.unwrap().status(), 404);
     fs::remove_dir_all(root).unwrap();
