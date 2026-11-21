@@ -5,6 +5,8 @@ mod account_files;
 mod account_router;
 mod login_http;
 mod multi_feed;
+mod storage;
+mod storage_settings;
 mod web;
 pub mod app;
 pub mod calls;

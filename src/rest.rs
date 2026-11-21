@@ -616,10 +616,11 @@ fn router_with(ctx: Arc<Ctx>) -> Router {
     }
     // Chỉ đọc → ChatControl (routes.py + chat_routes.py).
     for p in ["/api/accounts", "/api/me", "/api/chats", "/api/contacts", "/api/search", "/api/feed",
-              "/api/calls", "/api/calltrace"] {
+              "/api/calls", "/api/calltrace", "/api/storage/usage", "/api/storage/janitor"] {
         r = r.route(p, route(get, s(ChatGet)));
     }
     r = r
+        .route("/api/settings/storage", add(route(get, s(ChatGet)), post, s(ChatPost)))
         .route("/api/events", route(get, s(Events)))
         .route("/api/chats/:chat_id/messages", route(get, s_id(ChatGet, "chat_id")))
         .route("/api/file/:file_id", route(get, s_id(ChatBytes, "file_id")))
@@ -628,7 +629,7 @@ fn router_with(ctx: Arc<Ctx>) -> Router {
     for p in ["/api/send_message", "/api/send_media", "/api/send_voice", "/api/call", "/api/answer_call",
               "/api/hangup_call", "/api/audio/in", "/api/audio/upload", "/api/messages/edit", "/api/messages/delete",
               "/api/messages/forward", "/api/messages/react", "/api/resolve", "/api/translate", "/api/contacts/open",
-              "/api/do/:name"] {
+              "/api/do/:name", "/api/storage/clear"] {
         r = r.route(p, route(post, s(ChatPost)));
     }
     for p in ["/api/chats/:chat_id/send", "/api/chats/:chat_id/send_album", "/api/chats/:chat_id/read"] {

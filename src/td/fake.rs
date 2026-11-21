@@ -12,6 +12,8 @@ pub(crate) struct Fake {
     pub restored:AtomicBool,
     pub downloads:Mutex<HashMap<i32,String>>,
     pub profiles:Mutex<HashMap<i32,Value>>,
+    pub storage_stats:Mutex<Value>,
+    pub storage_chats:Mutex<HashMap<i64, Value>>,
 }
 impl Fake {
     pub fn push(&self,mut v:Value,id:i32) {
@@ -66,6 +68,13 @@ impl TdApi for Fake {
                 .unwrap_or_else(||json!({"@type":"user","id":id,"first_name":format!("Account {id}"),"phone_number":""})),
             "close"=>{next=Some("authorizationStateClosed");json!({"@type":"ok"})}
             "createCall"=>json!({"@type":"callId","id":71}),
+            "getStorageStatistics"=>self.storage_stats.lock().unwrap().as_object().cloned().map(Value::Object)
+                .unwrap_or_else(||json!({"@type":"storageStatistics","size":0,"count":0,"by_chat":[]})),
+            "getChat" if r["chat_id"].as_i64().is_some_and(|id| self.storage_chats.lock().unwrap().contains_key(&id)) => {
+                let kind = self.storage_chats.lock().unwrap().get(&r["chat_id"].as_i64().unwrap()).cloned();
+                json!({"@type":"chat","type":kind})
+            }
+            "optimizeStorage"=>json!({"@type":"storageStatistics","size":0,"count":0,"by_chat":[]}),
             "downloadFile"=>json!({"@type":"file","local":{"is_downloading_completed":true,
                 "path":self.downloads.lock().unwrap().get(&id).cloned().unwrap_or_default()}}),
             "getUser"=>json!({"@type":"user","id":r["user_id"],"first_name":"Peer"}),

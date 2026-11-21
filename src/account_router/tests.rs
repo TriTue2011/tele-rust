@@ -100,6 +100,156 @@ async fn two_accounts_route_messages_calls_feed_and_events() {
 }
 
 #[tokio::test]
+async fn storage_settings_validate_before_replacing_the_account_file() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let f = Fixture::new("storage-settings").await;
+    let first = "+84900000071";
+    let second = "+84900000072";
+    f.ready(first).await;
+    f.ready(second).await;
+    let endpoint = "/api/settings/storage";
+    let (status, mut settings) = f.send("GET", endpoint, Value::Null).await;
+    assert_eq!(status, 200);
+    assert_eq!(settings["mode"], "local");
+    assert_eq!(settings["keep"], json!({"private":604800,"groups":604800,"channels":604800}));
+    assert_eq!(settings["max_cache_bytes"], 2 * 1024 * 1024 * 1024_u64);
+    assert_eq!(settings["stream_ttl_s"], 600);
+
+    let first_dir = f.hub.store.lock().unwrap().session_dir(first);
+    let second_dir = f.hub.store.lock().unwrap().session_dir(second);
+    let file = first_dir.join("storage_settings.json");
+    settings["mode"] = json!("stream");
+    settings["exceptions"] = json!([{"chat_id":-100123,"keep":null}]);
+    let previous = std::fs::read(&file).unwrap();
+    for (field, bad) in [
+        ("mode", json!("web")),
+        ("keep", json!({"private":99,"groups":604800,"channels":null})),
+        ("max_cache_bytes", json!(-1)),
+        ("stream_ttl_s", json!(0)),
+    ] {
+        let mut invalid = settings.clone();
+        invalid[field] = bad;
+        let (status, error) = f.send("POST", endpoint, invalid).await;
+        assert_eq!(status, 422, "{field}: {error}");
+        assert!(error["error"]["code"].is_string());
+        assert_eq!(std::fs::read(&file).unwrap(), previous);
+    }
+    assert_eq!(f.send("POST", endpoint, settings.clone()).await, (200, settings.clone()));
+    assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
+    assert_eq!(std::fs::metadata(&first_dir).unwrap().permissions().mode() & 0o777, 0o700);
+    assert_ne!(std::fs::read(&file).unwrap(), std::fs::read(second_dir.join("storage_settings.json")).unwrap());
+    // Tệp tạm viết dở do tiến trình bị ngắt phải không che mất cấu hình đã commit.
+    std::fs::write(first_dir.join("storage_settings.interrupted.tmp"), b"{\"mode\":").unwrap();
+    assert_eq!(crate::storage_settings::load(&first_dir).unwrap(), settings);
+    assert_eq!(send(&f.router, "GET", endpoint, Value::Null, false).await.0, 401);
+    f.finish().await;
+}
+
+#[test]
+fn storage_upgrade_preserves_all_media_without_a_cache_limit() {
+    let dir = std::env::temp_dir().join(format!("tggw-storage-upgrade-{}", std::process::id()));
+    let files = dir.join("files");
+    std::fs::create_dir_all(&files).unwrap();
+    std::fs::write(files.join("td.binlog"), b"old account database").unwrap();
+    let settings = crate::storage_settings::load(&dir).unwrap();
+    assert_eq!(settings["keep"], json!({"private":null,"groups":null,"channels":null}));
+    assert_eq!(settings["max_cache_bytes"], Value::Null);
+    assert_eq!(std::fs::read(files.join("td.binlog")).unwrap(), b"old account database");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn storage_usage_aggregates_all_types_and_limits_top_chats_without_leaking_details() {
+    let f = Fixture::new("storage-usage").await;
+    f.ready("+84900000073").await;
+    let chats = (0..=25).map(|id| json!({
+        "chat_id":id, "size":id + 1, "count":1, "title":"private message content",
+        "by_file_type":[{"file_type":{"@type":if id % 2 == 0 {"fileTypePhoto"} else {"fileTypeVideo"}},
+            "size":id + 1,"count":1,"path":"/private/file.png"}]
+    })).collect::<Vec<_>>();
+    *f.api.storage_stats.lock().unwrap() = json!({"@type":"storageStatistics","size":351,"count":26,"by_chat":chats});
+    let (status, usage) = f.send("GET", "/api/storage/usage", Value::Null).await;
+    assert_eq!(status, 200, "{usage}");
+    assert_eq!(usage["total_bytes"], 351);
+    assert_eq!(usage["by_type"], json!({"photo":169,"video":182,"file":0,"music":0,"other":0}));
+    assert_eq!(usage["top_chats"].as_array().unwrap().len(), 20);
+    assert_eq!(usage["top_chats"][0], json!({"chat_id":25,"bytes":26}));
+    assert!(!usage.to_string().contains("/private") && !usage.to_string().contains("message content"));
+    f.finish().await;
+}
+
+#[tokio::test]
+async fn storage_clear_requires_confirmation_and_targets_only_the_selected_chat() {
+    let f = Fixture::new("storage-clear").await;
+    f.ready("+84900000074").await;
+    *f.api.storage_stats.lock().unwrap() = json!({"@type":"storageStatistics","size":26,"count":2,"by_chat":[
+        {"chat_id":10,"size":12,"count":1,"by_file_type":[]},
+        {"chat_id":11,"size":14,"count":1,"by_file_type":[]}
+    ]});
+    let endpoint = "/api/storage/clear";
+    assert_eq!(f.send("POST", endpoint, json!({"scope":"chat","chat_id":10})).await.0, 400);
+    assert!(!f.api.sent.lock().unwrap().iter().any(|(_, req)| req["@type"] == "optimizeStorage"));
+    let (status, cleared) = f.send("POST", endpoint, json!({"scope":"chat","chat_id":10,"confirm":true})).await;
+    assert_eq!(status, 200, "{cleared}");
+    let clear = f.api.sent.lock().unwrap().iter().find(|(_, req)| req["@type"] == "optimizeStorage").unwrap().1.clone();
+    assert_eq!(clear["chat_ids"], json!([10]));
+    assert_eq!(clear["size"], 0);
+    let other = f.dir.join("outside-cache");
+    std::fs::create_dir(&other).unwrap();
+    let sentinel = other.join("keep.txt");
+    std::fs::write(&sentinel, b"outside cache").unwrap();
+    let link = f.hub.store.lock().unwrap().session_dir("+84900000074").join("files/photos");
+    std::os::unix::fs::symlink(&other, &link).unwrap();
+    assert_eq!(f.send("POST", endpoint, json!({"scope":"all","confirm":true})).await.1["error"]["code"], "STORAGE_CACHE_PATH");
+    assert_eq!(std::fs::read(sentinel).unwrap(), b"outside cache");
+    std::fs::remove_file(link).unwrap();
+    f.api.push(json!({"@type":"updateCall","call":{"id":71,"user_id":101,"is_outgoing":false,
+        "state":{"@type":"callStatePending","is_created":true,"is_received":true}}}),1);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    loop {
+        let (_, calls) = f.send("GET", "/api/live/calls", Value::Null).await;
+        if calls["calls"].as_array().is_some_and(|list| !list.is_empty()) { break; }
+        assert!(tokio::time::Instant::now() < deadline);
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(f.send("POST", endpoint, json!({"scope":"all","confirm":true})).await.0, 409);
+    assert_eq!(f.api.sent.lock().unwrap().iter().filter(|(_, req)| req["@type"] == "optimizeStorage").count(), 1);
+    f.finish().await;
+}
+
+#[tokio::test]
+async fn local_janitor_sweeps_timed_chats_and_separate_exceptions_with_a_budget() {
+    let f = Fixture::new("storage-janitor").await;
+    let phone = "+84900000075";
+    f.ready(phone).await;
+    let (_, entry) = f.hub.select(phone).unwrap();
+    let mut policy = crate::storage_settings::load(&entry.session).unwrap();
+    policy["keep"] = json!({"private":86400,"groups":604800,"channels":null});
+    policy["max_cache_bytes"] = Value::Null;
+    policy["exceptions"] = json!([{"chat_id":42,"keep":2678400},{"chat_id":43,"keep":null}]);
+    let too_large = 5 * 1024 * 1024 * 1024_u64 + 1;
+    let chats = [
+        (40, 7, json!({"@type":"chatTypePrivate"})),
+        (41, 7, json!({"@type":"chatTypeBasicGroup"})),
+        (42, 7, json!({"@type":"chatTypePrivate"})),
+        (43, 7, json!({"@type":"chatTypePrivate"})),
+        (44, 7, json!({"@type":"chatTypeSupergroup","is_channel":true})),
+        (45, too_large, json!({"@type":"chatTypePrivate"})),
+    ];
+    *f.api.storage_chats.lock().unwrap() = chats.iter().map(|(id, _, kind)| (*id, kind.clone())).collect();
+    let stats = chats.iter().map(|(id, bytes, _)| json!({"chat_id":id,"size":bytes,"count":1})).collect::<Vec<_>>();
+    *f.api.storage_stats.lock().unwrap() = json!({"@type":"storageStatistics","size":too_large + 35,"count":6,"by_chat":stats});
+    let mut report = crate::storage::Report::new();
+    crate::storage::run(entry.client.as_ref(), &policy, &mut report).await.unwrap();
+    let requests = f.api.sent.lock().unwrap().iter().filter(|(_, req)| req["@type"] == "optimizeStorage")
+        .map(|(_, req)| json!([req["chat_ids"],req["exclude_chat_ids"],req["ttl"]])).collect::<Vec<_>>();
+    assert_eq!(requests, vec![json!([[40],[42,43],86400]),json!([[41],[42,43],604800]),json!([[42],[],2678400])]);
+    assert_eq!(report.json()["limited"], true);
+    f.finish().await;
+}
+
+#[tokio::test]
 async fn wrong_codes_lock_and_server_flood_wait_keeps_retry_seconds() {
     let f=Fixture::new("flood-contract").await;
     let id=f.login("+84900000003").await;
@@ -295,6 +445,11 @@ async fn browser_media_routes_calls_outside_the_recent_ten() {
     let request=Request::builder().method("POST").uri(format!("/api/live/audio/in/{id}"))
         .header("Authorization","Bearer test-token").body(Body::from(vec![0u8;3200])).unwrap();
     assert_eq!(f.router.clone().oneshot(request).await.unwrap().status(),409);
+    for row in listed["calls"].as_array().unwrap() {
+        assert_eq!(f.send("POST", "/api/live/hangup", json!({"id":row["id"]})).await.0, 200);
+    }
+    assert!(f.send("GET", "/api/live/calls", Value::Null).await.1["calls"].as_array().unwrap().iter().all(|row| row["state"] == "ended"));
+    assert_eq!(f.send("POST", "/api/storage/clear", json!({"scope":"all","confirm":true})).await.0, 409);
     assert_eq!(f.send("POST","/api/live/hangup",json!({"id":id})).await.0,200);
     // Kể cả tài khoản mất trạng thái online sau khi cúp, mã cuộc gọi hết vẫn trả 404.
     f.hub.all()[0].1.ready.store(false,Ordering::Release);

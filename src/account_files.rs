@@ -4,7 +4,7 @@ use rustix::fs::{open,openat,Mode,OFlags};
 use serde_json::json;
 use crate::contract::{Binary,GwError,TdLink};
 
-pub(crate) async fn download(td:Arc<dyn TdLink>,session:PathBuf,id:i64)->Result<Binary,GwError> {
+pub(crate) async fn download(td:Arc<dyn TdLink>,session:PathBuf,id:i64,stream:bool)->Result<Binary,GwError> {
     let missing=||GwError::not_found("Tệp chưa tải xong.");
     if !(1..=i64::from(i32::MAX)).contains(&id) {return Err(missing());}
     let file=td.request(json!({"@type":"downloadFile","file_id":id,"priority":16,"offset":0,"limit":0,"synchronous":true})).await.map_err(|mut error| {
@@ -32,11 +32,16 @@ pub(crate) async fn download(td:Arc<dyn TdLink>,session:PathBuf,id:i64)->Result<
         let file=open_beneath(&root,&relative).map_err(|_|missing())?;
         if !file.metadata().map_err(|_|missing())?.is_file() {return Err(missing());}
         const LIMIT:u64=64*1024*1024;
-        let mut bytes=Vec::new();file.take(LIMIT+1).read_to_end(&mut bytes).map_err(|_|missing())?;
+        let mut bytes=Vec::new();(&file).take(LIMIT+1).read_to_end(&mut bytes).map_err(|_|missing())?;
+        if stream {
+            // Đặt atime rõ ràng cả trên mount relatime/noatime. TDLib dùng max(atime, mtime).
+            file.set_times(std::fs::FileTimes::new().set_accessed(std::time::SystemTime::now()))
+                .map_err(|_| GwError::new(500,"STORAGE_ACCESS_TIME","Không ghi được lần truy cập tệp."))?;
+        }
         if bytes.len() as u64>LIMIT {return Err(GwError::new(413,"FILE_TOO_LARGE","Tệp vượt 64 MB."));}
         Ok(bytes)
     }).await.map_err(|_|missing())??;
-    Ok(Binary{bytes,content_type,cache_control:"private, max-age=86400",disposition:None})
+    Ok(Binary{bytes,content_type,cache_control:if stream {"no-store"} else {"private, max-age=86400"},disposition:None})
 }
 
 fn open_beneath(root:&Path,relative:&Path)->io::Result<File> {
@@ -72,13 +77,13 @@ mod tests {
         std::os::unix::fs::symlink(std::path::absolute(b.join("files/documents/test.txt")).unwrap(),a.join("files/documents/link.txt")).unwrap();
         for path in [b.join("files/documents/test.txt"),a.join("files/td.binlog"),a.join("files/documents/link.txt")] {
             let td=Arc::new(Fake(Ok(json!({"local":{"path":std::path::absolute(path).unwrap(),"is_downloading_completed":true}}))));
-            assert_eq!(download(td,a.clone(),1).await.unwrap_err().status,404);
+            assert_eq!(download(td,a.clone(),1,false).await.unwrap_err().status,404);
         }
         let td=Arc::new(Fake(Ok(json!({"local":{"path":std::path::absolute(a.join("files/documents/test.txt")).unwrap(),"is_downloading_completed":true}}))));
-        let file=download(td,a.clone(),1).await.unwrap();
+        let file=download(td,a.clone(),1,false).await.unwrap();
         assert_eq!(file.bytes,b"account a");assert_eq!(file.content_type,"text/plain; charset=utf-8");
         let td=Arc::new(Fake(Err(TdError::telegram(400,"/private/session/path"))));
-        let error=download(td,a,1).await.unwrap_err();
+        let error=download(td,a,1,false).await.unwrap_err();
         assert_eq!(error.status,400);assert!(!error.message.contains("/private/session/path"));
         std::fs::remove_dir_all(root).unwrap();
     }

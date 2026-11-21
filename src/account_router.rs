@@ -7,15 +7,60 @@ use crate::{accounts::AccountStore, calls::CallManager, chat::ChatService,
 
 pub(crate) struct Entry {
     pub client: Arc<TdClient>,
+    session: PathBuf,
+    storage_lock: tokio::sync::RwLock<()>,
+    storage_changed: Arc<tokio::sync::Notify>,
+    storage_report: Mutex<crate::storage::Report>,
     chat: Arc<ChatService>,
     calls: CallManager,
     ready: AtomicBool,
     events: tokio::sync::Mutex<Option<EventBridge>>,
     call_events: tokio::task::JoinHandle<()>,
+    storage_task: std::sync::OnceLock<tokio::task::JoinHandle<()>>,
 }
 
 impl Drop for Entry {
-    fn drop(&mut self) { self.call_events.abort(); }
+    fn drop(&mut self) {
+        self.call_events.abort();
+        if let Some(task) = self.storage_task.get() { task.abort(); }
+    }
+}
+
+impl Entry {
+    async fn storage_sweep(&self, scope: Option<crate::storage::Clear>) -> Result<Value, GwError> {
+        let _exclusive = self.storage_lock.write().await;
+        if !self.ready.load(Ordering::Acquire) || self.client.auth_state() != "authorizationStateReady" {
+            return Err(offline());
+        }
+        let mut report = crate::storage::Report::new();
+        if self.calls.has_active_call().await? {
+            if scope.is_none() {
+                report.failed("STORAGE_BUSY");
+                report.finish();
+                *self.storage_report.lock().unwrap() = report;
+            }
+            return Err(GwError::new(409, "STORAGE_BUSY", "Bộ nhớ đệm đang được bảo vệ trong lúc gọi."));
+        }
+        let result = async {
+            crate::storage::check_cache_paths(&self.session).await?;
+            if let Some(scope) = scope {
+                crate::storage::clear(self.client.as_ref(), scope, &mut report).await
+            } else {
+                let policy = crate::storage::settings(&self.session).await?;
+                crate::storage::run(self.client.as_ref(), &policy, &mut report).await
+            }
+        }.await;
+        if result.is_err() { report.failed("STORAGE_CLEANUP"); }
+        report.finish();
+        let value = report.json();
+        *self.storage_report.lock().unwrap() = report;
+        result.map(|()| value)
+    }
+
+    fn stop_storage(&self) {
+        self.ready.store(false, Ordering::Release);
+        if let Some(task) = self.storage_task.get() { task.abort(); }
+    }
 }
 
 pub(crate) struct Accounts {
@@ -72,7 +117,7 @@ impl Accounts {
                 Ok(c) => c,
                 Err(_) => { eprintln!("Không mở được một phiên tài khoản; HTTP tiếp tục hoạt động."); continue; }
             };
-            let entry = match hub.attach(&phone, client.clone(), service_dir, false).await {
+            let entry = match hub.attach(&phone, client.clone(), session.clone(), service_dir, false).await {
                 Ok(e) => e,
                 Err(_) => { client.close(Duration::from_secs(10)).await; continue; }
             };
@@ -87,6 +132,7 @@ impl Accounts {
                 }
                 if result.is_ok() { entry.ready.store(true, Ordering::Release); }
                 else {
+                    entry.stop_storage();
                     client.close(Duration::from_secs(10)).await;
                     let _=entry.calls.shutdown(Duration::from_secs(10)).await;
                     accounts.entries.write().unwrap().remove(&phone);
@@ -101,7 +147,7 @@ impl Accounts {
         Ok(hub)
     }
 
-    async fn attach(&self, phone: &str, client: Arc<TdClient>, service_dir: PathBuf, ready: bool) -> Result<Arc<Entry>, GwError> {
+    async fn attach(&self, phone: &str, client: Arc<TdClient>, session: PathBuf, service_dir: PathBuf, ready: bool) -> Result<Arc<Entry>, GwError> {
         let events = EventBridge::start(&service_dir, phone, Webhook::from_env()).await.map_err(|_| storage_error())?;
         let td: Arc<dyn TdLink> = client.clone();
         let calls = CallManager::with_cast(td.clone(), &service_dir, Some(self.port))?;
@@ -121,8 +167,38 @@ impl Accounts {
                 }
             });
         });
-        let entry = Arc::new(Entry { client, chat: Arc::new(ChatService::with_events(td, phone, service_dir, Some(events.sink.clone())).follow_calls(calls.events())),
-            calls, ready: AtomicBool::new(ready), events: tokio::sync::Mutex::new(Some(events)), call_events });
+        let entry = Arc::new(Entry { client, session, chat: Arc::new(ChatService::with_events(td, phone, service_dir, Some(events.sink.clone())).follow_calls(calls.events())),
+            calls, ready: AtomicBool::new(ready), events: tokio::sync::Mutex::new(Some(events)), call_events,
+            storage_lock: tokio::sync::RwLock::new(()), storage_changed: Arc::new(tokio::sync::Notify::new()),
+            storage_report: Mutex::new(crate::storage::Report::new()), storage_task: std::sync::OnceLock::new() });
+        let task_entry = Arc::downgrade(&entry);
+        let mut updates = entry.client.updates();
+        let changed = entry.storage_changed.clone();
+        let _ = entry.storage_task.set(tokio::spawn(async move {
+            let period = Duration::from_secs(600);
+            let mut clock = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
+            clock.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                let update = tokio::select! {
+                    _ = clock.tick() => None,
+                    _ = changed.notified() => None,
+                    update = updates.recv() => match update {
+                        Ok(update) if update["@type"] == "updateNewMessage" => Some(update),
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                        _ => continue,
+                    }
+                };
+                let Some(entry) = task_entry.upgrade() else { break; };
+                if let Some(update) = update {
+                    let _access = entry.storage_lock.read().await;
+                    if entry.ready.load(Ordering::Acquire) {
+                        crate::storage::auto_download(entry.client.as_ref(), &entry.session, &update["message"]).await;
+                    }
+                } else {
+                    let _ = entry.storage_sweep(None).await;
+                }
+            }
+        }));
         let event_store = entry.events.lock().await.as_ref().unwrap().store.clone();
         let mut journals=self.journals.write().unwrap();
         journals.retain(|(p,_)|p!=phone);
@@ -144,7 +220,7 @@ impl Accounts {
             store.keep_legacy(&self.config.phone).map_err(|_|storage_error())?;
             store.put_online(phone, name).map_err(|_| storage_error())?;
         }
-        self.attach(phone, client, dir, true).await?;
+        self.attach(phone, client, dir.clone(), dir, true).await?;
         Ok(())
     }
 
@@ -162,7 +238,8 @@ impl Accounts {
         }
         let entry=self.entries.read().unwrap().get(phone).cloned();
         if let Some(e)=entry {
-            e.ready.store(false,Ordering::Release);
+            e.stop_storage();
+            let _storage = e.storage_lock.write().await;
             let _=e.calls.shutdown(Duration::from_secs(10)).await;
             e.client.close(Duration::from_secs(10)).await;
             if e.client.auth_state()!="authorizationStateClosed" {
@@ -223,6 +300,8 @@ impl Accounts {
         for (_,t) in self.tasks.lock().unwrap().drain(..) { t.abort(); }
         self.logins.get().unwrap().shutdown().await;
         for (_,e) in self.all() {
+            e.stop_storage();
+            let _storage = e.storage_lock.write().await;
             let _ = e.calls.shutdown(Duration::from_secs(10)).await;
             e.client.close(Duration::from_secs(10)).await;
             if let Some(events) = e.events.lock().await.take() { events.shutdown().await; }
@@ -292,10 +371,42 @@ impl Accounts {
             return self.calls().await;
         }
         let selected = param(query,"account").filter(|s| !s.is_empty()).unwrap_or_else(||body["account"].as_str().unwrap_or_default().into());
+        if path == "/api/storage/clear" {
+            let scope = crate::storage::Clear::parse(&body)?;
+            let entry = self.select(&selected)?.1;
+            return tokio::spawn(async move { entry.storage_sweep(Some(scope)).await })
+                .await.map_err(|_| offline())?;
+        }
         let (phone,e) = self.select(&selected)?;
+        if path == "/api/storage/janitor" {
+            return Ok(e.storage_report.lock().unwrap().json());
+        }
+        if path == "/api/storage/usage" {
+            let _access = e.storage_lock.read().await;
+            return crate::storage::usage(e.client.as_ref()).await;
+        }
+        if path == "/api/settings/storage" {
+            if method == "POST" {
+                crate::storage_settings::validate(&body)?;
+                let entry = e.clone();
+                return tokio::spawn(async move {
+                    let _access = entry.storage_lock.write().await;
+                    if !entry.ready.load(Ordering::Acquire) { return Err(offline()); }
+                    let dir = entry.session.clone();
+                    let saved = tokio::task::spawn_blocking(move || {
+                        crate::storage_settings::save(&dir, &body).map_err(|_| crate::storage::settings_error())?;
+                        Ok(body)
+                    }).await.map_err(|_| crate::storage::settings_error())?;
+                    if saved.is_ok() { entry.storage_changed.notify_one(); }
+                    saved
+                }).await.map_err(|_| crate::storage::settings_error())?;
+            }
+            return crate::storage::settings(&e.session).await;
+        }
         if path == "/api/live/settings" { return e.calls.settings(Value::Null).await; }
         if path == "/api/live/devices" { return e.calls.devices(Value::Null).await; }
         let _=phone;
+        let _access = e.storage_lock.read().await;
         e.chat.handle(method,path,query,body).await
     }
 }
@@ -322,15 +433,16 @@ impl ChatControl for Accounts {
                     None=>self.snapshot(id).await,
                 };
             }
-            let (phone,e)=self.select(&param(&q,"account").unwrap_or_default())?;
+            let (_,e)=self.select(&param(&q,"account").unwrap_or_default())?;
             if let Some(id)=p.strip_prefix("/api/file/") {
-                let session={
-                    let store=self.store.lock().unwrap();
-                    if store.legacy && phone==self.config.phone {self.config.session_dir()}else{store.session_dir(&phone)}
-                };
-                if session==self.config.session_dir() {return e.chat.bytes(&p,&q).await;}
                 let id=id.parse().map_err(|_|GwError::bad_request("file_id phải là số."))?;
-                return crate::account_files::download(e.client.clone(),session,id).await;
+                let entry = e.clone();
+                return tokio::spawn(async move {
+                    let _access = entry.storage_lock.read().await;
+                    if !entry.ready.load(Ordering::Acquire) { return Err(offline()); }
+                    let stream = crate::storage::settings(&entry.session).await?["mode"] == "stream";
+                    crate::account_files::download(entry.client.clone(), entry.session.clone(), id, stream).await
+                }).await.map_err(|_| offline())?;
             }
             e.chat.bytes(&p,&q).await
         })
@@ -343,6 +455,7 @@ macro_rules! route_call {
             Box::pin(async move {
                 let (phone,e)=self.select_call(&body).await?;
                 let _=phone;
+                let _access = e.storage_lock.read().await;
                 e.calls.$name(body).await
             })
         }
@@ -365,6 +478,7 @@ impl CallControl for Accounts {
         Box::pin(async move {
             let _guard=self.call_creation.lock().await;
             let (phone,e)=self.select(body["account"].as_str().unwrap_or_default())?;
+            let _access = e.storage_lock.read().await;
             let user=e.calls.resolve(body.clone()).await?;
             for (_,other) in self.all() {
                 let calls=other.calls.calls().await?;
