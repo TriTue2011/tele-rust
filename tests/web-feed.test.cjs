@@ -14,9 +14,9 @@ async function start(reply, source = feedCode) {
   const window = new EventTarget();
   const calls = [], appended = [], refreshed = [], timers = new Map();
   let now = 0, nextTimer = 0, active = 0, peak = 0;
-  async function fetch(path, { signal }) {
+  async function fetch(path, { signal, credentials, headers = {} }) {
     const url = new URL(path, 'http://localhost');
-    const call = { wait: Number(url.searchParams.get('wait')), since: Number(url.searchParams.get('since')), signal, time: now };
+    const call = { credentials, headers, wait: Number(url.searchParams.get('wait')), since: Number(url.searchParams.get('since')), signal, time: now };
     calls.push(call);
     peak = Math.max(peak, ++active);
     try {
@@ -27,7 +27,7 @@ async function start(reply, source = feedCode) {
     } finally { active--; }
   }
   vm.runInNewContext(source + '\npump();', {
-    document, window, fetch, AbortController, tok: () => 'test', cur: 5, account: '',
+    document, window, fetch, AbortController, accountPath: (p) => p, showGate() {}, cur: 5, account: '',
     setTimeout: (fn, delay) => { timers.set(++nextTimer, { fn, time: now + delay }); return nextTimer; },
     clearTimeout: (id) => timers.delete(id),
     appendMessages: (list, prepend) => { assert.equal(prepend, false); appended.push(...list); },
@@ -106,4 +106,12 @@ test('TC-A3: reset reloads the list and open conversation once and resumes from 
   await flush();
   assert.deepEqual(app.refreshed, ['chats', 'current']);
   assert.deepEqual([app.calls.at(-1).since, app.calls.at(-1).wait], [99, 20]);
+});
+
+test('TC-A4: luồng tin dùng cookie phiên (không Bearer), có tiêu đề chống CSRF', async () => {
+  const { calls } = await start(() => undefined);
+  const first = calls[0];
+  assert.equal(first.credentials, 'same-origin');
+  assert.equal(first.headers['X-Requested-With'], 'fetch');
+  assert.equal(first.headers.Authorization, undefined, 'không gửi token qua tiêu đề Authorization');
 });
