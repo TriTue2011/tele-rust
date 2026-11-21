@@ -80,6 +80,8 @@
   #call-controls { display:flex; justify-content:center; align-items:center; flex-wrap:wrap; gap:10px; padding:14px; background:#17212b; }
   #call-controls button { min-width:110px; min-height:44px; } #call-controls .green { background:#207841; } #call-controls .red { background:#ac2c3a; }
   #call-controls .secondary { background:#334251; }
+  #call-controls button[aria-pressed="true"] { background:#235078; }
+  #call-error { width:100%; margin:0; color:#ffb4b4; text-align:center; overflow-wrap:anywhere; }
   @media(max-width:600px) { #call-overlay { padding:0; } #call-window { width:100%; height:100dvh; border:0; border-radius:0; grid-template-rows:auto minmax(0,1fr) auto; }
     #call-top { padding:calc(14px + env(safe-area-inset-top)) 14px 14px; } #call-name { font-size:17px; }
     #call-controls { padding:12px 10px calc(12px + env(safe-area-inset-bottom)); gap:8px; } #call-controls button { min-width:calc(50% - 8px); }
@@ -129,8 +131,12 @@
     <header id="call-top"><div id="call-avatar" aria-hidden="true"></div><div id="call-heading"><div id="call-name"></div><div id="call-state" aria-live="polite"></div></div><time id="call-time"></time></header>
     <div id="call-stage"><img id="call-image" alt="Hình ảnh từ đối phương" hidden><div id="call-wait">Đang chờ hình…</div><div id="call-emojis" hidden aria-label="Emoji xác thực"></div><small id="call-meta"></small></div>
     <div id="call-controls">
+      <p id="call-error" role="alert" hidden></p>
       <button id="call-ring" type="button" class="secondary" aria-pressed="false">Bật báo chuông</button>
       <button id="call-answer" type="button" class="green" hidden>Trả lời</button>
+      <button id="call-mic" type="button" class="secondary" hidden></button>
+      <button id="call-camera" type="button" class="secondary" hidden></button>
+      <button id="call-speaker" type="button" class="secondary" hidden></button>
       <button id="call-end" type="button" class="red">Cúp máy</button>
     </div>
   </div>
@@ -422,6 +428,7 @@
     if (info.state !== "ringing") acceptedId = null;
     const video = info.video || info.peer_video;
     const name = nameForCall(info.user_id);
+    if (info.id !== callInfo?.id) callError("");
     callInfo = info;
     $("call-name").textContent = (video ? "🎥 " : "📞 ") + name;
     $("call-avatar").textContent = initials(name);
@@ -437,6 +444,7 @@
     const answerFocused = document.activeElement === $("call-answer");
     $("call-answer").hidden = $("call-ring").hidden = !incoming();
     $("call-end").textContent = incoming() ? "Từ chối" : "Cúp máy";
+    renderCallMedia(info);
     if (opening) {
       callFocus = document.activeElement;
       $("app").inert = true;
@@ -449,6 +457,22 @@
       $("call-wait").textContent = !video ? "Cuộc gọi thoại" : info.state === "active" ? "Đang chờ hình từ đối phương…" : "Hình sẽ hiện khi cuộc gọi kết nối";
     }
     syncRing();
+  }
+  function renderCallMedia(info) {
+    const active = info.state === "active";
+    const toggle = (id, device, on, available) => {
+      const button = $(id);
+      button.hidden = !available;
+      button.textContent = (on ? "Tắt " : "Bật ") + device;
+      button.setAttribute("aria-pressed", String(on));
+    };
+    toggle("call-mic", "mic gửi đi", !info.mic_muted, active);
+    toggle("call-camera", "camera gửi đi", info.video && !info.cam_off, active);
+    toggle("call-speaker", "loa ngoài", info.playback?.kind === "push", active && info.playback?.speaker_configured);
+  }
+  function callError(message) {
+    $("call-error").textContent = message;
+    $("call-error").hidden = !message;
   }
   function clearSnapshotImage(state) {
     $("call-image").removeAttribute("src");
@@ -545,21 +569,39 @@
   function setCallBusy(busy) {
     callBusy = busy;
     callRevision++;
-    for (const id of ["call-answer", "call-end", "call-a", "call-v"]) $(id).disabled = busy;
+    for (const id of ["call-answer", "call-end", "call-mic", "call-camera", "call-speaker", "call-a", "call-v"]) $(id).disabled = busy;
   }
   async function callRequest(action, body, errorText) {
     if (callBusy) return;
     setCallBusy(true);
+    callError("");
     try {
       const info = await api("POST", "/api/live/" + action, body);
       if (!callsReady || info.id === missingSnapshotId) return;
       if (action === "accept") acceptedId = info.id;
-      if (info.state === "ended") hideCall(); else renderCall(info);
-    } catch (e) { toast(errorText + ": " + e.message); }
+      if (info.state === "ended") {
+        hideCall();
+        if (info.error) toast(info.error);
+      } else renderCall(info);
+    } catch (e) {
+      const message = errorText + ": " + e.message;
+      if (callInfo) callError(message); else toast(message);
+    }
     finally { setCallBusy(false); watchCall(); }
   }
   $("call-answer").addEventListener("click", () => callRequest("accept", { id: callInfo.id }, "Không thể trả lời"));
   $("call-end").addEventListener("click", () => callRequest("hangup", { id: callInfo.id }, incoming() ? "Không thể từ chối" : "Không thể cúp máy"));
+  $("call-mic").addEventListener("click", () => {
+    callRequest("media", { id: callInfo.id, mic_muted: !callInfo.mic_muted }, "Không thể đổi trạng thái mic");
+  });
+  $("call-camera").addEventListener("click", () => {
+    const change = callInfo.video ? { camera_off: !callInfo.cam_off } : { video: true };
+    callRequest("media", { id: callInfo.id, ...change }, "Không thể đổi trạng thái camera");
+  });
+  $("call-speaker").addEventListener("click", () => {
+    const kind = callInfo.playback.kind === "push" ? "external" : "push";
+    callRequest("playback", { id: callInfo.id, kind }, "Không thể đổi trạng thái loa ngoài");
+  });
   function startCall(video) {
     const chat = chats.find((c) => c.id === cur);
     if (!chat || chat.kind !== "private" || !chat.user_id) { toast("Chỉ gọi được ở hội thoại riêng tư."); return; }

@@ -197,6 +197,7 @@ struct LiveCall {
     media_created: bool,
     pending_signaling: Vec<Vec<u8>>,
     devices: Devices,
+    mic_source: Option<(String, String)>,
     playback_kind: String,
     playback_cmd: String,
     playback_path: PathBuf,
@@ -229,9 +230,10 @@ impl LiveCall {
         let id = format!("{:x}{:x}{:x}", std::process::id(), SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos(), SEQUENCE.fetch_add(1, Ordering::Relaxed));
         let playback_kind = if devices.speaker.is_empty() { devices.playback.clone() } else { "push".into() };
         let playback_cmd = if playback_kind == "push" { devices.speaker.clone() } else { String::new() };
+        let mic_source = devices.mic_source();
         let playback_path = data_dir.join("live").join(format!("{id}_in.pcm"));
         let mut c = Self { id, td_id: None, user_id, outgoing, video, state: if outgoing { "dialing" } else { "ringing" },
-            accepted: false, ready_done: false, media_created: false, pending_signaling: Vec::new(), devices, playback_kind, playback_cmd,
+            accepted: false, ready_done: false, media_created: false, pending_signaling: Vec::new(), devices, mic_source, playback_kind, playback_cmd,
             playback_path, playback_final: None, cast: None, cam_off: false, view_on: video, peer_video: false,
             view: json!({"frames":0,"jpeg":0,"size":"","dropped":0,"bad":0}), snapshot: Default::default(), trace: None, sig: [0;4], frames_in: 0, frame_bytes: 0,
             peak: 0, error: String::new(), emojis: json!([]), started: Instant::now(), active: None, ended: None,
@@ -259,7 +261,7 @@ impl LiveCall {
             "state":self.state,"emojis":self.emojis,"error":self.error,"seconds":(duration*10.0).round()/10.0,
             "peer_video":self.peer_video,"view":self.view,"diag":{},"sig":{"tx_n":self.sig[0],"tx_b":self.sig[1],"rx_n":self.sig[2],"rx_b":self.sig[3]},
             "cpu_max":0.0,"mic_muted":self.devices.mic=="silence","cam_off":self.cam_off,"frames_in":self.frames_in,"frame_bytes":self.frame_bytes,"peak":self.peak,
-            "playback":{"kind":self.playback_kind,"bytes":self.playback_size()},"events":self.events.iter().skip(self.events.len().saturating_sub(40)).collect::<Vec<_>>()})
+            "playback":{"kind":self.playback_kind,"bytes":self.playback_size(),"speaker_configured":!self.devices.speaker.is_empty()},"events":self.events.iter().skip(self.events.len().saturating_sub(40)).collect::<Vec<_>>()})
     }
 
     fn playback(&self) -> Result<ntgcalls::MediaDescription, GwError> {
@@ -544,6 +546,7 @@ impl Actor {
         self.td_request(json!({"@type":"acceptCall","call_id":c.td_id,"protocol":self.protocol_json()})).await?;
         let c = &mut self.calls[i];
         c.accepted = true;
+        c.mic_source = devices.mic_source();
         c.devices = devices;
         c.playback_kind = kind;
         c.playback_cmd = c.devices.speaker.clone();
@@ -720,25 +723,49 @@ impl Actor {
     async fn set_media(&mut self, body: Value) -> Reply {
         let i = self.find(&body)?;
         if self.calls[i].state == "ended" { return Err(missing()); }
-        if !["mic","camera","camera_off","video"].iter().any(|k| body.get(*k).is_some()) && !matches!(body["mic_format"].as_str(),Some("auto"|"s16le16k")) {
-            return Err(GwError::bad_request("Cần mic, camera, camera_off hoặc video."));
+        if !["mic","mic_muted","camera","camera_off","video"].iter().any(|k| body.get(*k).is_some()) && !matches!(body["mic_format"].as_str(),Some("auto"|"s16le16k")) {
+            return Err(GwError::bad_request("Cần mic, mic_muted, camera, camera_off hoặc video."));
         }
-        let c = &mut self.calls[i];
+        let c = &self.calls[i];
         let cam_off = body.get("camera_off").map(|v| v.as_bool().ok_or_else(|| GwError::bad_request("camera_off phải là boolean"))).transpose()?;
+        let mic_muted = body.get("mic_muted").map(|v| v.as_bool().ok_or_else(|| GwError::bad_request("mic_muted phải là boolean"))).transpose()?;
         let mut devices = c.devices.clone();
         // Chỉ cập nhật capture, không nhận nhầm speaker/playback từ endpoint media.
         let mut capture = json!({});
         for key in ["mic","camera","mic_format"] { if let Some(v) = body.get(key) { capture[key] = v.clone(); } }
         devices.update(&capture)?;
-        if devices.mic != c.devices.mic {
+        let mut mic_source = c.mic_source.clone();
+        if devices.mic != c.devices.mic && devices.mic != "silence" {
+            mic_source = devices.mic_source();
+        } else if matches!(body["mic_format"].as_str(), Some("auto" | "s16le16k")) {
+            if let Some((_, format)) = &mut mic_source { format.clone_from(&devices.mic_format); }
+        }
+        if let Some(muted) = mic_muted {
+            if muted {
+                devices.mic = "silence".into();
+                if let Some((_, format)) = &mic_source { devices.mic_format.clone_from(format); }
+            } else {
+                (devices.mic, devices.mic_format) = mic_source.clone()
+                    .ok_or_else(|| GwError::bad_request("Chưa chọn nguồn mic để bật mic."))?;
+            }
+        }
+        let upgrade = body["video"] == true;
+        let video = c.video || upgrade;
+        let cam_off = !upgrade && cam_off.unwrap_or(c.cam_off);
+        if c.media_created {
+            let desc = devices.capture(video, cam_off, self.profile);
+            self.media.execute(MediaOp::Sources(c.user_id, StreamMode::Capture, desc)).await.map_err(|_| media_error())?;
+        }
+        let c = &mut self.calls[i];
+        if devices.mic != c.devices.mic || devices.mic_format != c.devices.mic_format {
             c.capture_revision += 1;
         }
+        c.mic_source = mic_source;
         c.devices = devices;
-        if let Some(value) = cam_off { c.cam_off = value; }
-        if body["video"] == true { c.video = true; c.cam_off = false; }
-        self.capture(i).await?;
-        self.calls[i].log("đổi nguồn gửi đi");
-        Ok(self.calls[i].info())
+        c.cam_off = cam_off;
+        c.video = video;
+        c.log("đổi nguồn gửi đi");
+        Ok(c.info())
     }
 
     async fn set_playback(&mut self, body: Value) -> Reply {

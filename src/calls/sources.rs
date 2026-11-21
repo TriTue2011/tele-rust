@@ -99,6 +99,10 @@ impl Default for Devices {
 }
 
 impl Devices {
+    pub fn mic_source(&self) -> Option<(String, String)> {
+        (self.mic != "silence").then(|| (self.mic.clone(), self.mic_format.clone()))
+    }
+
     pub fn json(&self, masked: bool) -> Value {
         let show = |s: &str| if masked { mask(s) } else { s.to_owned() };
         json!({"mic":show(&self.mic), "mic_format":self.mic_format, "camera":show(&self.camera), "playback":self.playback, "speaker":show(&self.speaker)})

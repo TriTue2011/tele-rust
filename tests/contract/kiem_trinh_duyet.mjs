@@ -6,10 +6,10 @@ import {spawn} from 'node:child_process';
 import {once,EventEmitter} from 'node:events';
 
 const phones=['+84900000001','+84900000002'];
-const requests=[], errors=[], callActions=[], startedCalls=[];
+const requests=[], errors=[], callActions=[], startedCalls=[], mediaActions=[];
 const csp=readFileSync('src/web.rs','utf8').match(/header::CONTENT_SECURITY_POLICY,"([^"]+)"/)[1];
 const chatTitle='Hội thoại thử <em>A</em>';
-let feed=[], calls=[], snapshots=0, snapshotStatus=409;
+let feed=[], calls=[], snapshots=0, snapshotStatus=409, rejectMedia=false;
 const server=http.createServer(async (req,res)=>{
   const url=new URL(req.url,'http://localhost');
   const reply=value=>{res.setHeader('Content-Type','application/json');res.end(JSON.stringify(value));};
@@ -51,6 +51,17 @@ const server=http.createServer(async (req,res)=>{
     const body=JSON.parse(raw||'{}');startedCalls.push({url,id:body.user_id,video:body.video});
     const call={id:'fake-call-out',user_id:body.user_id,outgoing:true,video:!!body.video,state:'dialing',seconds:0,emojis:[],view:{frames:0,jpeg:0,size:''}};
     calls=[call];reply(call);return;
+  }
+  if (req.method==='POST' && ['/api/live/media','/api/live/playback'].includes(url.pathname)) {
+    let raw='';for await (const chunk of req) raw+=chunk;
+    const body=JSON.parse(raw);
+    mediaActions.push({path:url.pathname,body});
+    if (rejectMedia) {res.statusCode=502;reply({error:{code:'MEDIA_FAILED',message:'Thiết bị thử không phản hồi'}});return;}
+    const call=calls.find(item=>item.id===body.id);
+    if (body.mic_muted!==undefined) call.mic_muted=body.mic_muted;
+    if (body.camera_off!==undefined) call.cam_off=body.camera_off;
+    if (body.kind) call.playback.kind=body.kind;
+    reply(call);return;
   }
   res.statusCode=404;reply({error:{code:'UNEXPECTED_PATH'}});
 });
@@ -104,7 +115,7 @@ try {
   await wait(`document.querySelector('#account') && document.querySelector('#account').value===${JSON.stringify(phones[1])} && document.querySelector('.chat')`);
   assert.equal(await evaluate("getComputedStyle(document.querySelector('#call-overlay')).display"),'none');
   await waitServer(()=>requests.some(url=>url.pathname==='/api/live/calls' && url.searchParams.get('account')===phones[1]));
-  const incoming={id:'fake-call-1',user_id:7,outgoing:false,video:true,state:'ringing',emojis:['🦊','🔒','<em>B</em>'],seconds:12,view:{frames:5,size:'640x360'}};
+  const incoming={id:'fake-call-1',user_id:7,outgoing:false,video:true,state:'ringing',emojis:['🦊','🔒','<em>B</em>'],seconds:12,view:{frames:5,size:'640x360'},mic_muted:false,cam_off:false,playback:{kind:'push',speaker_configured:true}};
   calls=[incoming];
   // Không phát sự kiện cuộc gọi qua feed. Popup phải hiện trên danh sách nhờ polling.
   await wait("!document.querySelector('#call-overlay').hidden && document.querySelector('#call-name').textContent.includes('Hội thoại thử')");
@@ -126,6 +137,22 @@ try {
   assert(firstBlob.startsWith('blob:'));
   await wait(`document.querySelector('#call-image').src!==${JSON.stringify(firstBlob)} && window.__revokedBlobs.includes(${JSON.stringify(firstBlob)})`);
   assert.match(await evaluate("document.querySelector('#call-meta').textContent"),/5 khung · 640x360/);
+  for (const [id,path,changes] of [
+    ['mic','media',[{mic_muted:true},{mic_muted:false}]],
+    ['camera','media',[{camera_off:true},{camera_off:false}]],
+    ['speaker','playback',[{kind:'external'},{kind:'push'}]],
+  ]) {
+    for (const [index,body] of changes.entries()) {
+      await evaluate(`document.querySelector('#call-${id}').click()`);
+      await wait(`document.querySelector('#call-${id}').getAttribute('aria-pressed')==='${index===1}' && !document.querySelector('#call-${id}').disabled`);
+      assert.deepEqual(mediaActions.at(-1),{path:'/api/live/'+path,body:{id:incoming.id,...body}});
+    }
+  }
+  rejectMedia=true;
+  await evaluate("document.querySelector('#call-mic').click()");
+  await wait("document.querySelector('#call-error').textContent.includes('Thiết bị thử không phản hồi')");
+  assert.equal(await evaluate("document.querySelector('#call-mic').getAttribute('aria-pressed')"),'true');
+  rejectMedia=false;
   await call('Emulation.setDeviceMetricsOverride',{width:390,height:844,deviceScaleFactor:1,mobile:true});
   assert.equal(await evaluate("document.querySelector('#call-window').getBoundingClientRect().width===390 && document.querySelector('#call-stage').clientHeight>0 && document.documentElement.scrollWidth<=window.innerWidth"),true);
   const hiddenBlob=await evaluate(`(() => {
@@ -178,7 +205,7 @@ try {
   await wait("document.querySelectorAll('.acc').length===2");
   assert.equal(await evaluate("document.querySelector('#login').hidden"),false);
   assert.deepEqual(errors,[]);
-  console.log(`Chrome: gọi đến qua polling ở Hội thoại/Danh bạ, gọi đi, Trả lời/Từ chối/Cúp máy, emoji dạng văn bản, JPEG 409/200/404, blob thu hồi khi thay ảnh và ẩn tab, 390px và 1280px. ${errors.length} lỗi JavaScript.`);
+  console.log(`Chrome: gọi đến qua polling ở Hội thoại/Danh bạ, gọi đi, Trả lời/Từ chối/Cúp máy, emoji dạng văn bản, JPEG 409/200/404, thu hồi blob, 6 thao tác mic/camera/loa và lỗi 502, 390px và 1280px. ${errors.length} lỗi JavaScript.`);
 } finally {
   clearTimeout(timer);if(chrome.exitCode===null&&chrome.signalCode===null){const exited=once(chrome,'exit');try{process.kill(-chrome.pid,'SIGTERM');}catch(e){chrome.kill('SIGTERM');}await exited;}server.closeAllConnections();server.close();rmSync(profile,{recursive:true,force:true});
 }
