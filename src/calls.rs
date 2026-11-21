@@ -28,7 +28,7 @@ use sources::{Devices, playback_description, video_profile};
 type Reply = Result<Value, GwError>;
 
 #[derive(Clone, Copy)]
-enum Action { Calls, CallOut, Accept, Hangup, Settings, Media, Playback, Say }
+enum Action { Calls, Resolve, CallOut, Accept, Hangup, Settings, Media, Playback, Say }
 
 enum Command {
     Api(Action, Value, oneshot::Sender<Reply>),
@@ -104,6 +104,8 @@ impl CallManager {
     }
 
     pub fn events(&self) -> broadcast::Receiver<Value> { self.handle.events.subscribe() }
+
+    pub(crate) async fn resolve(&self,body:Value)->Reply { self.request(Action::Resolve,body).await }
 
     /// Ngừng nhận lệnh, kết thúc các cuộc gọi hiện tại rồi chờ actor dọn media.
     pub async fn shutdown(&self, wait: Duration) -> Result<(), String> {
@@ -387,6 +389,7 @@ impl Actor {
         if !matches!(action, Action::Calls | Action::Settings) && !body.is_object() { return Err(GwError::bad_request("Cần JSON object")); }
         match action {
             Action::Calls => Ok(json!({"calls":self.calls.iter().skip(self.calls.len().saturating_sub(10)).map(LiveCall::info).collect::<Vec<_>>()})),
+            Action::Resolve => self.resolve_user(&body).await.map(|id|json!(id)),
             Action::Settings => self.settings(body),
             Action::CallOut => self.call_out(body).await,
             Action::Accept => self.accept(body).await,

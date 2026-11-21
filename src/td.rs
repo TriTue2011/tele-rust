@@ -12,6 +12,8 @@
 pub mod login;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+pub(crate) mod fake;
 
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
@@ -143,6 +145,7 @@ struct Shared {
     updates: broadcast::Sender<Value>,
     /// `@type` của trạng thái đăng nhập mới nhất (rỗng khi TDLib chưa báo).
     auth: watch::Sender<String>,
+    auth_object: watch::Sender<Value>,
 }
 
 impl Shared {
@@ -162,6 +165,7 @@ impl Shared {
             return;
         }
         if msg.get("@type").and_then(Value::as_str) == Some("updateAuthorizationState") {
+            self.auth_object.send_replace(msg["authorization_state"].clone());
             let state = msg
                 .pointer("/authorization_state/@type")
                 .and_then(Value::as_str)
@@ -293,11 +297,13 @@ impl TdClient {
         let client_id = receiver.api.create_client_id();
         let (updates, _) = broadcast::channel(UPDATES_CAPACITY);
         let (auth, _) = watch::channel(String::new());
+        let (auth_object, _) = watch::channel(Value::Null);
         let shared = Arc::new(Shared {
             session,
             pending: Mutex::new(Some(HashMap::new())),
             updates,
             auth,
+            auth_object,
         });
         clients.insert(i64::from(client_id), shared.clone());
         drop(clients);
@@ -328,6 +334,8 @@ impl TdClient {
     pub fn auth_watch(&self) -> watch::Receiver<String> {
         self.shared.auth.subscribe()
     }
+
+    pub(crate) fn authorization(&self) -> Value { self.shared.auth_object.borrow().clone() }
 
     /// Nộp mã đăng nhập (máy trạng thái dùng khi đang ở waitCode).
     pub fn submit_code(&self, code: &str) {

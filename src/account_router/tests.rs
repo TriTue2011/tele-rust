@@ -1,0 +1,294 @@
+use super::*;
+use axum::{body::{to_bytes,Body},http::Request};
+use tower::ServiceExt;
+
+pub(crate) struct Fixture {
+    pub hub:Arc<Accounts>,pub api:Arc<crate::td::fake::Fake>,pub router:axum::Router,pub dir:PathBuf,
+}
+impl Fixture {
+    pub async fn new(name:&str)->Self {
+        let dir=std::env::temp_dir().join(format!("tggw-http-{}-{name}",std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (api,factory)=crate::td::fake::Fake::factory();
+        let config=LoginConfig{data_dir:dir.clone(),api_id:12345,api_hash:"fake-api-hash".into(),phone:String::new()};
+        let hub=Accounts::with_factory(config,"fake".into(),3399,factory).await.unwrap();
+        let router=rest_router(hub.clone());
+        Self{hub,api,router,dir}
+    }
+    pub async fn send(&self,method:&str,path:&str,body:Value)->(u16,Value) {
+        send(&self.router,method,path,body,true).await
+    }
+    pub async fn login(&self,phone:&str)->String {
+        let (status,value)=self.send("POST","/ui/api/accounts",json!({"phone":phone})).await;
+        assert_eq!(status,200,"{value}");value["login_id"].as_str().unwrap().into()
+    }
+    pub async fn ready(&self,phone:&str) {
+        let id=self.login(phone).await;
+        assert_eq!(self.send("POST",&format!("/ui/api/accounts/{id}/code"),json!({"code":"22222"})).await,
+            (200,json!({"ok":true,"phone":phone,"status":"online","mock":false})));
+    }
+    pub async fn finish(self) { self.hub.shutdown().await; drop(self.router);drop(self.hub);std::fs::remove_dir_all(self.dir).unwrap(); }
+}
+fn rest_router(hub:Arc<Accounts>)->axum::Router {
+    crate::rest::router_accounts(hub,crate::rest::RestConfig{token:"test-token".into(),rate_limit_per_minute:1000,version:"test".into()})
+}
+pub(crate) async fn send(router:&axum::Router,method:&str,path:&str,body:Value,auth:bool)->(u16,Value) {
+    let mut request=Request::builder().method(method).uri(path);
+    if auth {request=request.header("Authorization","Bearer test-token");}
+    let response=router.clone().oneshot(request.body(Body::from(serde_json::to_vec(&body).unwrap())).unwrap()).await.unwrap();
+    let status=response.status().as_u16();
+    let bytes=to_bytes(response.into_body(),usize::MAX).await.unwrap();
+    (status,serde_json::from_slice(&bytes).unwrap())
+}
+
+#[tokio::test]
+async fn two_accounts_route_messages_calls_feed_and_events() {
+    let f=Fixture::new("route").await;
+    f.ready("+84900000001").await;f.ready("+84900000002").await;
+    assert_eq!(f.send("GET","/api/me?account=%2B84900000002",Value::Null).await.1["id"],2);
+    assert_eq!(f.send("GET","/api/me",Value::Null).await.1["id"],1);
+    assert_eq!(f.send("GET","/api/me?account=unknown",Value::Null).await.0,404);
+    assert_eq!(f.send("GET","/api/feed?wait=bad",Value::Null).await.0,400);
+    assert_eq!(f.send("GET","/api/feed?since=bad",Value::Null).await.0,400);
+    assert_eq!(f.send("GET","/health",Value::Null).await.1["accounts_online"],2);
+    for id in 1..=2 {
+        f.api.push(json!({"@type":"updateNewMessage","message":{"id":id*100,"chat_id":id*10,"content":{"@type":"messageText","text":{"text":"fake"}}}}),id);
+    }
+    let deadline=tokio::time::Instant::now()+Duration::from_secs(3);
+    loop {
+        let feed=f.send("GET","/api/feed?wait=0.1",Value::Null).await.1;
+        if feed["items"].as_array().unwrap().len()==2 {
+            let items=feed["items"].as_array().unwrap();
+            assert_ne!(items[0]["account"],items[1]["account"]);break;
+        }
+        assert!(tokio::time::Instant::now()<deadline);
+    }
+    loop {
+        let events=f.send("GET","/api/events",Value::Null).await.1;
+        if events["events"].as_array().unwrap().len()>=2 {
+            let events=events["events"].as_array().unwrap();
+            assert_ne!(events[0]["account"],events[1]["account"]);break;
+        }
+        assert!(tokio::time::Instant::now()<deadline);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    // Trùng mã cuộc gọi TDLib giữa hai tài khoản vẫn không lẫn điều khiển.
+    for id in 1..=2 {
+        f.api.push(json!({"@type":"updateCall","call":{"id":71,"user_id":id+100,"is_outgoing":false,"state":{"@type":"callStatePending","is_created":true,"is_received":true}}}),id);
+    }
+    loop {
+        let calls=f.send("GET","/api/live/calls",Value::Null).await.1;
+        if calls["calls"].as_array().unwrap().len()==2 {
+            let calls=calls["calls"].as_array().unwrap();
+            assert_ne!(calls[0]["id"],calls[1]["id"]);
+            let own=f.send("GET","/api/live/calls?account=%2B84900000002",Value::Null).await.1;
+            assert_eq!(own["calls"].as_array().unwrap().len(),1);
+            assert_eq!(own["calls"][0]["id"],calls[1]["id"]);
+            let snapshot=format!("/api/live/snapshot/{}",calls[1]["id"].as_str().unwrap());
+            assert_eq!(f.send("GET",&snapshot,Value::Null).await.0,409);
+            assert_eq!(f.send("GET",&format!("{snapshot}?account=%2B84900000001"),Value::Null).await.0,404);
+            let id=calls[1]["id"].clone();
+            let result=f.send("POST","/api/live/hangup",json!({"id":id,"account":"+84900000001"})).await;
+            assert_eq!(result.0,404);
+            assert_eq!(f.send("POST","/api/live/hangup",json!({"id":id})).await.0,200);
+            break;
+        }
+        assert!(tokio::time::Instant::now()<deadline);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    f.finish().await;
+}
+
+#[tokio::test]
+async fn wrong_codes_lock_and_server_flood_wait_keeps_retry_seconds() {
+    let f=Fixture::new("flood-contract").await;
+    let id=f.login("+84900000003").await;
+    let path=format!("/ui/api/accounts/{id}/code");
+    for code in ["bad","11111"] {
+        let result=f.send("POST",&path,json!({"code":code})).await;
+        assert_eq!(result.0,400);
+        assert_eq!(result.1["error"]["code"],"BAD_REQUEST");
+        assert!(!result.1.to_string().contains(code));
+    }
+    for _ in 0..2 {
+        let result=f.send("POST",&path,json!({"code":"22222".replace('2',"1")})).await;
+        assert_eq!(result.0,429);
+        assert_eq!(result.1["error"]["code"],"LOGIN_LOCKED");
+    }
+    assert_eq!(f.send("GET",&format!("/ui/api/accounts/{id}"),Value::Null).await.0,429);
+    assert_eq!(f.send("POST","/ui/api/accounts",json!({"phone":"+84900000003"})).await.0,429);
+    let id=f.login("+84900000004").await;
+    let result=f.send("POST",&format!("/ui/api/accounts/{id}/code"),json!({"code":"33333"})).await;
+    assert_eq!(result,(429,json!({"error":{"code":"FLOOD_WAIT","message":"Telegram yêu cầu chờ trước khi thử lại.","retry_after_seconds":123}})));
+    let result=f.send("POST","/ui/api/accounts",json!({"phone":"+84900000300"})).await;
+    assert_eq!(result.0,429);
+    assert_eq!(result.1["error"]["retry_after_seconds"],321);
+    assert_eq!(f.send("POST",&format!("/ui/api/accounts/{id}/code"),json!({"code":"22222"})).await.0,200);
+    f.finish().await;
+}
+
+#[tokio::test]
+async fn qr_confirmation_and_password_status_follow_latest_authorization() {
+    let f=Fixture::new("qr-confirm").await;
+    let result=f.send("POST","/ui/api/accounts/qr",json!({"phone":"+84900000005"})).await;
+    let id=result.1["login_id"].as_str().unwrap();
+    let path=format!("/ui/api/accounts/{id}");
+    assert_eq!(f.send("POST",&format!("{path}/qr-confirm"),json!({})).await.0,400);
+    f.api.auth(1,json!({"@type":"authorizationStateWaitOtherDeviceConfirmation","link":"tg://login?token=rotated-fake"}));
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let status=f.send("GET",&path,Value::Null).await.1;
+    assert_eq!(status["qr_link"],"tg://login?token=rotated-fake");
+    assert_ne!(status["phone"],"+84900000005");
+    f.api.auth(1,json!({"@type":"authorizationStateWaitPassword"}));
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert_eq!(f.send("GET",&path,Value::Null).await.1["stage"],"password");
+    assert_eq!(f.send("POST",&format!("{path}/password"),json!({"password":" secret2fa "})).await.0,200);
+    let result=f.send("POST","/ui/api/accounts/qr",json!({"phone":"+84900000006"})).await;
+    let id=result.1["login_id"].as_str().unwrap();
+    f.api.auth(2,json!({"@type":"authorizationStateReady"}));
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert_eq!(f.send("POST",&format!("/ui/api/accounts/{id}/qr-confirm"),json!({})).await.0,200);
+    assert_eq!(f.send("GET","/health",Value::Null).await.1["accounts_online"],2);
+    f.finish().await;
+}
+
+#[tokio::test]
+async fn legacy_start_keeps_paths_and_http_available_before_ready() {
+    let dir=std::env::temp_dir().join(format!("tggw-legacy-http-{}",std::process::id()));
+    std::fs::create_dir_all(dir.join("tdlib/files")).unwrap();
+    std::fs::write(dir.join("tdlib/files/sentinel"),b"legacy DB").unwrap();
+    std::fs::write(dir.join("tdlib/khoa"),b"00112233445566778899aabbccddeeff").unwrap();
+    let (api,factory)=crate::td::fake::Fake::factory();
+    let cfg=LoginConfig{data_dir:dir.clone(),api_id:12345,api_hash:"fake-api-hash".into(),phone:"+84900000000".into()};
+    let hub=Accounts::with_factory(cfg,"fake".into(),3399,factory).await.unwrap();
+    let router=rest_router(hub.clone());
+    assert_eq!(send(&router,"GET","/health",Value::Null,false).await.0,200);
+    assert_eq!(send(&router,"GET","/api/me",Value::Null,true).await.0,503);
+    let deadline=tokio::time::Instant::now()+Duration::from_secs(3);
+    while !api.sent.lock().unwrap().iter().any(|(_,r)|r["@type"]=="setAuthenticationPhoneNumber") {
+        assert!(tokio::time::Instant::now()<deadline);
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    api.auth(1,json!({"@type":"authorizationStateReady"}));
+    while send(&router,"GET","/health",Value::Null,false).await.1["accounts_online"]!=1 {
+        assert!(tokio::time::Instant::now()<deadline);
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let sent=api.sent.lock().unwrap().clone();
+    let parameters=sent.iter().find(|(_,r)|r["@type"]=="setTdlibParameters").unwrap();
+    assert_eq!(parameters.1["database_directory"],dir.join("tdlib/files").to_string_lossy().as_ref());
+    assert_eq!(std::fs::read(dir.join("tdlib/files/sentinel")).unwrap(),b"legacy DB");
+    assert_eq!(std::fs::read(dir.join("tdlib/khoa")).unwrap(),b"00112233445566778899aabbccddeeff");
+    assert!(!dir.join("accounts.json").exists());
+    hub.shutdown().await;drop(router);drop(hub);std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn restart_restores_all_online_accounts_without_sending_phone_or_code() {
+    let dir=std::env::temp_dir().join(format!("tggw-restore-http-{}",std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut store=AccountStore::open(&dir,"").unwrap();
+    for phone in ["+84900000001","+84900000002"] {store.put_online(phone,"Thử".into()).unwrap();}
+    let mut rows:Value=serde_json::from_slice(&std::fs::read(dir.join("accounts.json")).unwrap()).unwrap();
+    rows.as_array_mut().unwrap().push(json!({"phone":"+84900000003","status":"offline"}));
+    crate::accounts::atomic_json(&dir.join("accounts.json"),&rows).unwrap();
+    let (api,factory)=crate::td::fake::Fake::factory();
+    api.restored.store(true,Ordering::Relaxed);
+    let cfg=LoginConfig{data_dir:dir.clone(),api_id:12345,api_hash:"fake-api-hash".into(),phone:"+84900000000".into()};
+    let hub=Accounts::with_factory(cfg,"fake".into(),3399,factory).await.unwrap();
+    let router=rest_router(hub.clone());
+    let deadline=tokio::time::Instant::now()+Duration::from_secs(3);
+    loop {
+        let health=send(&router,"GET","/health",Value::Null,false).await.1;
+        assert_eq!(health["accounts_total"],3);
+        if health["accounts_online"]==2 {break;}
+        assert!(tokio::time::Instant::now()<deadline);
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(hub.all().len(),2);
+    assert_eq!(send(&router,"GET","/api/me?account=%2B84900000003",Value::Null,true).await.0,503);
+    let sent=api.sent.lock().unwrap().clone();
+    let parameters:Vec<_>=sent.iter().filter(|(_,r)|r["@type"]=="setTdlibParameters").collect();
+    assert_eq!(parameters.len(),2);
+    assert_ne!(parameters[0].1["database_directory"],parameters[1].1["database_directory"]);
+    assert!(!sent.iter().any(|(_,r)|matches!(r["@type"].as_str(),Some("setAuthenticationPhoneNumber"|"checkAuthenticationCode"|"checkAuthenticationPassword"))));
+    hub.shutdown().await;drop(router);drop(hub);std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn live_body_account_and_query_override_preserve_python_peer_busy_rule() {
+    let f=Fixture::new("live-body").await;
+    f.ready("+84900000001").await;f.ready("+84900000002").await;
+    let result=f.send("POST","/api/live/call",json!({"account":"+84900000001","user_id":501})).await;
+    assert_eq!(result.0,200,"{result:?}");
+    let result=f.send("POST","/api/live/call",json!({"account":"+84900000002","user_id":501})).await;
+    assert_eq!(result.0,409);assert_eq!(result.1["error"]["code"],"CALL_BUSY");
+    let result=f.send("POST","/api/live/call?account=%2B84900000002",json!({"account":"+84900000001","user_id":502})).await;
+    assert_eq!(result.0,200,"{result:?}");
+    let sent=f.api.sent.lock().unwrap().clone();
+    let calls:Vec<_>=sent.iter().filter(|(_,r)|r["@type"]=="createCall").collect();
+    assert_eq!(calls.len(),2);
+    assert_eq!(calls[0].0,1);assert_eq!(calls[0].1["user_id"],501);
+    assert_eq!(calls[1].0,2);assert_eq!(calls[1].1["user_id"],502);
+    f.finish().await;
+}
+
+#[tokio::test]
+async fn authenticated_ui_2fa_qr_and_archive_contract() {
+    let f=Fixture::new("login").await;
+    for (method,path) in [("POST","/ui/api/accounts"),("POST","/ui/api/accounts/qr"),("GET","/ui/api/accounts/id"),
+        ("DELETE","/ui/api/accounts/%2B84900000000"),("POST","/ui/api/accounts/id/code"),
+        ("POST","/ui/api/accounts/id/password"),("POST","/ui/api/accounts/id/qr-confirm")] {
+        assert_eq!(send(&f.router,method,path,json!({}),false).await.0,401);
+    }
+    let id=f.login("+84900000000").await;
+    assert_eq!(f.send("POST",&format!("/ui/api/accounts/{id}/code"),json!({"code":"54321"})).await,
+        (200,json!({"ok":true,"needs_password":true,"stage":"password"})));
+    assert_eq!(f.send("POST",&format!("/ui/api/accounts/{id}/password"),json!({"password":" secret2fa "})).await.0,200);
+    let session=f.hub.store.lock().unwrap().session_dir("+84900000000");
+    std::fs::write(session.join("files/sentinel"),b"database").unwrap();
+    assert_eq!(f.send("DELETE","/ui/api/accounts/%2B84900000000",Value::Null).await,(200,json!({"ok":true})));
+    assert!(!session.exists());
+    let archives:Vec<_>=std::fs::read_dir(f.dir.join("tdlib")).unwrap().map(|e|e.unwrap().path()).collect();
+    assert_eq!(archives.len(),1);
+    assert_eq!(std::fs::read(archives[0].join("files/sentinel")).unwrap(),b"database");
+    assert!(archives[0].join("khoa").exists());
+    assert!(f.hub.store.lock().unwrap().rows().is_empty());
+    let qr=f.send("POST","/ui/api/accounts/qr",json!({"phone":"+84900000002"})).await;
+    assert_eq!(qr.0,200);
+    let id=qr.1["login_id"].as_str().unwrap();
+    assert!(qr.1["qr_link"].as_str().unwrap().starts_with("tg://"));
+    f.api.auth(2,json!({"@type":"authorizationStateReady"}));
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert_eq!(f.send("GET",&format!("/ui/api/accounts/{id}"),Value::Null).await.1["stage"],"done");
+    f.finish().await;
+}
+
+#[tokio::test]
+async fn downloads_use_selected_python_session_and_reject_other_account_paths() {
+    let f=Fixture::new("downloads").await;
+    f.ready("+84900000001").await;f.ready("+84900000002").await;
+    let mut paths=Vec::new();
+    for (index,phone) in ["+84900000001","+84900000002"].into_iter().enumerate() {
+        let session=f.hub.store.lock().unwrap().session_dir(phone);
+        std::fs::create_dir_all(session.join("files/documents")).unwrap();
+        let path=session.join("files/documents/file.txt");
+        std::fs::write(&path,format!("account-{index}")).unwrap();
+        f.api.downloads.lock().unwrap().insert(index as i32+1,path.to_string_lossy().into_owned());
+        paths.push(path);
+    }
+    for (index,phone) in ["+84900000001","+84900000002"].into_iter().enumerate() {
+        let query=form_urlencoded::Serializer::new(String::new()).append_pair("account",phone).finish();
+        let response=f.router.clone().oneshot(Request::builder().uri(format!("/api/file/42?{query}"))
+            .header("Authorization","Bearer test-token").body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(response.status(),200);
+        assert_eq!(to_bytes(response.into_body(),usize::MAX).await.unwrap().as_ref(),format!("account-{index}").as_bytes());
+    }
+    f.api.downloads.lock().unwrap().insert(1,paths[1].to_string_lossy().into_owned());
+    assert_eq!(f.send("GET","/api/file/42?account=%2B84900000001",Value::Null).await.0,404);
+    let alias=paths[0].with_file_name("alias.txt");
+    std::os::unix::fs::symlink(&paths[1],&alias).unwrap();
+    f.api.downloads.lock().unwrap().insert(1,alias.to_string_lossy().into_owned());
+    assert_eq!(f.send("GET","/api/file/42?account=%2B84900000001",Value::Null).await.0,404);
+    f.finish().await;
+}

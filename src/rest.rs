@@ -54,6 +54,7 @@ struct Ctx {
     call: Arc<dyn CallControl>,
     chat: Arc<dyn ChatControl>,
     events: Option<EventStore>,
+    accounts: bool,
     token: String,
     limit: usize,
     hits: Mutex<VecDeque<Instant>>,
@@ -116,6 +117,7 @@ enum Kind {
     ChatGet,
     /// POST thân JSON → `ChatControl::handle(POST, …, body)`.
     ChatPost,
+    Ui,
     /// POST tệp thô → `ChatControl::handle(POST, …, {"data_b64"})`.
     SendFile,
     ChatBytes,
@@ -214,12 +216,21 @@ async fn handle(ctx: Arc<Ctx>, spec: Spec, req: Request) -> Response {
     }
     let out = match spec.kind {
         Kind::ChatBytes => return bytes_resp(ctx.chat.bytes(&path, &query).await),
+        Kind::Snapshot if ctx.accounts => return bytes_resp(ctx.chat.bytes(&path,&query).await),
         Kind::Snapshot => return bytes_resp(ctx.call.snapshot(path.rsplit('/').next().unwrap()).await),
+        Kind::Events if ctx.accounts => ctx.chat.handle("GET", "/api/events", &query, Value::Null).await,
         Kind::Events => match &ctx.events {
             Some(store) => store.poll(since).await,
             None => Err(GwError::new(501, "NOT_IMPLEMENTED", "Chưa có bộ lưu sự kiện.")),
         },
+        Kind::LiveCalls if ctx.accounts => ctx.chat.handle("GET", "/api/live/calls", &query, Value::Null).await,
         Kind::LiveCalls => ctx.call.calls().await,
+        Kind::Ui => match if parts.method == axum::http::Method::GET || parts.method == axum::http::Method::DELETE {
+            Ok(json!({}))
+        } else { body_dict(body).await } {
+            Err(e) => Err(e),
+            Ok(b) => ctx.chat.handle(parts.method.as_str(), &path, &query, b).await,
+        },
         Kind::Live(op) => match body_dict(body).await {
             Err(e) => Err(e),
             Ok(mut b) => {
@@ -342,6 +353,14 @@ fn router_with(ctx: Arc<Ctx>) -> Router {
     let get = MethodFilter::GET;
     let post = MethodFilter::POST;
     let mut r = Router::new().route("/health", on(get, health).on(MethodFilter::HEAD, method_not_allowed).fallback(method_not_allowed));
+    for path in ["/","/app.html","/ui/app.html"] {r=r.route(path,on(get,crate::web::app));}
+    for path in ["/index.html","/ui/","/ui/index.html"] {r=r.route(path,on(get,crate::web::accounts));}
+    r=r.route("/ui/api/accounts",route(post,s(Ui)))
+        .route("/ui/api/accounts/qr",route(post,s(Ui)))
+        .route("/ui/api/accounts/:login_id",add(route(get,s(Ui)),MethodFilter::DELETE,s(Ui)));
+    for action in ["code","password","qr-confirm"] {
+        r=r.route(&format!("/ui/api/accounts/:login_id/{action}"),route(post,s(Ui)));
+    }
     // Chỉ đọc → ChatControl (routes.py + chat_routes.py).
     for p in ["/api/accounts", "/api/me", "/api/chats", "/api/contacts", "/api/search", "/api/feed",
               "/api/calls", "/api/calltrace"] {
@@ -387,11 +406,19 @@ pub(crate) fn router_with_events(call: Arc<dyn CallControl>, chat: Arc<dyn ChatC
         call,
         chat,
         events,
+        accounts: false,
         token: cfg.token,
         limit: cfg.rate_limit_per_minute,
         hits: Mutex::new(VecDeque::new()),
         version: cfg.version,
         started: Instant::now(),
+    }))
+}
+
+pub(crate) fn router_accounts(accounts: Arc<crate::account_router::Accounts>, cfg: RestConfig) -> Router {
+    router_with(Arc::new(Ctx {
+        call:accounts.clone(),chat:accounts,events:None,accounts:true,token:cfg.token,limit:cfg.rate_limit_per_minute,
+        hits:Mutex::new(VecDeque::new()),version:cfg.version,started:Instant::now(),
     }))
 }
 
@@ -685,6 +712,7 @@ mod tests {
         let fake = Arc::new(Fake::default());
         let ctx = Ctx {
             events: None,
+            accounts: false,
             call: fake.clone(), chat: fake, token: TOK.into(), limit: 2,
             hits: Mutex::new(VecDeque::from([
                 Instant::now() - Duration::from_secs(61), Instant::now(),
