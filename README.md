@@ -12,8 +12,31 @@ Lưu ý giấy phép: NTgCalls là LGPL-3.0 liên kết tĩnh — phát hành nh
 ## Nhiều tài khoản và đăng nhập trên web
 
 `tggw serve` phục vụ giao diện trò chuyện tại `/` và `/ui/app.html`, quản lý tài khoản tại `/ui/index.html`.
-Nhập `GATEWAY_TOKEN` để kết nối. Các API `/ui/api/accounts*` đều yêu cầu `Authorization: Bearer …`,
-cùng cơ chế xác thực và hạn mức với `/api/*`. Chọn tài khoản trong giao diện trò chuyện, hoặc truyền
+
+### Đăng nhập web
+
+Lần đầu mở trang, chọn **Thiết lập lần đầu**: dán token khởi tạo đang cấu hình cho gateway một lần, rồi tạo tên đăng nhập
+và mật khẩu (tối thiểu 10 ký tự, không được trùng tên đăng nhập). Token không được lưu trong trình duyệt. Sau đó đăng nhập
+bằng tên và mật khẩu; **Ghi nhớ trên trình duyệt này** bật sẵn để phiên được giữ tối đa 90 ngày và gia hạn khi dùng.
+Bỏ chọn mục này để dùng cookie phiên, trình duyệt sẽ bỏ cookie khi đóng. Cookie dùng `HttpOnly`, `SameSite=Lax`, `Path=/`
+và có `Secure` trên HTTPS. Trình duyệt gọi API bằng cookie cùng nguồn và kiểm tra CSRF cho yêu cầu ghi.
+Xoá cookie thì đăng nhập lại bằng tên và mật khẩu, không cần dán token. Trong trang quản lý, **Đăng xuất** thu hồi
+phiên của trình duyệt hiện tại; **Đăng xuất mọi nơi** thu hồi mọi phiên ngay lập tức.
+
+Kho đăng nhập nằm tại `<TGGW_DATA>/ui_auth.json` (mặc định `/data`), tệp quyền `0600`, thư mục dữ liệu quyền `0700`.
+Có thể tạo tài khoản web tự động ở lần khởi động đầu bằng cách đặt đồng thời `TG_UI_USER` và `TG_UI_PASSWORD`;
+các biến này bị bỏ qua khi kho đăng nhập đã tồn tại. Có thể bật cờ cookie bảo mật tường minh bằng
+`TGGW_UI_COOKIE_SECURE=1` để buộc cờ `Secure`, chẳng hạn khi TLS kết thúc ở proxy.
+
+Đổi mật khẩu trong trang quản lý bằng mật khẩu hiện tại. Phiên đang đổi mật khẩu được giữ, các phiên khác hết hiệu lực ngay.
+Nếu quên mật khẩu, chạy `tggw passwd` trên máy chủ với cùng thư mục dữ liệu của gateway. Lệnh đọc `TG_UI_PASSWORD`
+hoặc hỏi mật khẩu mới trong terminal và ẩn nội dung nhập. Mọi phiên bị thu hồi ngay, kể cả khi gateway đang chạy.
+
+Token gateway vẫn là thông tin xác thực máy-gọi-máy: Home Assistant và các tích hợp hiện có tiếp tục dùng
+`Authorization: Bearer …` không thay đổi. Các API `/ui/api/accounts*` cũng chấp nhận Bearer như trước; giao diện web
+không giữ hoặc gửi token sau lần thiết lập.
+
+Chọn tài khoản trong giao diện trò chuyện, hoặc truyền
 `?account=<phone>` vào API; các lệnh `/api/live/*` cũng nhận `account` trong JSON. Khi bỏ trống,
 gateway dùng tài khoản online đầu tiên theo thứ tự đăng ký. Tài khoản lạ trả 404 `NOT_FOUND`,
 tài khoản đã lưu nhưng chưa kết nối trả 503 `ACCOUNT_OFFLINE`. Feed và sự kiện chứa `account`.
