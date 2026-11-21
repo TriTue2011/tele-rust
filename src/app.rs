@@ -134,7 +134,7 @@ impl App {
         let listener = tokio::net::TcpListener::bind(addr).await.map_err(|e| format!("Không nghe được {addr}: {e}"))?;
         let cast_port = listener.local_addr().map_err(|_| "Không đọc được cổng HTTP.")?.port();
         let library = std::env::var("TDJSON_LIB").unwrap_or_else(|_| "libtdjson.so".into());
-        let client = td::TdClient::open(&library)
+        let client = td::TdClient::open(&library, &login_config.session_dir())
             .map_err(|e| format!("Không khởi tạo được TDLib: {e}"))?;
         let td_link: Arc<dyn TdLink> = client.clone();
         let manager = match CallManager::with_cast(td_link.clone(), &login_config.data_dir, Some(cast_port)) {

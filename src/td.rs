@@ -5,7 +5,7 @@
 //!
 //! Cấu trúc:
 //! - [`TdApi`]   : bốn hàm C thô (create_client_id/send/receive/execute). [`TdJson`] là bản thật; test dùng bản giả.
-//! - [`TdClient`]: MỘT luồng nhận gọi `td_receive`, ghép câu trả lời theo `@extra`, phát update qua broadcast,
+//! - [`TdClient`]: bộ nhận chung gọi `td_receive`, phân phối theo `@client_id`, ghép câu trả lời theo `@extra`,
 //!   theo dõi trạng thái đăng nhập → hiện thực [`crate::contract::TdLink`].
 //! - [`login`]   : máy trạng thái đăng nhập (setTdlibParameters → số điện thoại → mã → mật khẩu → ready).
 
@@ -16,8 +16,9 @@ mod tests;
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_double, c_int};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -136,24 +137,17 @@ impl Drop for PendingRequest<'_> {
 
 /// Phần dùng chung giữa TdClient và luồng nhận.
 struct Shared {
-    api: Arc<dyn TdApi>,
-    client_id: i32,
+    session: PathBuf,
     /// `@extra` → người đang chờ. `None` = luồng nhận đã dừng (yêu cầu mới trả Err ngay).
     pending: Pending,
     updates: broadcast::Sender<Value>,
     /// `@type` của trạng thái đăng nhập mới nhất (rỗng khi TDLib chưa báo).
     auth: watch::Sender<String>,
-    stop: AtomicBool,
 }
 
 impl Shared {
     /// Phân loại MỘT bản tin từ td_receive: câu trả lời (có `@extra`) → đúng người chờ; còn lại là update → broadcast.
-    fn route(&self, mut msg: Value) {
-        if let Some(cid) = msg.get("@client_id").and_then(Value::as_i64) {
-            if cid != i64::from(self.client_id) {
-                return; // bản tin của client khác trong cùng tiến trình
-            }
-        }
+    fn route(&self, mut msg: Value, closed: bool) {
         if let Some(extra) = msg.get("@extra").cloned() {
             let key = extra_key(&extra);
             let waiter = self.pending.lock().unwrap().as_mut().and_then(|m| m.remove(&key));
@@ -173,9 +167,8 @@ impl Shared {
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_owned();
-            if state == "authorizationStateClosed" {
+            if closed {
                 self.pending.lock().unwrap().take();
-                self.stop.store(true, Ordering::Relaxed);
             }
             self.auth.send_if_modified(|current| {
                 if *current == state { return false; }
@@ -186,15 +179,6 @@ impl Shared {
         let _ = self.updates.send(msg); // không ai đăng ký thì thôi
     }
 
-    fn receive_loop(self: Arc<Self>) {
-        while !self.stop.load(Ordering::Relaxed) {
-            if let Some(msg) = self.api.receive(RECEIVE_TIMEOUT) {
-                self.route(msg);
-            }
-        }
-        // Dừng: mọi người đang chờ nhận Err (sender bị huỷ) thay vì treo.
-        self.pending.lock().unwrap().take();
-    }
 }
 
 fn extra_key(extra: &Value) -> String {
@@ -204,33 +188,60 @@ fn extra_key(extra: &Value) -> String {
     }
 }
 
-static RECEIVER_ACTIVE: AtomicBool = AtomicBool::new(false);
+static RECEIVER: Mutex<Option<(String, Arc<Receiver>)>> = Mutex::new(None);
 
-/// Giữ quyền nhận toàn cục tới khi luồng nhận đã dừng và thư viện được nhả.
-struct ReceiverGuard;
+#[derive(Default)]
+struct Dispatch {
+    clients: Mutex<HashMap<i64, Arc<Shared>>>,
+    stop: AtomicBool,
+}
 
-impl ReceiverGuard {
-    fn acquire() -> Result<Self, String> {
-        RECEIVER_ACTIVE.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .map(|_| Self)
-            .map_err(|_| "đã có một TdClient đang nhận bản tin trong tiến trình".to_owned())
+struct Receiver {
+    api: Arc<dyn TdApi>,
+    dispatch: Arc<Dispatch>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl Receiver {
+    fn start(api: Arc<dyn TdApi>) -> Arc<Self> {
+        // Tắt nhật ký TDLib: lỗi gốc có thể chứa dữ liệu đăng nhập.
+        api.execute(&json!({"@type": "setLogVerbosityLevel", "new_verbosity_level": 0}));
+        let dispatch = Arc::new(Dispatch::default());
+        let d = dispatch.clone();
+        let a = api.clone();
+        let thread = std::thread::Builder::new().name("td-receive".into()).spawn(move || {
+            while !d.stop.load(Ordering::Relaxed) {
+                let Some(msg) = a.receive(RECEIVE_TIMEOUT) else { continue };
+                let Some(id) = msg["@client_id"].as_i64() else { continue };
+                let closed = msg["@type"] == "updateAuthorizationState"
+                    && msg.pointer("/authorization_state/@type").and_then(Value::as_str) == Some("authorizationStateClosed");
+                let client = {
+                    let mut clients = d.clients.lock().unwrap();
+                    if closed { clients.remove(&id) } else { clients.get(&id).cloned() }
+                };
+                if let Some(client) = client { client.route(msg, closed); }
+            }
+        }).expect("không tạo được luồng nhận TDLib");
+        Arc::new(Self { api, dispatch, thread: Some(thread) })
     }
 }
 
-impl Drop for ReceiverGuard {
+impl Drop for Receiver {
     fn drop(&mut self) {
-        RECEIVER_ACTIVE.store(false, Ordering::Release);
+        self.dispatch.stop.store(true, Ordering::Relaxed);
+        let _ = self.thread.take().unwrap().join();
     }
 }
 
-/// Một client TDLib (một tài khoản). Chỉ MỘT TdClient thật mỗi tiến trình: `td_receive` là hàm toàn cục.
+/// Một client TDLib cho một thư mục phiên, dùng chung luồng nhận của tiến trình.
 pub struct TdClient {
+    receiver: Arc<Receiver>,
     shared: Arc<Shared>,
+    client_id: i32,
     next_extra: AtomicU64,
-    thread: Mutex<Option<JoinHandle<()>>>,
+    closing: OnceLock<()>,
     pub(crate) code: Secret,
     pub(crate) password: Secret,
-    _receiver_guard: Option<ReceiverGuard>,
 }
 
 /// Ô chứa mã/mật khẩu do người dùng gửi (không bao giờ in ra).
@@ -254,48 +265,58 @@ impl Secret {
 }
 
 impl TdClient {
-    /// Mở thư viện và giữ quyền nhận độc quyền. Client thứ hai trả Err, không thể lấy mất bản tin của client đầu.
-    pub fn open(path: &str) -> Result<Arc<Self>, String> {
-        let guard = ReceiverGuard::acquire()?;
-        let api = Arc::new(TdJson::open(path)?);
-        Ok(Self::start(api, Some(guard)))
+    /// Mở một phiên. Không được mở lại cùng thư mục trước khi TDLib xác nhận đã đóng.
+    pub fn open(path: &str, session: &Path) -> Result<Arc<Self>, String> {
+        let receiver = {
+            let mut slot = RECEIVER.lock().unwrap();
+            match slot.as_ref() {
+                Some((loaded, r)) if loaded == path => r.clone(),
+                Some(_) => return Err("tiến trình đã nạp một thư viện TDLib khác".into()),
+                None => {
+                    let r = Receiver::start(Arc::new(TdJson::open(path)?));
+                    *slot = Some((path.to_owned(), r.clone()));
+                    r
+                }
+            }
+        };
+        Self::start(receiver, session)
     }
 
     /// Tạo client, khởi động luồng nhận và «đánh thức» TDLib (client chỉ thật sự chạy sau lần td_send đầu tiên).
-    fn start(api: Arc<dyn TdApi>, receiver_guard: Option<ReceiverGuard>) -> Arc<Self> {
-        // TDLib mặc định ghi log rất dài: chỉ giữ lỗi (như bản Python).
-        api.execute(&json!({"@type": "setLogVerbosityLevel", "new_verbosity_level": 1}));
-        let client_id = api.create_client_id();
+    fn start(receiver: Arc<Receiver>, session: &Path) -> Result<Arc<Self>, String> {
+        std::fs::create_dir_all(session).map_err(|e| format!("không tạo được thư mục phiên: {e}"))?;
+        let session = session.canonicalize().map_err(|e| format!("không đọc được thư mục phiên: {e}"))?;
+        let mut clients = receiver.dispatch.clients.lock().unwrap();
+        if clients.values().any(|c| c.session == session) {
+            return Err("đã mở thư mục phiên TDLib này".into());
+        }
+        let client_id = receiver.api.create_client_id();
         let (updates, _) = broadcast::channel(UPDATES_CAPACITY);
         let (auth, _) = watch::channel(String::new());
         let shared = Arc::new(Shared {
-            api,
-            client_id,
+            session,
             pending: Mutex::new(Some(HashMap::new())),
             updates,
             auth,
-            stop: AtomicBool::new(false),
         });
-        let s = shared.clone();
-        let thread = std::thread::Builder::new()
-            .name("td-receive".into())
-            .spawn(move || s.receive_loop())
-            .expect("không tạo được luồng nhận TDLib");
+        clients.insert(i64::from(client_id), shared.clone());
+        drop(clients);
         // Yêu cầu vô hại để TDLib dựng client → phát updateAuthorizationState đầu tiên. Không dùng câu trả lời của nó
         // để đặt trạng thái (trả lời có thể đến sau update mới hơn → trạng thái lùi).
-        shared.api.send(client_id, &json!({"@type": "getAuthorizationState", "@extra": "khoi-dong"}));
-        Arc::new(Self {
+        receiver.api.send(client_id, &json!({"@type": "getAuthorizationState", "@extra": "khoi-dong"}));
+        Ok(Arc::new(Self {
+            receiver,
             shared,
+            client_id,
             next_extra: AtomicU64::new(1),
-            thread: Mutex::new(Some(thread)),
+            closing: OnceLock::new(),
             code: Secret::default(),
             password: Secret::default(),
-            _receiver_guard: receiver_guard,
-        })
+        }))
     }
 
     pub fn client_id(&self) -> i32 {
-        self.shared.client_id
+        self.client_id
     }
 
     /// `@type` của trạng thái đăng nhập mới nhất (vd "authorizationStateWaitCode"); rỗng khi TDLib chưa báo.
@@ -332,7 +353,7 @@ impl TdClient {
             None => return Err(TdError::transport("mất kết nối TDLib (luồng nhận đã dừng)")),
         };
         let _pending = PendingRequest { pending: &self.shared.pending, key: extra };
-        self.shared.api.send(self.shared.client_id, &req);
+        self.receiver.api.send(self.client_id, &req);
         let reply = match tokio::time::timeout(timeout, rx).await {
             Ok(Ok(v)) => v,
             Ok(Err(_)) => return Err(TdError::transport("mất kết nối TDLib (luồng nhận đã dừng)")),
@@ -351,17 +372,22 @@ impl TdClient {
     /// Đóng client và chờ `authorizationStateClosed` (TDLib ghi xong DB, nhả khoá td.binlog), tối đa `wait`.
     pub async fn close(&self, wait: Duration) {
         let mut rx = self.auth_watch();
-        self.shared.api.send(self.shared.client_id, &json!({"@type": "close", "@extra": "dong"}));
+        self.send_close();
         let _ = tokio::time::timeout(wait, rx.wait_for(|s| s == "authorizationStateClosed")).await;
+    }
+
+    fn send_close(&self) {
+        self.closing.get_or_init(|| {
+            if self.auth_state() != "authorizationStateClosed" {
+                self.receiver.api.send(self.client_id, &json!({"@type": "close", "@extra": "dong"}));
+            }
+        });
     }
 }
 
 impl Drop for TdClient {
     fn drop(&mut self) {
-        self.shared.stop.store(true, Ordering::Relaxed);
-        if let Some(t) = self.thread.lock().unwrap().take() {
-            let _ = t.join(); // tối đa RECEIVE_TIMEOUT
-        }
+        self.send_close();
     }
 }
 

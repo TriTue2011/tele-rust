@@ -56,7 +56,7 @@ async fn main() {
 
 async fn run_login(path: &str) -> Result<(), String> {
     let cfg = td::login::LoginConfig::from_env()?;
-    let client = td::TdClient::open(path)?;
+    let client = td::TdClient::open(path, &cfg.session_dir())?;
     let result = async {
         td::login::run(&client, &cfg).await?;
         let me = client.request(serde_json::json!({"@type": "getMe"})).await.map_err(|e| e.message)?;
