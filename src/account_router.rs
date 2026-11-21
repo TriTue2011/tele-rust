@@ -232,14 +232,26 @@ impl Accounts {
     async fn chat(&self, method: &str, path: &str, query: &str, body: Value) -> Result<Value,GwError> {
         if path.starts_with("/ui/api/") { return self.logins.get().unwrap().handle(method,path,body).await; }
         if path == "/api/accounts" {
-            let store = self.store.lock().unwrap();
-            let entries = self.entries.read().unwrap();
-            let rows: Vec<_> = store.rows().iter().map(|a| {
-                let online = entries.get(&a.phone).is_some_and(|e| e.ready.load(Ordering::Acquire) && e.client.auth_state()=="authorizationStateReady");
-                json!({"phone":a.phone,"display_name":a.display_name,"status":if online {"online"} else {"offline"}})
-            }).collect();
-            let rows = if store.legacy && rows.is_empty() { vec![json!({"phone":self.config.phone,"display_name":"",
-                "status":if entries.get(&self.config.phone).is_some_and(|e| e.ready.load(Ordering::Acquire) && e.client.auth_state()=="authorizationStateReady") {"online"} else {"offline"}})] } else { rows };
+            let (mut rows, online) = {
+                let store = self.store.lock().unwrap();
+                let entries = self.entries.read().unwrap();
+                let mut rows: Vec<_> = store.rows().iter().map(|a| {
+                    let online = entries.get(&a.phone).is_some_and(|e| e.ready.load(Ordering::Acquire) && e.client.auth_state()=="authorizationStateReady");
+                    json!({"phone":a.phone,"display_name":a.display_name,"status":if online {"online"} else {"offline"}})
+                }).collect();
+                if store.legacy && rows.is_empty() {
+                    rows.push(json!({"phone":self.config.phone,"display_name":"",
+                        "status":if entries.get(&self.config.phone).is_some_and(|e| e.ready.load(Ordering::Acquire) && e.client.auth_state()=="authorizationStateReady") {"online"} else {"offline"}}));
+                }
+                let online: Vec<_> = rows.iter().enumerate().filter(|(_,a)|a["status"]=="online")
+                    .map(|(i,a)|(i,entries[a["phone"].as_str().unwrap()].clone())).collect();
+                (rows, online)
+            };
+            for (index, entry) in online {
+                if let Ok(name) = entry.chat.account_name().await {
+                    if !name.is_empty() { rows[index]["display_name"] = json!(name); }
+                }
+            }
             return Ok(json!({"tai_khoan":rows}));
         }
         if path == "/api/events" {

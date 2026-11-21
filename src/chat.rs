@@ -65,6 +65,12 @@ impl ChatService {
         Ok(json!({"id":me["id"],"name":user_name(&me),"phone":field(&me,"phone_number",json!(""))}))
     }
 
+    pub(crate) async fn account_name(&self) -> Result<String, GwError> {
+        let me = self.request(json!({"@type":"getMe"})).await?;
+        self.state.remember_user(&me);
+        Ok(format!("{} {}", text(&me["first_name"]), text(&me["last_name"])).trim().into())
+    }
+
     async fn user(&self, id: i64) -> Reply {
         if let Some(user) = self.state.user(id) {
             return Ok(user);

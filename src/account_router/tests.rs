@@ -179,6 +179,11 @@ async fn legacy_start_keeps_paths_and_http_available_before_ready() {
     assert_eq!(parameters.1["database_directory"],dir.join("tdlib/files").to_string_lossy().as_ref());
     assert_eq!(std::fs::read(dir.join("tdlib/files/sentinel")).unwrap(),b"legacy DB");
     assert_eq!(std::fs::read(dir.join("tdlib/khoa")).unwrap(),b"00112233445566778899aabbccddeeff");
+    api.profiles.lock().unwrap().insert(1,json!({"@type":"user","id":1,"first_name":"Tên","last_name":"hiện tại"}));
+    assert_eq!(send(&router,"GET","/api/accounts",Value::Null,true).await,
+        (200,json!({"tai_khoan":[{"phone":"+84900000000","display_name":"Tên hiện tại","status":"online"}]})));
+    api.profiles.lock().unwrap().insert(1,json!({"@type":"user","id":1,"first_name":"Tên mới"}));
+    assert_eq!(send(&router,"GET","/api/accounts",Value::Null,true).await.1["tai_khoan"][0]["display_name"],"Tên mới");
     assert!(!dir.join("accounts.json").exists());
     hub.shutdown().await;drop(router);drop(hub);std::fs::remove_dir_all(dir).unwrap();
 }
@@ -290,5 +295,34 @@ async fn downloads_use_selected_python_session_and_reject_other_account_paths() 
     std::os::unix::fs::symlink(&paths[1],&alias).unwrap();
     f.api.downloads.lock().unwrap().insert(1,alias.to_string_lossy().into_owned());
     assert_eq!(f.send("GET","/api/file/42?account=%2B84900000001",Value::Null).await.0,404);
+    f.finish().await;
+}
+
+#[tokio::test]
+async fn account_names_follow_get_me_independently_and_keep_saved_name_on_error_or_offline() {
+    let f=Fixture::new("fresh-names").await;
+    f.ready("+84900000001").await;f.ready("+84900000002").await;
+    assert_eq!(f.send("GET","/api/accounts",Value::Null).await,
+        (200,json!({"tai_khoan":[
+            {"phone":"+84900000001","display_name":"Account 1","status":"online"},
+            {"phone":"+84900000002","display_name":"Account 2","status":"online"}]})));
+    f.api.profiles.lock().unwrap().insert(1,json!({"@type":"user","id":1,"first_name":"Tên","last_name":"mới"}));
+    assert_eq!(f.send("GET","/api/accounts",Value::Null).await.1["tai_khoan"],json!([
+        {"phone":"+84900000001","display_name":"Tên mới","status":"online"},
+        {"phone":"+84900000002","display_name":"Account 2","status":"online"}]));
+    f.api.profiles.lock().unwrap().insert(2,json!({"@type":"user","id":2,"first_name":"Tên riêng"}));
+    assert_eq!(f.send("GET","/api/accounts",Value::Null).await.1["tai_khoan"],json!([
+        {"phone":"+84900000001","display_name":"Tên mới","status":"online"},
+        {"phone":"+84900000002","display_name":"Tên riêng","status":"online"}]));
+    f.api.profiles.lock().unwrap().insert(1,json!({"@type":"error","code":500,"message":"fake getMe failure"}));
+    f.api.profiles.lock().unwrap().insert(2,json!({"@type":"user","id":2,"first_name":"","last_name":""}));
+    assert_eq!(f.send("GET","/api/accounts",Value::Null).await.1["tai_khoan"],json!([
+        {"phone":"+84900000001","display_name":"Account 1","status":"online"},
+        {"phone":"+84900000002","display_name":"Account 2","status":"online"}]));
+    f.hub.all()[0].1.ready.store(false,Ordering::Release);
+    f.api.sent.lock().unwrap().clear();
+    assert_eq!(f.send("GET","/api/accounts",Value::Null).await.1["tai_khoan"][0],
+        json!({"phone":"+84900000001","display_name":"Account 1","status":"offline"}));
+    assert!(!f.api.sent.lock().unwrap().iter().any(|(id,r)|*id==1 && r["@type"]=="getMe"));
     f.finish().await;
 }

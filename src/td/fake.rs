@@ -11,6 +11,7 @@ pub(crate) struct Fake {
     pub sent:Mutex<Vec<(i32,Value)>>,
     pub restored:AtomicBool,
     pub downloads:Mutex<HashMap<i32,String>>,
+    pub profiles:Mutex<HashMap<i32,Value>>,
 }
 impl Fake {
     pub fn push(&self,mut v:Value,id:i32) {
@@ -61,7 +62,8 @@ impl TdApi for Fake {
             "checkAuthenticationCode" if r["code"]=="33333"=>json!({"@type":"error","code":429,"message":"FLOOD_WAIT_123"}),
             "checkAuthenticationPassword" if r["password"]==" secret2fa "=>{next=Some("authorizationStateReady");json!({"@type":"ok"})}
             "checkAuthenticationCode"|"checkAuthenticationPassword"=>json!({"@type":"error","code":400,"message":format!("invalid {:?}",r)}),
-            "getMe"=>json!({"@type":"user","id":id,"first_name":format!("Account {id}"),"phone_number":""}),
+            "getMe"=>self.profiles.lock().unwrap().get(&id).cloned()
+                .unwrap_or_else(||json!({"@type":"user","id":id,"first_name":format!("Account {id}"),"phone_number":""})),
             "close"=>{next=Some("authorizationStateClosed");json!({"@type":"ok"})}
             "createCall"=>json!({"@type":"callId","id":71}),
             "downloadFile"=>json!({"@type":"file","local":{"is_downloading_completed":true,
