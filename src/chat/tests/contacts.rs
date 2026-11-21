@@ -54,7 +54,8 @@ async fn contacts_name_folds_accents_and_sections_and_handles_empty_names() {
     assert_eq!(get(&chat, "/api/contacts", "sort=invalid").await.unwrap_err().status, 400);
 }
 
-const TEST_PHONE: &str = "+84947000000";
+// Cùng số giả được phép trong các bộ kiểm quyền riêng tư hiện có của repo.
+const TEST_PHONE: &str = "+84900000000";
 
 fn contact(phone: &str, first: &str, last: &str) -> Value {
     json!({"@type":"importedContact","phone_number":phone,"first_name":first,"last_name":last})
@@ -71,13 +72,13 @@ async fn contacts_add_validates_normalizes_and_distinguishes_unregistered_number
         ok(get_user(7), json!({"id":7,"first_name":"An"})),
         err(import_phone(), 500, "Unexpected import failure"),
     ]);
-    for phone in ["", "badnumber", "++84947000000", "+0000000"] {
+    for phone in ["", "badnumber", "++84900000000", "+0000000"] {
         let error = post(&chat,"/api/contacts/add","",json!({"first_name":"An","phone":phone})).await.unwrap_err();
         assert_eq!(error.status, 422);
     }
-    let missing = post(&chat,"/api/contacts/add","",json!({"first_name":"An","phone":"+84 947-000.000"})).await.unwrap_err();
+    let missing = post(&chat,"/api/contacts/add","",json!({"first_name":"An","phone":"+84 900-000.000"})).await.unwrap_err();
     assert_eq!((missing.status, missing.code.as_str()), (404, "not_telegram_user"));
-    let added = post(&chat,"/api/contacts/add","",json!({"first_name":"An","phone":"0947 (000) 000","share_my_phone":true})).await.unwrap();
+    let added = post(&chat,"/api/contacts/add","",json!({"first_name":"An","phone":"0900 (000) 000","share_my_phone":true})).await.unwrap();
     assert_eq!(added["contact"]["id"], 7);
     let unusual = post(&chat,"/api/contacts/add","",json!({"first_name":"An","phone":TEST_PHONE})).await.unwrap_err();
     assert_eq!((unusual.status, unusual.code.as_str()), (502, "MEDIA_ENGINE_ERROR"));
@@ -86,8 +87,8 @@ async fn contacts_add_validates_normalizes_and_distinguishes_unregistered_number
 #[tokio::test]
 async fn contacts_edit_remove_block_and_unblock_send_versioned_requests() {
     let (chat, _) = setup(vec![
-        ok(get_user(7), json!({"id":7,"is_contact":true,"phone_number":"84947000000"})),
-        success(json!({"@type":"addContact","user_id":7,"contact":contact("84947000000","An","Bình"),"share_phone_number":false})),
+        ok(get_user(7), json!({"id":7,"is_contact":true,"phone_number":"84900000000"})),
+        success(json!({"@type":"addContact","user_id":7,"contact":contact("84900000000","An","Bình"),"share_phone_number":false})),
         success(json!({"@type":"removeContacts","user_ids":[7,8]})),
         ok(json!({"@type":"createPrivateChat","user_id":7,"force":false}), json!({"id":9})),
         ok(json!({"@type":"reportChat","chat_id":9,"option_id":"","message_ids":[],"text":""}), json!({"@type":"reportChatResultOk"})),
@@ -148,11 +149,11 @@ async fn contacts_phone_is_not_logged_or_echoed_by_tdlib_errors() {
     log::set_max_level(log::LevelFilter::Trace);
     log::debug!("contact log fixture is active");
     let (chat, _) = setup(vec![err(import_phone(),500,&format!("Unexpected input {TEST_PHONE}"))]);
-    let error = post(&chat,"/api/contacts/add","",json!({"first_name":"An","phone":"0947 000 000"})).await.unwrap_err();
-    assert!(!error.message.contains("84947000000"));
+    let error = post(&chat,"/api/contacts/add","",json!({"first_name":"An","phone":"0900 000 000"})).await.unwrap_err();
+    assert!(!error.message.contains("84900000000"));
     LOG_LINES.with(|lines| {
         let lines = lines.borrow();
         assert_eq!(lines.first().map(String::as_str), Some("contact log fixture is active"));
-        assert!(!lines.iter().any(|line| ["84947000000", "0947 000 000", "0947000000"].iter().any(|phone| line.contains(phone))), "log chứa số điện thoại");
+        assert!(!lines.iter().any(|line| ["84900000000", "0900 000 000", "0900000000"].iter().any(|phone| line.contains(phone))), "log chứa số điện thoại");
     });
 }
