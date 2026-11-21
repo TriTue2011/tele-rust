@@ -387,8 +387,6 @@ fn request_is_secure(parts: &axum::http::request::Parts, configured: bool) -> bo
 
 async fn auth_handle(auth: Arc<UiAuth>, parts: axum::http::request::Parts, body: Body) -> Response {
     let action = parts.uri.path().rsplit('/').next().unwrap_or_default();
-    // Wait before buffering credentials or spawning blocking work; cookie/API checks never wait here.
-    let permit = if matches!(action, "setup" | "login" | "password") { Some(auth.hash_permit().await) } else { None };
     let payload = if parts.method == Method::POST {
         let raw = match tokio::time::timeout(Duration::from_secs(5), to_bytes(body, 8192)).await {
             Ok(Ok(raw)) => raw,
@@ -401,6 +399,8 @@ async fn auth_handle(auth: Arc<UiAuth>, parts: axum::http::request::Parts, body:
             _ => return error_resp(&GwError::bad_request("Thân đăng nhập web phải là JSON object.")),
         }
     } else { Value::Null };
+    // Slow request bodies must not occupy slots reserved for password hashing.
+    let permit = if matches!(action, "setup" | "login" | "password") { Some(auth.hash_permit().await) } else { None };
     tokio::task::spawn_blocking(move || { let _permit = permit; auth_action(&auth, &parts, &payload) })
         .await.unwrap_or_else(|_| error_resp(&auth_task_error()))
 }

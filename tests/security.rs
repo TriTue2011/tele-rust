@@ -147,6 +147,38 @@ async fn trung01_login_flood_does_not_block_valid_cookie_or_bearer_api() {
     assert!(worst < Duration::from_secs(1), "authenticated API blocked for {worst:?}");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn trung01_slow_auth_bodies_do_not_hold_password_hash_slots() {
+    let dir = std::env::temp_dir().join(format!("tggw-slow-auth-{}", std::process::id()));
+    let auth = Arc::new(UiAuth::open(&dir, TOKEN, None, None, false).unwrap());
+    auth.setup(TOKEN, USER, PASSWORD, false).unwrap();
+    let app = app(auth);
+    let (started, mut starts) = tokio::sync::mpsc::unbounded_channel();
+    let mut slow_requests = tokio::task::JoinSet::new();
+    for _ in 0..2 {
+        let app = app.clone();
+        let started = started.clone();
+        slow_requests.spawn(async move {
+            let body = Body::from_stream(futures_util::stream::once(async move {
+                started.send(()).unwrap();
+                std::future::pending::<Result<axum::body::Bytes, std::convert::Infallible>>().await
+            }));
+            app.oneshot(Request::post("/ui/api/auth/login").header(header::CONTENT_TYPE, "application/json")
+                .body(body).unwrap()).await.unwrap()
+        });
+    }
+    drop(started);
+    for _ in 0..2 { starts.recv().await.unwrap(); }
+
+    let login = Request::post("/ui/api/auth/login").header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(json!({"ten":USER,"mat_khau":PASSWORD}).to_string())).unwrap();
+    let response = tokio::time::timeout(Duration::from_secs(1), app.oneshot(login)).await;
+    slow_requests.abort_all();
+    while slow_requests.join_next().await.is_some() {}
+    std::fs::remove_dir_all(dir).unwrap();
+    assert_eq!(response.expect("a valid login must not wait for other request bodies").unwrap().status(), 200);
+}
+
 #[tokio::test]
 async fn trung03_every_session_action_requires_csrf_and_keeps_session_on_rejection() {
     for action in ["logout", "logout-all", "password"] {
