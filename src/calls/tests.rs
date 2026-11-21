@@ -108,7 +108,7 @@ impl Drop for Fixture {
             drop(callback); drop(manager);
         }
         if sent { let _ = rx.recv_timeout(Duration::from_secs(3)); }
-        for name in ["live_settings.json","live_settings.json.tmp"] { let _=fs::remove_file(self.dir.join(name)); }
+        for name in ["live_settings.json","live_settings.json.tmp","ha_devices.json"] { let _=fs::remove_file(self.dir.join(name)); }
         if let Ok(files)=fs::read_dir(self.dir.join("live")) { for file in files.flatten() { let _=fs::remove_file(file.path()); } }
         let _=fs::remove_dir(self.dir.join("live")); let _=fs::remove_dir(&self.dir);
         if let Ok(files)=fs::read_dir(self.dir.join("calltrace")) { for file in files.flatten() { let _=fs::remove_file(file.path()); } }
@@ -133,7 +133,7 @@ fn local_actor(f: &Fixture) -> (Actor, mpsc::UnboundedReceiver<Command>) {
     let (sender,commands) = mpsc::unbounded_channel();
     let (events,_) = broadcast::channel(256);
     (Actor { td:f.td.clone(), media:Box::new(media), protocol, p2p:false, data_dir:f.dir.clone(), defaults:Devices::default(),
-        calls:vec![], handled:HashSet::new(), events, sender, profile:(640,360,15), cast_port:None }, commands)
+        calls:vec![], catalog:catalog::empty(), handled:HashSet::new(), events, sender, profile:(640,360,15), cast_port:None }, commands)
 }
 
 #[test]
@@ -564,6 +564,93 @@ async fn native_binding_protocol_and_callback_registration_smoke_test() {
 }
 
 #[tokio::test]
+async fn browser_mic_reaches_capture_and_ends_with_call() {
+    let f=Fixture::new(false);
+    let c=f.manager().call_out(json!({"user_id":42,"mic":"browser"})).await.unwrap();
+    let id=c["id"].as_str().unwrap();
+    assert_eq!(f.manager().audio_in(id,vec![0;3200]).await.unwrap_err().status,409);
+    f.ready(7,42,true,&["8.0.0"]).await;
+    f.emit(MediaEvent::Connection(42,ConnectionState::Connected)).await;
+    let command=f.ops().iter().find_map(|op|match op { MediaOp::Sources(_,StreamMode::Capture,d)=>Some(d.microphone.as_ref().unwrap().input.clone()),_=>None }).unwrap();
+    let url=command.split_whitespace().find(|s|s.starts_with("http://127.0.0.1:")).unwrap();
+    let pcm=vec![7;3200];
+    assert_eq!(f.manager().audio_in(id,pcm.clone()).await.unwrap(),json!({"ok":true,"bytes":3200}));
+    let mut response=reqwest::get(url).await.unwrap();
+    let mut received=Vec::new();
+    while received.len()<pcm.len() { received.extend_from_slice(&response.chunk().await.unwrap().unwrap()); }
+    assert_eq!(&received[..pcm.len()],pcm.as_slice());
+    drop(response);
+    assert_eq!(f.manager().audio_in(id,vec![1]).await.unwrap_err().status,400);
+    assert_eq!(f.manager().audio_in(id,vec![0;65_538]).await.unwrap_err().status,413);
+    f.manager().hangup(json!({"id":id})).await.unwrap();
+    assert_eq!(f.manager().audio_in(id,vec![0;2]).await.unwrap_err().status,404);
+    assert!(reqwest::get(url).await.is_err());
+    let trace=fs::read_to_string(f.dir.join("calltrace").join(format!("{id}.log"))).unwrap();
+    assert!(!trace.contains(url) && !trace.contains("127.0.0.1"));
+    let other=f.manager().call_out(json!({"user_id":43,"mic":"silence"})).await.unwrap();
+    assert_eq!(f.manager().audio_in(other["id"].as_str().unwrap(),vec![0;2]).await.unwrap_err().status,409);
+}
+
+#[tokio::test]
+async fn browser_audio_uses_decoded_frames_and_never_logs_tokens() {
+    let f=Fixture::new(false);
+    f.manager().settings(json!({"speaker":"browser"})).await.unwrap();
+    let c=f.outgoing(false).await;let id=c["id"].as_str().unwrap();
+    assert_eq!(c["playback"]["kind"],"browser");
+    let response=f.manager().media(json!({"id":id,"action":"audio_out"})).await.unwrap();
+    let url=response["audio_out"]["url"].as_str().unwrap();
+    let token=url.split("?t=").nth(1).unwrap();
+    assert_eq!(token.len(),32);
+    assert_eq!(f.manager().audio_out(id,"wrong").await.err().unwrap().status,403);
+    let mut stream=f.manager().audio_out(id,token).await.unwrap();
+    f.ready(7,42,true,&["8.0.0"]).await;
+    assert!(matches!(&f.ops()[2],MediaOp::Sources(_,StreamMode::Playback,d) if d.microphone.as_ref().unwrap().media_source==MediaSource::External));
+    let metadata=FrameData{absolute_capture_timestamp_ms:0,rotation:VideoRotation::VideoRotation0,width:0,height:0};
+    f.emit(MediaEvent::Frames(42,StreamMode::Playback,StreamDevice::Microphone,vec![Frame{ssrc:0,data:vec![1,2,3,4],frame_data:metadata}])).await;
+    assert_eq!(stream.audio.recv().await.unwrap(),[1,2,3,4]);
+    f.manager().hangup(json!({"id":id})).await.unwrap();
+    assert!(stream.stopped.changed().await.is_err());
+    assert_eq!(f.manager().audio_out(id,token).await.err().unwrap().status,404);
+    let trace=fs::read_to_string(f.dir.join("calltrace").join(format!("{id}.log"))).unwrap();
+    assert!(!trace.contains(token));assert!(!f.info().await.to_string().contains(token));
+}
+
+#[tokio::test]
+async fn browser_devices_auto_catalog_and_deferred_camera_validate_before_call() {
+    let f=Fixture::new(false);
+    assert_eq!(f.manager().settings(Value::Null).await.unwrap()["auto"],false);
+    for settings in [json!({"mic":"silence","camera":"black","speaker":""}),json!({"mic":"browser","camera":"browser","speaker":"browser"})] {
+        f.manager().settings(settings).await.unwrap();
+        assert_eq!(f.manager().settings(Value::Null).await.unwrap()["auto"],false);
+    }
+    for (key,value) in [("mic","unknown"),("camera","unknown"),("speaker","unknown"),("mic_format","unknown")] {
+        let mut body=json!({});body[key]=json!(value);
+        assert_eq!(f.manager().settings(body.clone()).await.unwrap_err().status,400);
+        body["user_id"]=json!(42);
+        assert_eq!(f.manager().call_out(body).await.unwrap_err().status,400);
+    }
+    assert!(f.requests("createCall").is_empty());
+    assert_eq!(f.manager().call_out(json!({"user_id":42,"video":true})).await.unwrap_err().code,"BROWSER_VIDEO_UNAVAILABLE");
+    assert!(f.requests("createCall").is_empty());
+    let c=f.manager().call_out(json!({"user_id":42,"camera":"browser","video":false})).await.unwrap();
+    assert_eq!(f.manager().media(json!({"id":c["id"],"video":true})).await.unwrap_err().status,501);
+    f.manager().hangup(json!({"id":c["id"]})).await.unwrap();
+    for body in [json!({"mic":"http://camera.example/audio"}),json!({"mic":"silence","camera":"rtsp://camera.example/video"}),
+        json!({"camera":"black","speaker":R1})] {
+        f.manager().settings(body).await.unwrap();
+        assert_eq!(f.manager().settings(Value::Null).await.unwrap()["auto"],true);
+    }
+    assert_eq!(f.manager().devices(Value::Null).await.unwrap()["catalog"],catalog::empty());
+    let body=json!({"mic":[{"id":"sensor.mic","name":"Mic"},{"id":"sensor.mic","name":"Trùng"}],"speaker":[],"camera":[]});
+    let saved=f.manager().devices(body).await.unwrap();
+    assert_eq!(saved["auto"],true);assert_eq!(saved["settings"]["auto"],true);
+    assert_eq!(saved["catalog"]["mic"].as_array().unwrap().len(),1);
+    let second=CallManager::spawn(f.td.clone(),f.dir.clone(),Box::new(FakeMedia(Arc::new(Mutex::new(FakeState::default())))),false,None).unwrap();
+    assert_eq!(second.devices(Value::Null).await.unwrap()["catalog"],saved["catalog"]);
+    second.shutdown(Duration::from_secs(3)).await.unwrap();
+}
+
+#[tokio::test]
 async fn shutdown_discards_active_call_once_and_rejects_new_requests() {
     let f=Fixture::new(false); f.outgoing(false).await;
     f.manager().shutdown(Duration::from_secs(3)).await.unwrap();
@@ -578,7 +665,7 @@ fn history_pruning_never_prunes_live_calls_or_forgets_handled_ids() {
     // Kiểm tra qua actor thuần, không cần thread hay NTgCalls thật.
     let (updates,_)=broadcast::channel(1); let (sender,_)=mpsc::unbounded_channel(); let (events,_)=broadcast::channel(1);
     let media=FakeMedia(Arc::new(Mutex::new(FakeState::default()))); let protocol=media.protocol().unwrap();
-    let mut actor=Actor {td:Arc::new(FakeTd{requests:Arc::new(Mutex::new(Vec::new())),updates,early:Mutex::new(None),fail:Mutex::new(None)}),media:Box::new(media),protocol,p2p:false,data_dir:"data".into(),defaults:Devices::default(),calls:vec![],handled:HashSet::from([99]),events,sender,profile:(640,360,15),cast_port:None};
+    let mut actor=Actor {td:Arc::new(FakeTd{requests:Arc::new(Mutex::new(Vec::new())),updates,early:Mutex::new(None),fail:Mutex::new(None)}),media:Box::new(media),protocol,p2p:false,data_dir:"data".into(),defaults:Devices::default(),catalog:catalog::empty(),calls:vec![],handled:HashSet::from([99]),events,sender,profile:(640,360,15),cast_port:None};
     for i in 0..27 { let mut c=LiveCall::new(100+i,true,false,Devices::default(),Path::new("data")); c.state="ended"; c.ended=Some(Instant::now()); actor.calls.push(c); }
     actor.calls.push(LiveCall::new(1,true,false,Devices::default(),Path::new("data")));
     actor.prune(); assert_eq!(actor.calls.len(),21); assert_eq!(actor.calls[0].user_id,107); assert_eq!(actor.calls.last().unwrap().state,"dialing"); assert!(actor.handled.contains(&99));

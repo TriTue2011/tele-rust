@@ -60,6 +60,7 @@ struct Ctx {
     hits: Mutex<VecDeque<Instant>>,
     version: String,
     started: Instant,
+    audio_slots: tokio::sync::Semaphore,
 }
 
 impl Ctx {
@@ -79,13 +80,18 @@ impl Ctx {
 
     /// `_auth` của routes.py.
     fn auth(&self, headers: &HeaderMap) -> Result<(), GwError> {
+        self.bearer(headers)?;
+        if self.rate_limited() {
+            return Err(GwError::new(429, "RATE_LIMITED", "Quá 120 request/phút cho token này."));
+        }
+        Ok(())
+    }
+
+    fn bearer(&self, headers: &HeaderMap) -> Result<(), GwError> {
         let h = headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()).unwrap_or("");
         let token = h.strip_prefix("Bearer ").unwrap_or("");
         if self.token.is_empty() || !ct_eq(token.as_bytes(), self.token.as_bytes()) {
             return Err(GwError::new(401, "UNAUTHORIZED", "Thiếu hoặc sai token."));
-        }
-        if self.rate_limited() {
-            return Err(GwError::new(429, "RATE_LIMITED", "Quá 120 request/phút cho token này."));
         }
         Ok(())
     }
@@ -105,12 +111,14 @@ enum LiveOp {
     Media,
     Playback,
     Say,
+    Devices,
 }
 
 #[derive(Clone, Copy)]
 enum Kind {
     /// GET /api/live/calls → `CallControl::calls`.
     LiveCalls,
+    LiveDevices,
     /// POST /api/live/* → `CallControl`.
     Live(LiveOp),
     /// GET → `ChatControl::handle(GET, …, Null)`.
@@ -123,6 +131,7 @@ enum Kind {
     ChatBytes,
     Snapshot,
     LiveView,
+    AudioIn,
     Events,
 }
 
@@ -212,10 +221,23 @@ async fn handle(ctx: Arc<Ctx>, spec: Spec, req: Request) -> Response {
             }
         }
     }
-    if let Err(e) = ctx.auth(&parts.headers) {
+    // Mic ~10 POST/s có hạn mức riêng theo cuộc gọi; không tiêu hạn mức điều khiển 120/phút.
+    let auth = if matches!(spec.kind, Kind::AudioIn) { ctx.bearer(&parts.headers) } else { ctx.auth(&parts.headers) };
+    if let Err(e) = auth {
         return error_resp(&e);
     }
     let out = match spec.kind {
+        Kind::AudioIn => {
+            let Ok(_permit) = ctx.audio_slots.try_acquire() else {
+                return error_resp(&GwError::new(429, "AUDIO_BACKPRESSURE", "Quá nhiều khối mic đang chờ."));
+            };
+            let raw = match tokio::time::timeout(Duration::from_secs(5), to_bytes(body, 64 * 1024)).await {
+                Err(_) => return error_resp(&GwError::new(408, "AUDIO_TIMEOUT", "Quá thời gian nhận PCM.")),
+                Ok(Err(_)) => return error_resp(&GwError::new(413, "AUDIO_TOO_LARGE", "PCM vượt 64 KiB.")),
+                Ok(Ok(raw)) => raw,
+            };
+            ctx.call.audio_in(path.rsplit('/').next().unwrap(), raw.to_vec()).await
+        }
         Kind::ChatBytes => return bytes_resp(ctx.chat.bytes(&path, &query).await),
         Kind::Snapshot if ctx.accounts => return bytes_resp(ctx.chat.bytes(&path,&query).await),
         Kind::Snapshot => return bytes_resp(ctx.call.snapshot(path.rsplit('/').next().unwrap()).await),
@@ -230,6 +252,8 @@ async fn handle(ctx: Arc<Ctx>, spec: Spec, req: Request) -> Response {
         },
         Kind::LiveCalls if ctx.accounts => ctx.chat.handle("GET", "/api/live/calls", &query, Value::Null).await,
         Kind::LiveCalls => ctx.call.calls().await,
+        Kind::LiveDevices if ctx.accounts => ctx.chat.handle("GET", "/api/live/devices", &query, Value::Null).await,
+        Kind::LiveDevices => ctx.call.devices(Value::Null).await,
         Kind::Ui => match if parts.method == axum::http::Method::GET || parts.method == axum::http::Method::DELETE {
             Ok(json!({}))
         } else { body_dict(body).await } {
@@ -251,6 +275,7 @@ async fn handle(ctx: Arc<Ctx>, spec: Spec, req: Request) -> Response {
                     LiveOp::Media => c.media(b),
                     LiveOp::Playback => c.playback(b),
                     LiveOp::Say => c.say(b),
+                    LiveOp::Devices => c.devices(b),
                 };
                 fut.await
             }
@@ -330,6 +355,36 @@ async fn cast_stream(State(ctx): State<Arc<Ctx>>, req: Request) -> Response {
     });
     ([(header::CONTENT_TYPE, "audio/mpeg".into()), (header::CACHE_CONTROL, "no-store".into()),
         (header::CONTENT_LENGTH, CAST_LENGTH.to_string())], Body::from_stream(chunks)).into_response()
+}
+
+/// Token media ngắn hạn, chỉ lấy từ POST /media đã qua Bearer. Không nhận Bearer trong query.
+async fn audio_out_stream(State(ctx): State<Arc<Ctx>>, req: Request) -> Response {
+    let id = req.uri().path().rsplit('/').next().unwrap();
+    let token = query_get(req.uri().query().unwrap_or(""), "t").unwrap_or_default();
+    if token.len() != 32 || !token.bytes().all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b)) {
+        return error_resp(&GwError::new(403,"MEDIA_TOKEN","Thiếu, sai hoặc hết hạn token âm thanh."));
+    }
+    match ctx.call.audio_out(id, &token).await {
+        Ok(stream) => audio_out_response(stream),
+        Err(e) => error_resp(&e),
+    }
+}
+
+fn audio_out_response(stream: crate::contract::AudioOut) -> Response {
+    let chunks = futures_util::stream::unfold((Some(stream.prime), stream.audio, stream.stopped, stream.expires),
+        |(mut prime, mut audio, mut stopped, expires)| async move {
+            if stopped.has_changed().is_err() || Instant::now() >= expires { return None; }
+            let chunk = if let Some(header) = prime.take() { header } else {
+                tokio::select! { biased;
+                    _ = stopped.changed() => return None,
+                    _ = tokio::time::sleep_until(expires.into()) => return None,
+                    data = audio.recv() => match data { Ok(bytes) => bytes, Err(_) => return None },
+                }
+            };
+            Some((Ok::<_, std::convert::Infallible>(chunk), (prime, audio, stopped, expires)))
+        });
+    ([(header::CONTENT_TYPE,"audio/wav"),(header::CACHE_CONTROL,"no-store"),
+        (header::REFERRER_POLICY,"no-referrer"),(header::X_CONTENT_TYPE_OPTIONS,"nosniff")],Body::from_stream(chunks)).into_response()
 }
 
 async fn next_jpeg(frames: &mut VideoFrames, limit: Duration) -> Result<Option<Arc<[u8]>>, ()> {
@@ -418,7 +473,11 @@ fn router_with(ctx: Arc<Ctx>) -> Router {
     // Cuộc gọi → CallControl.
     r = r
         .route("/api/live/calls", route(get, s(LiveCalls)))
+        .route("/api/live/audio/in/:call_id", route(post, s(AudioIn)))
+        .route("/api/live/audio/out/:call_id", on(get, audio_out_stream).on(MethodFilter::HEAD, method_not_allowed).fallback(method_not_allowed))
         .route("/api/live/settings", add(route(get, s(ChatGet)), post, s(Live(Settings))))
+        .route("/api/live/devices", route(get, s(LiveDevices)))
+        .route("/api/live/ha_devices", route(post, s(Live(Devices))))
         .route("/api/live/view/:call_id", route(get, s(LiveView)))
         .route("/api/live/snapshot/:call_id", route(get, s(Snapshot)))
         .route("/api/live/cast/:call_id/:file", on(get, cast_stream).on(MethodFilter::HEAD, method_not_allowed).fallback(method_not_allowed));
@@ -445,13 +504,14 @@ pub(crate) fn router_with_events(call: Arc<dyn CallControl>, chat: Arc<dyn ChatC
         hits: Mutex::new(VecDeque::new()),
         version: cfg.version,
         started: Instant::now(),
+        audio_slots: tokio::sync::Semaphore::new(8),
     }))
 }
 
 pub(crate) fn router_accounts(accounts: Arc<crate::account_router::Accounts>, cfg: RestConfig) -> Router {
     router_with(Arc::new(Ctx {
         call:accounts.clone(),chat:accounts,events:None,accounts:true,token:cfg.token,limit:cfg.rate_limit_per_minute,
-        hits:Mutex::new(VecDeque::new()),version:cfg.version,started:Instant::now(),
+        hits:Mutex::new(VecDeque::new()),version:cfg.version,started:Instant::now(),audio_slots:tokio::sync::Semaphore::new(8),
     }))
 }
 
@@ -600,6 +660,9 @@ mod tests {
         fn settings(&self, b: Value) -> BoxFut<'_, Result<Value, GwError>> {
             self.rec("settings", "", "", b)
         }
+        fn devices(&self, b: Value) -> BoxFut<'_, Result<Value, GwError>> {
+            self.rec("devices", "", "", b)
+        }
         fn media(&self, b: Value) -> BoxFut<'_, Result<Value, GwError>> {
             self.rec("media", "", "", b)
         }
@@ -608,6 +671,9 @@ mod tests {
         }
         fn say(&self, b: Value) -> BoxFut<'_, Result<Value, GwError>> {
             self.rec("say", "", "", b)
+        }
+        fn audio_in(&self, id: &str, pcm: Vec<u8>) -> BoxFut<'_, Result<Value, GwError>> {
+            self.rec("audio_in", id, "", json!(pcm))
         }
         fn snapshot(&self, id: &str) -> BoxFut<'_, Result<Binary, GwError>> {
             let reply = self.rec("snapshot", id, "", Value::Null);
@@ -759,6 +825,7 @@ mod tests {
                 Instant::now() - Duration::from_secs(61), Instant::now(),
             ])),
             version: "thu".into(), started: Instant::now(),
+            audio_slots: tokio::sync::Semaphore::new(8),
         };
         assert!(!ctx.rate_limited());
         let before = ctx.hits.lock().unwrap().clone();
@@ -812,6 +879,55 @@ mod tests {
         let (app, call, _) = app();
         assert_eq!(send(&app, ok("POST", "/api/live/hangup", Body::empty())).await.0, 200);
         assert_eq!(call.last(), ("hangup".into(), "".into(), "".into(), json!({})));
+    }
+
+    #[tokio::test]
+    async fn browser_pcm_is_raw_bearer_limited_and_does_not_spend_control_budget() {
+        let (call, chat) = (Arc::new(Fake::default()), Arc::new(Fake::default()));
+        let app = app_limit(&call, &chat, 1);
+        let path = "/api/live/audio/in/c1";
+        assert_eq!(send(&app, req("POST", path, None, vec![0; 2])).await.0, 401);
+        assert_eq!(send(&app, req("POST", &format!("{path}?t={TOK}"), None, vec![0; 2])).await.0, 401);
+        assert_eq!(send(&app, ok("POST", path, vec![0; 65_538])).await.0, 413);
+        for _ in 0..31 { assert_eq!(send(&app, ok("POST", path, vec![1, 2, 3, 4])).await.0, 200); }
+        assert_eq!(call.last(), ("audio_in".into(), "c1".into(), "".into(), json!([1,2,3,4])));
+        assert_eq!(send(&app, ok("GET", "/api/live/calls", Body::empty())).await.0, 200);
+        assert_eq!(send(&app, ok("GET", "/api/live/calls", Body::empty())).await.0, 429);
+    }
+
+    #[tokio::test]
+    async fn device_catalog_routes_require_bearer_and_pass_account() {
+        let (app,call,_) = app();
+        for (method,path) in [("GET","/api/live/devices"),("POST","/api/live/ha_devices")] {
+            assert_eq!(send(&app,req(method,path,None,Body::empty())).await.0,401);
+        }
+        assert_eq!(send(&app,ok("GET","/api/live/devices",Body::empty())).await.0,200);
+        assert_eq!(call.last(),("devices".into(),"".into(),"".into(),Value::Null));
+        assert_eq!(send(&app,ok("POST","/api/live/ha_devices?account=second",r#"{"mic":[]}"#)).await.0,200);
+        assert_eq!(call.last().3,json!({"mic":[],"account":"second"}));
+    }
+
+    #[tokio::test]
+    async fn browser_audio_stream_has_wav_headers_and_closes_at_expiry_or_end() {
+        let (app,_,_) = app();
+        for path in ["/api/live/audio/out/c1", "/api/live/audio/out/c1?t=wrong", "/api/live/audio/out/c1?token=bi-mat-thu"] {
+            assert_eq!(send(&app,req("GET",path,None,Body::empty())).await.0,403);
+        }
+        let (audio,receiver)=tokio::sync::broadcast::channel(2);
+        let (alive,stopped)=tokio::sync::watch::channel(());
+        let response=audio_out_response(crate::contract::AudioOut {prime:b"RIFF".to_vec(),audio:receiver,stopped,expires:Instant::now()+Duration::from_secs(1)});
+        assert_eq!(response.headers()[header::CONTENT_TYPE],"audio/wav");
+        assert_eq!(response.headers()[header::CACHE_CONTROL],"no-store");
+        assert!(!response.headers().contains_key(header::CONTENT_LENGTH));
+        let mut body=response.into_body().into_data_stream();
+        assert_eq!(body.next().await.unwrap().unwrap().as_ref(),b"RIFF");
+        audio.send(vec![1,2]).unwrap();assert_eq!(body.next().await.unwrap().unwrap().as_ref(),[1,2]);
+        drop(alive);assert!(body.next().await.is_none());
+        let (_alive,stopped)=tokio::sync::watch::channel(());
+        let response=audio_out_response(crate::contract::AudioOut{prime:vec![0],audio:audio.subscribe(),stopped,expires:Instant::now()+Duration::from_millis(10)});
+        let mut body=response.into_body().into_data_stream();
+        assert!(body.next().await.is_some());
+        assert!(tokio::time::timeout(Duration::from_millis(100),body.next()).await.unwrap().is_none());
     }
 
     #[tokio::test]

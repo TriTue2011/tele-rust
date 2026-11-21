@@ -2,6 +2,7 @@
 """Kiểm tra các hình dạng JSON ổn định của REST Python/Rust."""
 
 import json
+import re
 import sys
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -66,7 +67,61 @@ def call_shape(call):
         object_shape(event, {"t": number, "e": (str,)}, "calls[].events[]")
 
 
+def settings_shape(settings):
+    object_shape(settings, {**{key: (str,) for key in
+                              ("mic", "mic_format", "camera", "speaker", "playback")},
+                            "auto": (bool,)}, "settings")
+
+
+def devices_shape(devices):
+    object_shape(devices, {"settings": (dict,), "auto": (bool,), "catalog": (dict,)}, "devices")
+    settings_shape(devices["settings"])
+    require(devices["auto"] == devices["settings"]["auto"], "auto không nhất quán")
+    object_shape(devices["catalog"], {key: (list,) for key in ("mic", "speaker", "camera")}, "catalog")
+    for kind, entries in devices["catalog"].items():
+        require(len(entries) <= 64, f"catalog.{kind} vượt 64 mục")
+        seen = set()
+        for entry in entries:
+            object_shape(entry, {"id": (str,), "name": (str,)}, f"catalog.{kind}[]")
+            require(entry["id"] not in seen and entry["id"] and entry["name"], "Mục rỗng hoặc trùng")
+            seen.add(entry["id"])
+
+
+def audio_out_shape(response):
+    object_shape(response, {"audio_out": (dict,)}, "media")
+    descriptor = response["audio_out"]
+    object_shape(descriptor, {"url": (str,), "content_type": (str,), "expires_in": (int,)}, "audio_out")
+    require(re.fullmatch(r"/api/live/audio/out/[a-f0-9]+\?t=[A-Za-z0-9_-]{32}", descriptor["url"]) is not None,
+            "URL âm thanh phải chứa token media 192 bit và mã cuộc gọi")
+    require(descriptor["content_type"] == "audio/wav" and 0 <= descriptor["expires_in"] <= 600,
+            "Sai định dạng hoặc hạn token âm thanh")
+
+
+def self_test():
+    settings = {"mic": "browser", "mic_format": "auto", "camera": "black",
+                "speaker": "browser", "playback": "file", "auto": False}
+    devices = {"settings": settings, "auto": False,
+               "catalog": {"mic": [{"id": "sensor.mic", "name": "Mic"}], "speaker": [], "camera": []}}
+    devices_shape(devices)
+    audio = {"audio_out": {"url": "/api/live/audio/out/abcdef123456?t=" + "a" * 32,
+                           "content_type": "audio/wav", "expires_in": 599}}
+    audio_out_shape(audio)
+    rejected = 0
+    for validate, invalid in ((settings_shape, {**settings, "auto": 1}),
+                              (devices_shape, {**devices, "auto": True}),
+                              (audio_out_shape, {"audio_out": {**audio["audio_out"], "url": "/?token=Bearer"}})):
+        try:
+            validate(invalid)
+        except AssertionError:
+            rejected += 1
+    require(rejected == 3, "Bộ kiểm phải từ chối cả ba hình dạng sai")
+    print("Hợp đồng thiết bị/media: 3 hình dạng đúng đạt; 3 hình dạng sai bị từ chối")
+
+
 def main():
+    if sys.argv[1:] == ["--self-test"]:
+        self_test()
+        return
     if len(sys.argv) != 3:
         raise SystemExit(f"Cách dùng: {sys.argv[0]} BASE_URL TOKEN")
     base_url, token = sys.argv[1:]
@@ -121,6 +176,14 @@ def main():
     require(calls["error"]["message"] == "Tài khoản đang mất kết nối tới Telegram.",
             "Thông điệp ACCOUNT_OFFLINE không khớp Python")
     print("GET /api/live/calls: HTTP 503 ACCOUNT_OFFLINE, JSON đúng khóa và kiểu")
+
+    for path, method in (("/api/live/devices", "GET"), ("/api/live/ha_devices", "POST"),
+                         ("/api/live/audio/in/abcdef123456", "POST")):
+        status, error = request(base_url, path, method=method)
+        require(status == 401 and error["error"]["code"] == "UNAUTHORIZED", f"{path} phải cần Bearer")
+    status, error = request(base_url, "/api/live/audio/out/abcdef123456?t=wrong")
+    require(status == 403 and error["error"]["code"] == "MEDIA_TOKEN", "Luồng âm thanh phải từ chối token sai")
+    print("Đường thiết bị/media: thiếu Bearer trả 401; token audio sai trả 403")
 
 
 if __name__ == "__main__":

@@ -2,7 +2,7 @@
 use std::{collections::BTreeMap, path::PathBuf, sync::{Arc, Mutex, RwLock, atomic::{AtomicBool, Ordering}}, time::Duration};
 use serde_json::{json, Value};
 use crate::{accounts::AccountStore, calls::CallManager, chat::ChatService,
-    contract::{Binary, BoxFut, CallControl, CastAudio, ChatControl, GwError, TdLink},
+    contract::{AudioOut, Binary, BoxFut, CallControl, CastAudio, ChatControl, GwError, TdLink},
     events::{EventBridge, EventStore, Webhook}, td::{self, login::LoginConfig, TdClient}};
 
 pub(crate) struct Entry {
@@ -209,7 +209,7 @@ impl Accounts {
         if selected.is_empty() {
             if let Some(id)=body["id"].as_str() {
                 for (phone,e) in self.all() {
-                    if e.calls.calls().await?["calls"].as_array().is_some_and(|calls|calls.iter().any(|c|c["id"]==id)) {
+                    if e.calls.owns_call(id).await {
                         return self.select(&phone);
                     }
                 }
@@ -294,6 +294,7 @@ impl Accounts {
         let selected = param(query,"account").filter(|s| !s.is_empty()).unwrap_or_else(||body["account"].as_str().unwrap_or_default().into());
         let (phone,e) = self.select(&selected)?;
         if path == "/api/live/settings" { return e.calls.settings(Value::Null).await; }
+        if path == "/api/live/devices" { return e.calls.devices(Value::Null).await; }
         let _=phone;
         e.chat.handle(method,path,query,body).await
     }
@@ -379,10 +380,33 @@ impl CallControl for Accounts {
     }
     route_call!(accept); route_call!(hangup); route_call!(settings);
     route_call!(media); route_call!(playback); route_call!(say);
+    fn devices(&self, mut body:Value)->BoxFut<'_,Result<Value,GwError>> {
+        Box::pin(async move {
+            let (_,e)=self.select(body["account"].as_str().unwrap_or_default())?;
+            if let Some(map)=body.as_object_mut() { map.remove("account"); }
+            e.calls.devices(body).await
+        })
+    }
+    fn audio_in(&self,id:&str,pcm:Vec<u8>)->BoxFut<'_,Result<Value,GwError>> {
+        let id=id.to_owned(); Box::pin(async move {
+            for (_,e) in self.all() {
+                if e.calls.owns_call(&id).await { return e.calls.audio_in(&id,pcm).await; }
+            }
+            Err(GwError::not_found("Không có cuộc gọi này."))
+        })
+    }
+    fn audio_out(&self,id:&str,token:&str)->BoxFut<'_,Result<AudioOut,GwError>> {
+        let (id,token)=(id.to_owned(),token.to_owned()); Box::pin(async move {
+            for (_,e) in self.all() {
+                if e.calls.owns_call(&id).await { return e.calls.audio_out(&id,&token).await; }
+            }
+            Err(GwError::not_found("Không có cuộc gọi này."))
+        })
+    }
     fn snapshot(&self,id:&str)->BoxFut<'_,Result<Binary,GwError>> {
         let id=id.to_owned(); Box::pin(async move {
             for (_,e) in self.all() {
-                if e.calls.calls().await?["calls"].as_array().is_some_and(|calls|calls.iter().any(|c|c["id"]==id)) {
+                if e.calls.owns_call(&id).await {
                     return e.calls.snapshot(&id).await;
                 }
             }
@@ -392,7 +416,7 @@ impl CallControl for Accounts {
     fn video_frames(&self,id:&str)->BoxFut<'_,Result<crate::contract::VideoFrames,GwError>> {
         let id=id.to_owned(); Box::pin(async move {
             for (_,e) in self.all() {
-                if e.calls.calls().await?["calls"].as_array().is_some_and(|calls|calls.iter().any(|c|c["id"]==id)) {
+                if e.calls.owns_call(&id).await {
                     return e.calls.video_frames(&id).await;
                 }
             }
