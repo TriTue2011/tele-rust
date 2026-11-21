@@ -3,9 +3,9 @@
 # và nhị phân mới dựng ở /opt/tggw-build-tichhop. Không xoá gì: container Rust cũ chỉ bị dừng + đổi tên.
 # Từ chối khi đang có cuộc gọi ĐANG DIỄN RA (cuộc đã kết thúc không tính). Chờ /health online; không đạt thì quay lại Python.
 set -euo pipefail
-ssh ha200 'bash -s' <<'REMOTE'
+ssh ha200 "TGGW_NEWBIN=${TGGW_NEWBIN:-}" bash -s <<'REMOTE'
 set -euo pipefail
-RS=telegram-gateway-rs; PY=telegram-gateway; BASE=/opt/telegram-gateway-rs; NEWBIN=/opt/tggw-build-tichhop/target/release/tggw
+RS=telegram-gateway-rs; PY=telegram-gateway; BASE=/opt/telegram-gateway-rs; NEWBIN=${TGGW_NEWBIN:-/opt/tggw-build-tichhop/target/release/tggw}
 IMG=telegram-gateway:local-200
 env_of() { docker inspect "$RS" --format '{{range .Config.Env}}{{println .}}{{end}}' | sed -n "s/^$1=//p"; }
 TOKEN=$(env_of GATEWAY_TOKEN); HOST=$(env_of GATEWAY_HOST); PORT=$(env_of REST_PORT)
