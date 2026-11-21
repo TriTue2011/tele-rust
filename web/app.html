@@ -82,6 +82,8 @@
   #call-controls .secondary { background:#334251; }
   #call-controls button[aria-pressed="true"] { background:#235078; }
   #call-error { width:100%; margin:0; color:#ffb4b4; text-align:center; overflow-wrap:anywhere; }
+  #call-device-line { width:100%; margin:0; text-align:center; color:#dce7f1; }
+  #call-audio { width:min(360px,100%); height:36px; }
   #call-settings-open { align-self:flex-start; margin:0 12px 4px; }
   #app.locked #call-settings-open { display:none; }
   #call-settings { width:min(540px, calc(100vw - 24px)); max-height:calc(100dvh - 24px); padding:22px;
@@ -95,6 +97,17 @@
     border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--fg); font:inherit; }
   .call-settings-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:16px; }
   #call-settings #call-settings-error { color:var(--err); }
+  #call-device-picker { width:min(540px, calc(100vw - 24px)); max-height:calc(100dvh - 24px); padding:22px;
+    border:1px solid var(--line); border-radius:16px; background:var(--panel); color:var(--fg); }
+  #call-device-picker::backdrop { background:#05080bcc; }
+  #call-device-picker h2 { margin:0 0 4px; font-size:20px; }
+  #call-device-picker p, #call-device-picker small { margin:4px 0 0; color:var(--mut); font-size:13px; overflow-wrap:anywhere; }
+  #call-device-picker label { display:block; margin:14px 0 4px; font-weight:600; }
+  #call-device-picker input, #call-device-picker select { width:100%; min-height:40px; padding:8px 10px;
+    border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--fg); font:inherit; }
+  .device-url { margin-top:6px; }
+  .device-picker-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:16px; }
+  #call-device-picker #call-device-error { color:var(--err); }
   @media(max-width:600px) { #call-overlay { padding:0; } #call-window { width:100%; height:100dvh; border:0; border-radius:0; grid-template-rows:auto minmax(0,1fr) auto; }
     #call-top { padding:calc(14px + env(safe-area-inset-top)) 14px 14px; } #call-name { font-size:17px; }
     #call-controls { padding:12px 10px calc(12px + env(safe-area-inset-bottom)); gap:8px; } #call-controls button { min-width:calc(50% - 8px); }
@@ -146,8 +159,12 @@
     <div id="call-stage"><img id="call-image" alt="Hình ảnh từ đối phương" hidden><div id="call-wait">Đang chờ hình…</div><div id="call-emojis" hidden aria-label="Emoji xác thực"></div><small id="call-meta"></small></div>
     <div id="call-controls">
       <p id="call-error" role="alert" hidden></p>
+      <p id="call-device-line" hidden></p>
+      <audio id="call-audio" controls aria-label="Tiếng cuộc gọi" hidden></audio>
+      <button id="call-audio-enable" type="button" class="secondary" hidden>Bật tiếng</button>
       <button id="call-ring" type="button" class="secondary" aria-pressed="false">Bật báo chuông</button>
       <button id="call-answer" type="button" class="green" hidden>Trả lời</button>
+      <button id="call-device-change" type="button" class="secondary" hidden>Đổi thiết bị</button>
       <button id="call-mic" type="button" class="secondary" hidden></button>
       <button id="call-camera" type="button" class="secondary" hidden></button>
       <button id="call-speaker" type="button" class="secondary" hidden></button>
@@ -182,6 +199,28 @@
     <div class="call-settings-actions">
       <button id="call-settings-close" class="ghost" type="button">Đóng</button>
       <button id="call-settings-save" type="submit">Lưu cài đặt</button>
+    </div>
+  </form>
+</dialog>
+<dialog id="call-device-picker" aria-labelledby="call-device-picker-title">
+  <form id="call-device-picker-form" autocomplete="off">
+    <h2 id="call-device-picker-title">Thiết bị cuộc gọi</h2>
+    <p id="call-device-picker-status">Chọn mic, loa và camera cho cuộc gọi này.</p>
+    <label for="device-mic">Mic gửi đi</label>
+    <select id="device-mic" aria-describedby="call-device-secure-help"></select>
+    <input id="device-mic-url" class="device-url" type="text" aria-label="URL mic" spellcheck="false" placeholder="rtsp:// hoặc http://" hidden>
+    <p id="call-device-secure-help" hidden></p>
+    <label for="device-speaker">Loa nhận tiếng</label>
+    <select id="device-speaker"></select>
+    <input id="device-speaker-url" class="device-url" type="text" aria-label="URL loa" spellcheck="false" placeholder="URL cửa bộ đàm hoặc Cast nội bộ" hidden>
+    <label for="device-camera">Camera gửi đi</label>
+    <select id="device-camera" aria-describedby="device-camera-help"></select>
+    <input id="device-camera-url" class="device-url" type="text" aria-label="URL camera" spellcheck="false" placeholder="rtsp:// hoặc http://" hidden>
+    <p id="device-camera-help">Chưa hỗ trợ camera của máy này. Chọn Hình đen, thiết bị trong danh mục hoặc nhập URL.</p>
+    <p id="call-device-error" role="alert" hidden></p>
+    <div class="device-picker-actions">
+      <button id="call-device-cancel" class="ghost" type="button">Hủy</button>
+      <button id="call-device-save" type="submit">Dùng thiết bị này</button>
     </div>
   </form>
 </dialog>
@@ -428,8 +467,212 @@
   let callInfo = null, acceptedId = null, missingSnapshotId = null, callFocus = null;
   let callsReady = false, pollTimer = null, polling = false, callBusy = false, callRevision = 0, callClock = 0;
   let ringEnabled = false, ringTimer = null, ringAudio = null, snapshot = null;
+  let callDevices = null, callDeviceId = "", callDeviceReady = false, callDeviceLoading = false, callDeviceOpening = false;
+  let callDeviceManual = false, callDeviceSettings = null, pendingDevicePicker = null, outgoingDevices = null;
   const CALL_TEXT = { dialing: "Đang gọi…", ringing: "Đang đổ chuông…", connecting: "Đang kết nối…", active: "Đang trong cuộc gọi" };
   const incoming = () => callInfo && !callInfo.outgoing && callInfo.state === "ringing" && callInfo.id !== acceptedId;
+  const DEVICE_PREF_KEY = "tele-call-device-choice-v1";
+  const devicePicker = $("call-device-picker");
+  const pickerSelects = { mic: $("device-mic"), speaker: $("device-speaker"), camera: $("device-camera") };
+  const pickerUrls = { mic: $("device-mic-url"), speaker: $("device-speaker-url"), camera: $("device-camera-url") };
+  let pickerCatalogs = { mic: [], speaker: [], camera: [] };
+  const deviceKinds = ["mic", "speaker", "camera"];
+  function localMicAvailable() {
+    return Boolean(window.isSecureContext && navigator.mediaDevices && typeof navigator.mediaDevices.getUserMedia === "function");
+  }
+  function insecureMicMessage() {
+    return "Trình duyệt chỉ cho dùng micro trên trang HTTPS hoặc localhost; hiện đang mở bằng " + location.origin + " — mở trang qua HTTPS (ví dụ qua Home Assistant/ingress) hoặc chọn nguồn khác.";
+  }
+  function loadDevicePrefs() {
+    try {
+      const value = JSON.parse(localStorage.getItem(DEVICE_PREF_KEY) || "{}");
+      return value && typeof value === "object" ? value : {};
+    } catch (e) { return {}; }
+  }
+  function safeCatalogId(id) {
+    return /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(id);
+  }
+  function saveDevicePrefs(choices) {
+    const safe = {};
+    for (const kind of deviceKinds) {
+      const choice = choices[kind];
+      safe[kind] = { type: choice.type };
+      if (choice.type === "catalog" && safeCatalogId(choice.id)) safe[kind].id = choice.id;
+    }
+    try { localStorage.setItem(DEVICE_PREF_KEY, JSON.stringify(safe)); } catch (e) {}
+  }
+  function addDeviceOption(select, value, label, disabled = false) {
+    const option = el("option", "", label); option.value = value; option.disabled = disabled; select.appendChild(option);
+  }
+  function appendPickerOptions(kind, entries, value, saved) {
+    const select = pickerSelects[kind]; select.textContent = "";
+    pickerCatalogs[kind] = entries.filter((item) => kind !== "camera" || item.id !== "browser");
+    if (kind === "mic") {
+      addDeviceOption(select, "browser", "Thiết bị của máy này", !localMicAvailable());
+      addDeviceOption(select, "silence", "Không dùng");
+      addDeviceOption(select, "manual", "Nhập URL mic (RTSP/HTTP)");
+    } else if (kind === "speaker") {
+      addDeviceOption(select, "browser", "Thiết bị của máy này");
+      addDeviceOption(select, "none", "Không dùng");
+      addDeviceOption(select, "manual", "Nhập URL cửa bộ đàm");
+    } else {
+      addDeviceOption(select, "black", "Hình đen");
+      addDeviceOption(select, "manual", "Nhập URL camera (RTSP/HTTP)");
+    }
+    pickerCatalogs[kind].forEach((item, index) => addDeviceOption(select, "catalog:" + index, item.name));
+    const match = pickerCatalogs[kind].findIndex((item) => item.id === (saved?.id || value) ||
+      item.id.replace(/(:\/\/[^/\s:@]+:)[^@/\s]*@/, "$1***@").replace(/([?&]k=)[^&\s]+/g, "$1***") === value);
+    const catalog = match < 0 ? "" : "catalog:" + match;
+    const hasSource = value && !["test", "silence", "black", "browser"].includes(value);
+    const current = catalog || (hasSource ? "manual" : value);
+    const fallback = kind === "mic" ? (localMicAvailable() ? "browser" : "silence") : kind === "speaker" ? "browser" : "black";
+    const preferred = saved?.type === "catalog" ? catalog : saved?.type;
+    const enabled = (candidate) => Array.from(select.options).some((option) => option.value === candidate && !option.disabled);
+    select.value = [preferred, current, fallback].find(enabled);
+    const input = pickerUrls[kind];
+    input.value = "";
+    input.placeholder = hasSource ? "Để trống để giữ nguồn đã lưu" : input.defaultPlaceholder;
+    updateDeviceUrl(kind);
+  }
+  function updateDeviceUrl(kind) {
+    const manual = pickerSelects[kind].value === "manual";
+    pickerUrls[kind].hidden = !manual;
+  }
+  function renderDevicePicker(devices, reason) {
+    const entries = devices.catalog || {};
+    const prefs = devices.auto ? {} : loadDevicePrefs();
+    for (const kind of deviceKinds) appendPickerOptions(kind, entries[kind] || [], devices.settings[kind], prefs[kind]);
+    $("call-device-picker-status").textContent = reason === "incoming" ? "Chọn thiết bị để trả lời cuộc gọi này."
+      : reason === "outgoing" ? "Chọn thiết bị để bắt đầu cuộc gọi."
+      : "Nguồn đã được chọn khi bắt đầu cuộc gọi. Thay đổi sẽ áp dụng cho cuộc gọi tiếp theo.";
+    $("call-device-save").textContent = reason === "outgoing" ? "Gọi" : "Dùng thiết bị này";
+    const secureHelp = $("call-device-secure-help");
+    secureHelp.textContent = localMicAvailable() ? "" : insecureMicMessage();
+    secureHelp.hidden = localMicAvailable();
+    $("call-device-error").textContent = ""; $("call-device-error").hidden = true;
+  }
+  function choiceFor(kind) {
+    const value = pickerSelects[kind].value;
+    if (value.startsWith("catalog:")) {
+      const item = pickerCatalogs[kind][Number(value.slice(8))];
+      if (safeCatalogId(item.id) && !["silence", "black", "test"].includes(item.id)) {
+        return { error: "Thiết bị này chỉ có mã trong danh mục HA. Hãy chọn Nhập URL để dùng nguồn của thiết bị." };
+      }
+      return { type: "catalog", id: item.id, value: item.id };
+    }
+    if (value === "manual") {
+      const raw = pickerUrls[kind].value.trim();
+      const current = callDevices.settings[kind];
+      if (!raw && current && !["test", "silence", "black", "browser"].includes(current)) return { type: "manual" };
+      if (!raw || (kind === "speaker" ? !validSpeaker(raw) : !sourceURL(raw)?.hostname)) {
+        return { error: kind === "speaker" ? "Nhập URL cửa bộ đàm hoặc Cast nội bộ hợp lệ." : "URL phải dùng RTSP hoặc HTTP." };
+      }
+      return { type: "manual", value: raw };
+    }
+    if (kind === "mic") return value === "browser" && localMicAvailable() ? { type: value, value } : { type: "silence", value: "silence" };
+    if (kind === "speaker") return { type: value, value: value === "browser" ? "browser" : "" };
+    return { type: value, value: "black" };
+  }
+  function finishDevicePicker(value) {
+    if (devicePicker.open) devicePicker.close();
+    const resolve = pendingDevicePicker; pendingDevicePicker = null;
+    for (const input of Object.values(pickerUrls)) input.value = "";
+    if (resolve) resolve(value);
+  }
+  function openDevicePicker(devices, reason) {
+    if (pendingDevicePicker) finishDevicePicker(null);
+    renderDevicePicker(devices, reason);
+    return new Promise((resolve) => { pendingDevicePicker = resolve; devicePicker.showModal(); });
+  }
+  for (const kind of deviceKinds) {
+    pickerUrls[kind].defaultPlaceholder = pickerUrls[kind].placeholder;
+    pickerSelects[kind].addEventListener("change", () => {
+      updateDeviceUrl(kind);
+      if (!pickerUrls[kind].hidden) pickerUrls[kind].focus();
+    });
+  }
+  $("call-device-cancel").addEventListener("click", () => finishDevicePicker(null));
+  devicePicker.addEventListener("cancel", (event) => {
+    event.preventDefault();
+    if (!$("call-device-save").disabled) finishDevicePicker(null);
+  });
+  $("call-device-picker-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const save = $("call-device-save");
+    if (!pendingDevicePicker || save.disabled) return;
+    const picker = pendingDevicePicker;
+    const devices = callDevices;
+    const choices = Object.fromEntries(deviceKinds.map((kind) => [kind, choiceFor(kind)]));
+    const invalid = Object.entries(choices).find(([, choice]) => choice.error);
+    if (invalid) {
+      const error = $("call-device-error"); error.textContent = invalid[1].error; error.hidden = false;
+      const kind = invalid[0];
+      (pickerUrls[kind].hidden ? pickerSelects[kind] : pickerUrls[kind]).focus(); return;
+    }
+    const body = Object.fromEntries(deviceKinds.filter((kind) => choices[kind].value !== undefined)
+      .map((kind) => [kind, choices[kind].value]));
+    save.disabled = $("call-device-cancel").disabled = true;
+    try {
+      await api("POST", "/api/live/settings", body);
+      if (pendingDevicePicker !== picker) return;
+      const settings = { ...devices.settings, ...body };
+      devices.settings = settings;
+      saveDevicePrefs(choices);
+      finishDevicePicker({ settings, overrides: body });
+    } catch (e) {
+      if (pendingDevicePicker !== picker) return;
+      const error = $("call-device-error"); error.textContent = "Không lưu được thiết bị: " + e.message; error.hidden = false;
+    } finally { save.disabled = $("call-device-cancel").disabled = false; }
+  });
+  $("call-device-change").addEventListener("click", async () => {
+    if (!callInfo || callDeviceOpening || callBusy) return;
+    if (!callDevices) { prepareCallDevices(callInfo); return; }
+    const id = callInfo.id;
+    callDeviceOpening = true;
+    updateCallDeviceLine();
+    try {
+      const chosen = await openDevicePicker(callDevices, incoming() ? "incoming" : "next");
+      if (chosen && callInfo?.id === id && incoming()) {
+        callDeviceSettings = chosen.settings; callDeviceReady = true; callDeviceManual = true;
+      }
+    } finally { callDeviceOpening = false; updateCallDeviceLine(); }
+  });
+  function updateCallDeviceLine() {
+    const line = $("call-device-line");
+    line.hidden = !callInfo;
+    $("call-device-change").hidden = !callInfo || callDeviceLoading || callDeviceOpening;
+    $("call-device-change").textContent = callDeviceReady ? "Đổi" : "Chọn thiết bị";
+    $("call-device-change").disabled = callBusy;
+    if (!callInfo) return;
+    line.textContent = callDeviceReady && !callDeviceManual ? "Thiết bị: tự động theo HA" :
+      callDeviceReady ? "Thiết bị: đã chọn thủ công" : callDeviceLoading ? "Đang tải thiết bị…" : "Chọn thiết bị để trả lời";
+    $("call-answer").disabled = callBusy || !callDeviceReady || callDeviceOpening;
+  }
+  async function prepareCallDevices(info) {
+    if (callDeviceId === info.id && (callDeviceReady || callDeviceLoading)) return;
+    callDeviceId = info.id; callDeviceReady = false; callDeviceManual = false; callDevices = null;
+    callDeviceSettings = null; callDeviceLoading = true; updateCallDeviceLine();
+    try {
+      const devices = await api("GET", "/api/live/devices");
+      if (callInfo?.id !== info.id) return;
+      callDevices = devices;
+      if (devices.auto || !incoming()) {
+        callDeviceSettings = devices.settings;
+        callDeviceReady = true;
+        callDeviceManual = !devices.auto;
+      } else {
+        const chosen = await openDevicePicker(devices, "incoming");
+        if (callInfo?.id !== info.id) return;
+        if (chosen) { callDeviceSettings = chosen.settings; callDeviceReady = true; callDeviceManual = true; }
+      }
+    } catch (e) {
+      if (callInfo?.id === info.id) callError("Không tải được thiết bị cuộc gọi: " + e.message);
+    } finally {
+      if (callDeviceId === info.id) {
+        callDeviceLoading = false; updateCallDeviceLine(); syncBrowserAudio(callInfo);
+      }
+    }
+  }
   function nameForCall(userId) {
     const chat = chats.find((c) => String(c.user_id) === String(userId));
     const contact = contacts.find((c) => String(c.id) === String(userId));
@@ -472,8 +715,17 @@
     if (info.state !== "ringing") acceptedId = null;
     const video = info.video || info.peer_video;
     const name = nameForCall(info.user_id);
-    if (info.id !== callInfo?.id) callError("");
+    if (info.id !== callInfo?.id) {
+      callError(""); stopBrowserAudio();
+      if (pendingDevicePicker) finishDevicePicker(null);
+    }
     callInfo = info;
+    if (callDeviceId !== info.id) {
+      if (info.outgoing && outgoingDevices) {
+        callDeviceId = info.id; callDeviceReady = true; callDeviceLoading = false;
+        callDeviceManual = outgoingDevices.manual; callDeviceSettings = outgoingDevices.settings;
+      } else prepareCallDevices(info);
+    }
     $("call-name").textContent = (video ? "🎥 " : "📞 ") + name;
     $("call-avatar").textContent = initials(name);
     const status = incoming() ? "Cuộc gọi đến · đang đổ chuông" : CALL_TEXT[answering ? "connecting" : info.state] || "Cuộc gọi";
@@ -489,6 +741,8 @@
     $("call-answer").hidden = $("call-ring").hidden = !incoming();
     $("call-end").textContent = incoming() ? "Từ chối" : "Cúp máy";
     renderCallMedia(info);
+    updateCallDeviceLine();
+    syncBrowserAudio(info);
     if (opening) {
       $("call-settings").close();
       callFocus = document.activeElement;
@@ -513,11 +767,158 @@
     };
     toggle("call-mic", "mic gửi đi", !info.mic_muted, active);
     toggle("call-camera", "camera gửi đi", info.video && !info.cam_off, active);
-    toggle("call-speaker", "loa ngoài", info.playback?.kind === "push", active && info.playback?.speaker_configured);
+    toggle("call-speaker", "loa ngoài", info.playback?.kind === "push",
+      active && info.playback?.speaker_configured && info.playback.kind !== "browser");
   }
   function callError(message) {
     $("call-error").textContent = message;
     $("call-error").hidden = !message;
+  }
+  const callAudio = $("call-audio");
+  let browserMic = null, browserOutput = null;
+  const PCM_RATE = 16000, PCM_SAMPLES = PCM_RATE / 10;
+  function releaseBrowserMic(mic) {
+    mic.controller.abort();
+    if (mic.processor) {
+      mic.processor.onaudioprocess = null;
+      mic.source.disconnect(); mic.processor.disconnect(); mic.silence.disconnect();
+    }
+    mic.stream?.getTracks().forEach((track) => track.stop());
+    mic.context?.close().catch(() => {});
+  }
+  function stopBrowserMic() {
+    if (!browserMic) return;
+    if (!browserMic.controller.signal.aborted) releaseBrowserMic(browserMic);
+    browserMic = null;
+  }
+  function stopBrowserOutput() {
+    if (!browserOutput) return;
+    clearTimeout(browserOutput.timer);
+    browserOutput = null;
+    callAudio.pause(); callAudio.removeAttribute("src"); callAudio.load(); callAudio.hidden = true;
+    $("call-audio-enable").hidden = true;
+  }
+  function stopBrowserAudio() {
+    stopBrowserMic(); stopBrowserOutput();
+  }
+  async function playCallAudio(output) {
+    const url = callAudio.src;
+    try {
+      await callAudio.play();
+      if (browserOutput === output && callAudio.src === url) $("call-audio-enable").hidden = true;
+    } catch (e) {
+      if (browserOutput === output && callAudio.src === url) $("call-audio-enable").hidden = false;
+    }
+  }
+  async function renewBrowserOutput(output) {
+    if (browserOutput !== output || output.loading) return;
+    clearTimeout(output.timer);
+    output.loading = true;
+    try {
+      const { audio_out } = await api("POST", "/api/live/media", { id: output.id, action: "audio_out" });
+      if (browserOutput !== output) return;
+      const url = new URL(audio_out.url, location.origin);
+      if (url.origin !== location.origin || url.pathname !== "/api/live/audio/out/" + encodeURIComponent(output.id) ||
+          !/^[A-Za-z0-9_-]{32}$/.test(url.searchParams.get("t"))) throw new Error("URL âm thanh không hợp lệ");
+      const src = url.pathname + "?t=" + url.searchParams.get("t");
+      const renewed = src !== output.src;
+      // Gateway chỉ đổi token sau khi hết hạn. Lần xin sớm giữ nguyên luồng đang phát.
+      const seconds = renewed ? audio_out.expires_in - 5 : audio_out.expires_in + 1;
+      output.timer = setTimeout(() => renewBrowserOutput(output), Math.max(1, seconds) * 1000);
+      if (renewed) {
+        output.src = src;
+        callAudio.src = src; callAudio.hidden = false;
+        playCallAudio(output);
+      }
+    } catch (e) {
+      if (browserOutput === output) $("call-audio-enable").hidden = false;
+    } finally { output.loading = false; }
+  }
+  callAudio.addEventListener("error", () => {
+    if (browserOutput) $("call-audio-enable").hidden = false;
+  });
+  function startBrowserOutput(id) {
+    if (browserOutput?.id === id) return;
+    stopBrowserOutput();
+    browserOutput = { id, src: "", timer: null, loading: false };
+    renewBrowserOutput(browserOutput);
+  }
+  $("call-audio-enable").addEventListener("click", () => {
+    if (!browserOutput) return;
+    if (browserOutput.src && !callAudio.error) playCallAudio(browserOutput);
+    else {
+      browserOutput.src = "";
+      renewBrowserOutput(browserOutput);
+    }
+  });
+  async function sendBrowserPcm(mic, frame) {
+    mic.sending = true;
+    try {
+      const response = await fetch(accountPath("/api/live/audio/in/" + encodeURIComponent(mic.id)), {
+        method: "POST", headers: { Authorization: "Bearer " + tok(), "Content-Type": "application/octet-stream" },
+        body: frame, signal: mic.controller.signal
+      });
+      // 429: bỏ khung; không thử lại hoặc dồn khung. 409: chờ trạng thái mic/cuộc gọi đổi.
+      if (response.ok || response.status === 429 || browserMic !== mic) return;
+      releaseBrowserMic(mic);
+      if (response.status === 404) watchCall();
+      else if (response.status !== 409) callError("Mic máy này đã dừng gửi (HTTP " + response.status + ").");
+    } catch (e) {
+      if (browserMic !== mic || mic.controller.signal.aborted) return;
+      releaseBrowserMic(mic);
+      callError("Mất kết nối gửi tiếng từ mic máy này.");
+    } finally { mic.sending = false; }
+  }
+  async function startBrowserMic(id) {
+    if (browserMic?.id === id) return;
+    stopBrowserMic();
+    const mic = { id, controller: new AbortController(), sending: false };
+    browserMic = mic;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
+      if (browserMic !== mic) { stream.getTracks().forEach((track) => track.stop()); return; }
+      mic.stream = stream;
+      const context = mic.context = new AudioContext();
+      const source = mic.source = context.createMediaStreamSource(stream);
+      const processor = mic.processor = context.createScriptProcessor(2048, 1, 1);
+      const silence = mic.silence = context.createGain(); silence.gain.value = 0;
+      const ratio = context.sampleRate / PCM_RATE;
+      let remaining = ratio, sum = 0, samples = 0;
+      let frame = new DataView(new ArrayBuffer(PCM_SAMPLES * 2));
+      // Trung bình theo khoảng mẫu, giữ phần lẻ qua mỗi callback (kể cả nguồn 44,1 kHz).
+      processor.onaudioprocess = (event) => {
+        if (browserMic !== mic || mic.controller.signal.aborted) return;
+        for (const input of event.inputBuffer.getChannelData(0)) {
+          let weight = 1;
+          while (weight >= remaining) {
+            sum += input * remaining;
+            const sample = Math.max(-1, Math.min(1, sum / ratio));
+            frame.setInt16(samples++ * 2, Math.round(sample * (sample < 0 ? 32768 : 32767)), true);
+            if (samples === PCM_SAMPLES) {
+              if (!mic.sending) sendBrowserPcm(mic, frame.buffer);
+              frame = new DataView(new ArrayBuffer(PCM_SAMPLES * 2)); samples = 0;
+            }
+            weight -= remaining; remaining = ratio; sum = 0;
+          }
+          sum += input * weight; remaining -= weight;
+        }
+      };
+      source.connect(processor); processor.connect(silence); silence.connect(context.destination);
+      await context.resume();
+    } catch (e) {
+      if (browserMic !== mic || mic.controller.signal.aborted) return;
+      releaseBrowserMic(mic);
+      callError("Không truy cập được micro của máy này: " + e.message);
+    }
+  }
+  function syncBrowserAudio(info) {
+    if (info.state !== "active") {
+      stopBrowserAudio(); return;
+    }
+    if (info.playback?.kind === "browser") startBrowserOutput(info.id);
+    else stopBrowserOutput();
+    if (callDeviceSettings?.mic === "browser" && !info.mic_muted && localMicAvailable()) startBrowserMic(info.id);
+    else stopBrowserMic();
   }
   function clearSnapshotImage(state) {
     $("call-image").removeAttribute("src");
@@ -586,10 +987,15 @@
     snapshotLoop(snapshot);
   }
   function hideCall() {
+    stopBrowserAudio();
     stopSnapshot();
     if (!callInfo) return;
+    if (pendingDevicePicker) finishDevicePicker(null);
     callInfo = null;
     acceptedId = null;
+    callDeviceId = ""; callDeviceReady = false; callDeviceManual = false; callDeviceSettings = null;
+    callDevices = null; callDeviceLoading = false;
+    updateCallDeviceLine();
     $("call-overlay").hidden = true;
     $("app").inert = false;
     callFocus?.focus();
@@ -621,11 +1027,14 @@
     callBusy = busy;
     callRevision++;
     for (const id of ["call-answer", "call-end", "call-mic", "call-camera", "call-speaker", "call-a", "call-v"]) $(id).disabled = busy;
+    updateCallDeviceLine();
   }
   async function callRequest(action, body, errorText) {
     if (callBusy) return;
     setCallBusy(true);
     callError("");
+    if (action === "hangup") stopBrowserAudio();
+    else if (body.mic_muted === true) stopBrowserMic();
     try {
       const info = await api("POST", "/api/live/" + action, body);
       if (!callsReady || info.id === missingSnapshotId) return;
@@ -636,11 +1045,15 @@
       } else renderCall(info);
     } catch (e) {
       const message = errorText + ": " + e.message;
-      if (callInfo) callError(message); else toast(message);
+      if (callInfo) { callError(message); syncBrowserAudio(callInfo); }
+      else toast(message);
     }
     finally { setCallBusy(false); watchCall(); }
   }
-  $("call-answer").addEventListener("click", () => callRequest("accept", { id: callInfo.id }, "Không thể trả lời"));
+  $("call-answer").addEventListener("click", () => {
+    if (!callInfo || !callDeviceReady || callDeviceOpening) return;
+    callRequest("accept", { id: callInfo.id }, "Không thể trả lời");
+  });
   $("call-end").addEventListener("click", () => callRequest("hangup", { id: callInfo.id }, incoming() ? "Không thể từ chối" : "Không thể cúp máy"));
   $("call-mic").addEventListener("click", () => {
     callRequest("media", { id: callInfo.id, mic_muted: !callInfo.mic_muted }, "Không thể đổi trạng thái mic");
@@ -653,11 +1066,21 @@
     const kind = callInfo.playback.kind === "push" ? "external" : "push";
     callRequest("playback", { id: callInfo.id, kind }, "Không thể đổi trạng thái loa ngoài");
   });
-  function startCall(video) {
+  async function startCall(video) {
     const chat = chats.find((c) => c.id === cur);
     if (!chat || chat.kind !== "private" || !chat.user_id) { toast("Chỉ gọi được ở hội thoại riêng tư."); return; }
-    if (callInfo) return;
-    callRequest("call", { user_id: chat.user_id, video }, "Không thể gọi");
+    if (callInfo || callDeviceOpening || callBusy) return;
+    callDeviceOpening = true;
+    try {
+      const devices = await api("GET", "/api/live/devices");
+      if (callInfo || !callsReady) return;
+      callDevices = devices;
+      const chosen = devices.auto ? { settings: devices.settings } : await openDevicePicker(devices, "outgoing");
+      if (!chosen || callInfo || !callsReady) return;
+      outgoingDevices = { settings: chosen.settings, manual: !devices.auto };
+      await callRequest("call", { user_id: chat.user_id, video, ...chosen.overrides }, "Không thể gọi");
+    } catch (e) { toast("Không tải được thiết bị cuộc gọi: " + e.message); }
+    finally { outgoingDevices = null; callDeviceOpening = false; updateCallDeviceLine(); }
   }
   $("call-a").addEventListener("click", () => startCall(false));
   $("call-v").addEventListener("click", () => startCall(true));
@@ -667,7 +1090,7 @@
     else watchCall();
     syncRing();
   });
-  window.addEventListener("pagehide", () => { clearTimeout(pollTimer); stopSnapshot(); });
+  window.addEventListener("pagehide", () => { clearTimeout(pollTimer); stopSnapshot(); stopBrowserAudio(); });
   window.addEventListener("pageshow", (event) => { if (event.persisted) watchCall(); });
   setInterval(updateCallClock, 1000);
 
