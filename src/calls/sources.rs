@@ -30,15 +30,21 @@ pub(super) fn quote(s: &str) -> String {
     }
 }
 
+/// Cờ giảm độ trễ cho NGUỒN TRỰC TIẾP (mic loa R1 s16le16k, RTSP, HTTP). ĐO 21/11/2026 với luồng PCM 16 kHz phát đúng thời gian thực:
+/// thiếu cờ này ffmpeg dồn ~3,2 s trước khi xuất rồi giữ nguyên khoảng trễ suốt cuộc gọi (mic đến người nghe chậm ≈ 3 s); có cờ ≈ 64 ms.
+/// Mức VỪA (probesize 64 KiB, analyzeduration 0,5 s) thay vì `-probesize 32 -analyzeduration 0`: đo WAV cho thấy mức "mạnh" còn chậm hơn (1,98 s so với 1,35 s)
+/// và có thể làm ffmpeg không nhận ra định dạng của luồng không phải PCM thô.
+pub(super) const LIVE_IN: &str = "-fflags nobuffer -flags low_delay -probesize 65536 -analyzeduration 500000";
+
 pub fn mic_command(spec: &str, fmt: &str) -> String {
     let base = "ffmpeg -hide_banner -loglevel error -nostdin";
     let out = "-f s16le -ac 1 -ar 48000 pipe:1";
     match spec {
         "silence" | "browser" => format!("{base} -re -f lavfi -i \"anullsrc=r=48000:cl=mono\" {out}"),
         "" | "test" => format!("{base} -re -f lavfi -i \"sine=frequency=440:sample_rate=48000\" -af volume=0.25 {out}"),
-        _ if fmt == "s16le16k" => format!("{base} -f s16le -ar 16000 -ac 1 -i {} {out}", quote(spec)),
-        _ if spec.starts_with("rtsp://") || spec.starts_with("rtsps://") => format!("{base} -rtsp_transport tcp -i {} -vn {out}", quote(spec)),
-        _ => format!("{base} -i {} -vn {out}", quote(spec)),
+        _ if fmt == "s16le16k" => format!("{base} {LIVE_IN} -f s16le -ar 16000 -ac 1 -i {} {out}", quote(spec)),
+        _ if spec.starts_with("rtsp://") || spec.starts_with("rtsps://") => format!("{base} {LIVE_IN} -rtsp_transport tcp -i {} -vn {out}", quote(spec)),
+        _ => format!("{base} {LIVE_IN} -i {} -vn {out}", quote(spec)),
     }
 }
 
@@ -60,8 +66,8 @@ pub fn camera_command(spec: &str, profile: (i16, i16, u8)) -> String {
     match spec {
         "black" | "browser" => format!("{base} -re -f lavfi -i \"color=c=black:size={w}x{h}:rate={fps}\" {out}"),
         "" | "test" => format!("{base} -re -f lavfi -i \"testsrc2=size={w}x{h}:rate={fps}\" {out}"),
-        _ if spec.starts_with("rtsp://") || spec.starts_with("rtsps://") => format!("{base} -rtsp_transport tcp -i {} -an {out}", quote(spec)),
-        _ => format!("{base} -re -i {} -an {out}", quote(spec)),
+        _ if spec.starts_with("rtsp://") || spec.starts_with("rtsps://") => format!("{base} {LIVE_IN} -rtsp_transport tcp -i {} -an {out}", quote(spec)),
+        _ => format!("{base} {LIVE_IN} -re -i {} -an {out}", quote(spec)),
     }
 }
 

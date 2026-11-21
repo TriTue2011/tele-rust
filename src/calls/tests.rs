@@ -724,3 +724,22 @@ fn history_pruning_never_prunes_live_calls_or_forgets_handled_ids() {
     actor.calls.push(LiveCall::new(1,true,false,Devices::default(),Path::new("data")));
     actor.prune(); assert_eq!(actor.calls.len(),21); assert_eq!(actor.calls[0].user_id,107); assert_eq!(actor.calls.last().unwrap().state,"dialing"); assert!(actor.handled.contains(&99));
 }
+
+
+#[test]
+fn nguon_truc_tiep_co_co_giam_tre_dung_cho() {
+    // Lỗi đo được 21/11: thiếu cờ ⇒ mic/camera trễ ≈ 3,2 s. Cờ PHẢI đứng trước `-i`; nguồn tổng hợp (im lặng/thử) không đổi.
+    let live = [
+        mic_command("rtsp://192.0.2.1/mic", "auto"),
+        mic_command("http://192.0.2.1/mic?k=x", "s16le16k"),
+        mic_command("http://192.0.2.1/a.wav", "auto"),
+        camera_command("rtsp://192.0.2.1/v", (640, 360, 15)),
+        camera_command("http://192.0.2.1/v.mp4", (640, 360, 15)),
+    ];
+    for cmd in &live {
+        assert!(cmd.contains("-fflags nobuffer") && cmd.contains("-flags low_delay") && cmd.contains("-analyzeduration 500000") && cmd.contains("-probesize 65536"), "{cmd}");
+        assert!(cmd.find("-fflags").unwrap() < cmd.find(" -i ").unwrap(), "cờ giảm trễ phải đứng TRƯỚC -i: {cmd}");
+    }
+    assert!(!mic_command("silence", "auto").contains("nobuffer") && !mic_command("test", "auto").contains("nobuffer"));
+    assert!(!camera_command("black", (640, 360, 15)).contains("nobuffer"));
+}
