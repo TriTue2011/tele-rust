@@ -46,9 +46,41 @@ fn file_info(f: &Value) -> Option<Value> {
     Some(json!({"id":f["id"],"size":size,"path":path}))
 }
 
+fn message_entity(e: &Value) -> Option<Value> {
+    let offset = e["offset"].as_u64()?;
+    let length = e["length"].as_u64().filter(|n| *n > 0)?;
+    let ty = &e["type"];
+    let kind = match text(&ty["@type"]) {
+        "textEntityTypeBold" => "bold",
+        "textEntityTypeItalic" => "italic",
+        "textEntityTypeUnderline" => "underline",
+        "textEntityTypeStrikethrough" => "strikethrough",
+        "textEntityTypeCode" => "code",
+        "textEntityTypePre" | "textEntityTypePreCode" => "pre",
+        "textEntityTypeBlockQuote" | "textEntityTypeExpandableBlockQuote" => "blockquote",
+        "textEntityTypeSpoiler" => "spoiler",
+        "textEntityTypeUrl" => "url",
+        "textEntityTypeTextUrl" => "text_link",
+        "textEntityTypeMention" => "mention",
+        "textEntityTypeMentionName" => "text_mention",
+        _ => return None,
+    };
+    // TDLib và chuỗi JavaScript đều dùng vị trí UTF-16.
+    let mut entity = json!({"type":kind,"offset":offset,"length":length});
+    match kind {
+        "text_link" => entity["url"] = json!(ty["url"].as_str()?),
+        "text_mention" => entity["user_id"] = json!(ty["user_id"].as_i64()?),
+        "pre" => if let Some(language) = ty["language"].as_str() { entity["language"] = json!(language); },
+        _ => (),
+    }
+    Some(entity)
+}
+
 pub(super) fn message(m: &Value, sender: &str) -> Value {
     let c = &m["content"];
     let (kind, summary) = content(c);
+    let formatted = &c[if kind == "text" {"text"} else {"caption"}];
+    let entities: Vec<_> = array(&formatted["entities"]).iter().filter_map(message_entity).take(100).collect();
     let reactions: Vec<_> = array(&m["interaction_info"]["reactions"]["reactions"]).iter().map(|r| json!({
         "emoji":nonempty(&r["type"]["emoji"],"?"),"count":field(r,"total_count",json!(0)),"mine":truth(&r["is_chosen"])
     })).collect();
@@ -76,7 +108,7 @@ pub(super) fn message(m: &Value, sender: &str) -> Value {
     } else { None };
     json!({"id":m["id"],"chat_id":m["chat_id"],"date":field(m,"date",json!(0)),"edit_date":field(m,"edit_date",json!(0)),
         "outgoing":truth(&m["is_outgoing"]),"sender":sender,"kind":kind,
-        "text":text(&c[if kind == "text" {"text"} else {"caption"}]["text"]),"summary":summary,
+        "text":text(&formatted["text"]),"entities":entities,"summary":summary,
         "reply_to":m["reply_to"]["message_id"].as_i64().unwrap_or(0),"reactions":reactions,"file":file})
 }
 

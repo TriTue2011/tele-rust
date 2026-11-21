@@ -48,7 +48,7 @@ fn td_message(id: i64) -> Value {
 
 fn normalized(id: i64, sender: &str) -> Value {
     json!({"id":id,"chat_id":5,"date":0,"edit_date":0,"outgoing":false,"sender":sender,"kind":"text",
-        "text":" Chào ","summary":"Chào","reply_to":0,"reactions":[],"file":null})
+        "text":" Chào ","entities":[],"summary":"Chào","reply_to":0,"reactions":[],"file":null})
 }
 
 #[tokio::test]
@@ -291,6 +291,37 @@ async fn downloads_are_bounded_private_and_never_follow_symlinks() {
 }
 
 #[test]
+fn message_entities_preserve_utf16_offsets_and_keep_only_supported_ranges() {
+    let entity = |kind, offset, length| json!({"offset":offset,"length":length,"type":{"@type":kind}});
+    let mut link = entity("textEntityTypeTextUrl", 10, 4);
+    link["type"]["url"] = json!("https://example.com/");
+    let mut pre = entity("textEntityTypePreCode", 20, 3);
+    pre["type"]["language"] = json!("sh");
+    let mut mention = entity("textEntityTypeMentionName", 24, 2);
+    mention["type"]["user_id"] = json!(7);
+    let mut entities = vec![entity("textEntityTypeUnknown", 0, 2), entity("textEntityTypeItalic", -1, 1),
+        entity("textEntityTypeBold", 3, 6), link, entity("textEntityTypeCode", 15, 4), pre, mention];
+    entities.extend((27..123).map(|offset| entity("textEntityTypeUnderline", offset, 1)));
+    let text = format!("🌙 Header link code run An {}", "x".repeat(96));
+    let td = json!({"content":{"@type":"messageText","text":{"text":text,"entities":entities}}});
+    let result = message(&td, "An");
+    let actual = result["entities"].as_array().expect("message entities");
+    assert_eq!(result["text"], text);
+    assert_eq!(actual.len(), 100);
+    assert_eq!(&actual[..5], json!([
+        {"type":"bold","offset":3,"length":6},
+        {"type":"text_link","offset":10,"length":4,"url":"https://example.com/"},
+        {"type":"code","offset":15,"length":4},
+        {"type":"pre","offset":20,"length":3,"language":"sh"},
+        {"type":"text_mention","offset":24,"length":2,"user_id":7}
+    ]).as_array().expect("expected list").as_slice());
+    assert_eq!(actual.last(), Some(&json!({"type":"underline","offset":121,"length":1})));
+
+    let caption = json!({"content":{"@type":"messagePhoto","caption":{"text":"Ảnh","entities":[entity("textEntityTypeItalic", 0, 3)]}}});
+    assert_eq!(message(&caption, "")["entities"], json!([{"type":"italic","offset":0,"length":3}]));
+}
+
+#[test]
 fn media_and_reactions_have_python_message_shapes() {
     let photo = json!({"id":1,"date":100,"is_outgoing":true,"reply_to":{"message_id":12},"content":{"@type":"messagePhoto","caption":{"text":" cap "},
         "photo":{"sizes":[{"width":90,"photo":{"id":11}},
@@ -298,7 +329,7 @@ fn media_and_reactions_have_python_message_shapes() {
         {"width":2000,"photo":{"id":13}}]}},"interaction_info":{"reactions":{"reactions":[{"type":{"emoji":"👍"},"total_count":2,"is_chosen":true}]}}});
     let m = message(&photo,"An");
     assert_eq!(m,json!({"id":1,"chat_id":null,"date":100,"edit_date":0,"outgoing":true,"sender":"An","kind":"photo","text":" cap ",
-        "summary":"🖼 Ảnh: cap","reply_to":12,"reactions":[{"emoji":"👍","count":2,"mine":true}],
+        "entities":[],"summary":"🖼 Ảnh: cap","reply_to":12,"reactions":[{"emoji":"👍","count":2,"mine":true}],
         "file":{"id":12,"size":123,"path":"x.jpg","width":800,"height":600,"mime":"image/jpeg"}}));
     let voice = message(&json!({"content":{"@type":"messageVoiceNote","voice_note":{"duration":4,"voice":{"id":21}}}}),"");
     assert_eq!(voice["file"],json!({"id":21,"size":0,"path":"","name":"","mime":"","duration":4,"width":0,"height":0}));

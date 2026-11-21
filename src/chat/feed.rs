@@ -207,7 +207,7 @@ mod tests {
             "is_outgoing":false,"content":{"@type":"messageText","text":{"text":"Xin chào"}}}}));
         let feed = state.since(4, Duration::ZERO).await;
         assert_eq!(feed["items"][0]["message"], json!({"id":17,"chat_id":5,"date":100,"edit_date":101,
-            "outgoing":false,"sender":"","kind":"text","text":"Xin chào","summary":"Xin chào","reply_to":0,"reactions":[],"file":null}));
+            "outgoing":false,"sender":"","kind":"text","text":"Xin chào","entities":[],"summary":"Xin chào","reply_to":0,"reactions":[],"file":null}));
     }
 
     #[tokio::test]
@@ -246,7 +246,7 @@ mod tests {
         let feed = s.since(0, Duration::ZERO).await;
         assert_eq!(feed["cursor"], 2);
         assert_eq!(feed["items"][0]["message"], json!({"id":9,"chat_id":3,"date":100,
-            "edit_date":110,"outgoing":true,"sender":"An","kind":"photo","text":" chú thích ",
+            "edit_date":110,"outgoing":true,"sender":"An","kind":"photo","text":" chú thích ","entities":[],
             "summary":"🖼 Ảnh: chú thích","reply_to":8,"reactions":[{"emoji":"👍","count":2,"mine":true},
             {"emoji":"?","count":0,"mine":false}],"file":{"id":12,"size":1000,"path":"x.jpg",
                 "width":800,"height":600,"mime":"image/jpeg"}}));
