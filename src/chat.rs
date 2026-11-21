@@ -162,8 +162,6 @@ impl ChatService {
                 let wait = if wait.is_nan() { 25.0 } else { wait.clamp(0.0, 25.0) };
                 Ok(self.state.since(q.int("since", 0)?, Duration::from_secs_f64(wait)).await)
             }
-            ("GET", ["", "api", "live", "view", _]) => Err(GwError::new(
-                501, "NOT_IMPLEMENTED", "Chưa có luồng MJPEG cho cuộc gọi.")),
             ("POST", ["", "api", "chats", id, op @ ("send" | "send_file" | "send_album" | "read")]) =>
                 self.write_chat(path_id(id)?, op, &q, &body).await,
             ("POST", ["", "api", "messages", op @ ("edit" | "delete" | "forward" | "react")]) =>

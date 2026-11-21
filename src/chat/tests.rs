@@ -144,7 +144,6 @@ async fn invalid_arguments_unknown_account_and_binary_routes_never_call_tdlib() 
         ("/api/chats", "limit=x",400,"BAD_REQUEST"),("/api/chats/5/messages","before=x",400,"BAD_REQUEST"),
         ("/api/feed","wait=x",400,"BAD_REQUEST"),("/api/me","account=wrong",404,"NOT_FOUND"),
         ("/api/unknown","",404,"NOT_FOUND"),
-        ("/api/live/view/abc","",501,"NOT_IMPLEMENTED"),
     ] {
         let e = get(&chat,path,query).await.unwrap_err();
         assert_eq!((e.status,e.code.as_str()),(status,code));

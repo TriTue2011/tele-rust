@@ -20,7 +20,7 @@ use ntgcalls::{ConnectionState, NTgCalls, Protocol, StreamDevice, StreamMode};
 use serde_json::{json, Value};
 use tokio::sync::{broadcast, mpsc, oneshot};
 
-use crate::contract::{Binary, BoxFut, CallControl, CastAudio, GwError, TdLink};
+use crate::contract::{Binary, BoxFut, CallControl, CastAudio, GwError, TdLink, VideoFrames};
 use crate::events::{mask_peer, mask_peer_id};
 use media::{Media, MediaEvent, MediaOp, NativeMedia, Ready};
 use sources::{Devices, playback_description, video_profile};
@@ -35,6 +35,7 @@ enum Command {
     Update(Value, oneshot::Sender<Reply>),
     Media(MediaEvent),
     Snapshot(String, oneshot::Sender<Result<Binary, GwError>>),
+    VideoFrames(String, oneshot::Sender<Result<VideoFrames, GwError>>),
     VideoJpeg(String, Option<Vec<u8>>),
     CastAudio(String, String, oneshot::Sender<Option<CastAudio>>),
     RestoreMic(String, u64, String, String, PathBuf),
@@ -149,6 +150,14 @@ impl CallControl for CallManager {
         Box::pin(async move {
             let (tx, rx) = oneshot::channel();
             self.handle.sender.send(Command::Snapshot(id, tx)).map_err(|_| runtime_error())?;
+            rx.await.map_err(|_| runtime_error())?
+        })
+    }
+    fn video_frames(&self, id: &str) -> BoxFut<'_, Result<VideoFrames, GwError>> {
+        let id = id.to_owned();
+        Box::pin(async move {
+            let (tx, rx) = oneshot::channel();
+            self.handle.sender.send(Command::VideoFrames(id, tx)).map_err(|_| runtime_error())?;
             rx.await.map_err(|_| runtime_error())?
         })
     }
@@ -286,6 +295,8 @@ impl Actor {
         let mut updates_open = true;
         let mut shutdown_ack = None;
         let mut shutdown_deadline = None;
+        let mut expire_frames = tokio::time::interval(Duration::from_secs(1));
+        expire_frames.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             tokio::select! {
                 cmd = commands.recv() => match cmd {
@@ -310,6 +321,12 @@ impl Actor {
                         let result = self.calls.iter().find(|c| c.id == id && c.state != "ended")
                             .ok_or_else(|| GwError::not_found("Không có cuộc gọi đang diễn ra này."))
                             .and_then(|c| c.snapshot.response());
+                        let _ = reply.send(result);
+                    }
+                    Some(Command::VideoFrames(id, reply)) => {
+                        let result = self.calls.iter().find(|c| c.id == id && c.state != "ended")
+                            .map(|c| c.snapshot.subscribe())
+                            .ok_or_else(|| GwError::not_found("Không có cuộc gọi đang diễn ra này."));
                         let _ = reply.send(result);
                     }
                     Some(Command::VideoJpeg(id, jpeg)) => {
@@ -345,6 +362,9 @@ impl Actor {
                     }
                 },
                 Some(frame) = frames.recv() => self.media_event(frame).await,
+                _ = expire_frames.tick(), if !self.calls.is_empty() => {
+                    for c in &mut self.calls { c.snapshot.expire(); }
+                }
             }
         }
         for i in 0..self.calls.len() {

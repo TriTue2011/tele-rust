@@ -35,7 +35,7 @@ use base64::Engine as _;
 use serde_json::{json, Value};
 use subtle::ConstantTimeEq;
 
-use crate::contract::{Binary, BoxFut, CallControl, ChatControl, GwError};
+use crate::contract::{Binary, BoxFut, CallControl, ChatControl, GwError, VideoFrames};
 use crate::events::EventStore;
 
 /// Như `MAX_BODY_BYTES` của routes.py.
@@ -120,6 +120,7 @@ enum Kind {
     SendFile,
     ChatBytes,
     Snapshot,
+    LiveView,
     Events,
 }
 
@@ -215,6 +216,10 @@ async fn handle(ctx: Arc<Ctx>, spec: Spec, req: Request) -> Response {
     let out = match spec.kind {
         Kind::ChatBytes => return bytes_resp(ctx.chat.bytes(&path, &query).await),
         Kind::Snapshot => return bytes_resp(ctx.call.snapshot(path.rsplit('/').next().unwrap()).await),
+        Kind::LiveView => return match ctx.call.video_frames(path.rsplit('/').next().unwrap()).await {
+            Ok(frames) => live_view(frames, Duration::from_secs(8), Duration::from_secs(30)).await,
+            Err(e) => error_resp(&e),
+        },
         Kind::Events => match &ctx.events {
             Some(store) => store.poll(since).await,
             None => Err(GwError::new(501, "NOT_IMPLEMENTED", "Chưa có bộ lưu sự kiện.")),
@@ -316,6 +321,34 @@ async fn cast_stream(State(ctx): State<Arc<Ctx>>, req: Request) -> Response {
         (header::CONTENT_LENGTH, CAST_LENGTH.to_string())], Body::from_stream(chunks)).into_response()
 }
 
+async fn next_jpeg(frames: &mut VideoFrames, limit: Duration) -> Result<Option<Arc<[u8]>>, ()> {
+    tokio::time::timeout(limit, async {
+        while frames.has_changed().is_ok() && frames.changed().await.is_ok() {
+            if let Some(jpeg) = frames.borrow_and_update().clone() { return Ok(Some(jpeg)); }
+        }
+        Err(())
+    }).await.unwrap_or(Ok(None))
+}
+
+async fn live_view(mut frames: VideoFrames, first_wait: Duration, idle: Duration) -> Response {
+    // Bản Python trả 409 trước khi gửi header nếu chưa có khung đầu tiên.
+    frames.mark_changed();
+    match next_jpeg(&mut frames, first_wait).await {
+        Ok(Some(_)) => frames.mark_changed(),
+        Ok(None) => return error_resp(&GwError::new(409, "NO_VIDEO", "Chưa có hình video của bên kia.")),
+        Err(()) => return error_resp(&GwError::not_found("Cuộc gọi đã kết thúc.")),
+    }
+    let parts = futures_util::stream::unfold(frames, move |mut frames| async move {
+        let jpeg = next_jpeg(&mut frames, idle).await.ok().flatten()?;
+        let mut part = format!("--frame\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n", jpeg.len()).into_bytes();
+        part.extend_from_slice(&jpeg);
+        part.extend_from_slice(b"\r\n");
+        Some((Ok::<_, std::convert::Infallible>(part), frames))
+    });
+    ([(header::CONTENT_TYPE, "multipart/x-mixed-replace; boundary=frame"),
+        (header::CACHE_CONTROL, "no-store")], Body::from_stream(parts)).into_response()
+}
+
 /// Một phương thức → `spec`; phương thức khác → 405 kiểu FastAPI.
 fn route(filter: MethodFilter, spec: Spec) -> MethodRouter<Arc<Ctx>> {
     add(MethodRouter::new(), filter, spec)
@@ -367,7 +400,7 @@ fn router_with(ctx: Arc<Ctx>) -> Router {
     r = r
         .route("/api/live/calls", route(get, s(LiveCalls)))
         .route("/api/live/settings", add(route(get, s(ChatGet)), post, s(Live(Settings))))
-        .route("/api/live/view/:call_id", route(get, s(ChatGet)))
+        .route("/api/live/view/:call_id", route(get, s(LiveView)))
         .route("/api/live/snapshot/:call_id", route(get, s(Snapshot)))
         .route("/api/live/cast/:call_id/:file", on(get, cast_stream).on(MethodFilter::HEAD, method_not_allowed).fallback(method_not_allowed));
     for (p, op) in [("/api/live/call", Call), ("/api/live/accept", Accept), ("/api/live/hangup", Hangup),
@@ -498,6 +531,8 @@ impl ChatControl for ChuaCo {
 mod tests {
     use super::*;
     use crate::contract::CastAudio;
+    use futures_util::StreamExt;
+    use tokio::sync::watch;
     use tower::ServiceExt;
 
     /// Ghi lại mọi lời gọi; trả lời theo `reply` (mặc định `{"ok":true,"from":…}`).
@@ -505,6 +540,7 @@ mod tests {
     struct Fake {
         log: Mutex<Vec<(String, String, String, Value)>>,
         reply: Mutex<Option<Result<Value, GwError>>>,
+        video: Mutex<Option<watch::Sender<Option<Arc<[u8]>>>>>,
     }
 
     impl Fake {
@@ -562,6 +598,11 @@ mod tests {
                 tx.send(vec![4, 5, 6]).unwrap();
                 Some(CastAudio { prime: vec![1, 2, 3], audio })
             })
+        }
+        fn video_frames(&self, id: &str) -> BoxFut<'_, Result<VideoFrames, GwError>> {
+            let video = self.video.lock().unwrap();
+            let frames = video.as_ref().filter(|_| id == "c1").map(watch::Sender::subscribe);
+            Box::pin(async { frames.ok_or_else(|| GwError::not_found("Không có cuộc gọi đang diễn ra này.")) })
         }
     }
 
@@ -855,10 +896,6 @@ mod tests {
     #[tokio::test]
     async fn duong_nhi_phan_va_cast() {
         let (app, call, chat) = app();
-        assert_eq!(send(&app, req("GET", "/api/live/view/c1", None, Body::empty())).await.0, 401);
-        let view = "/api/live/view/c1";
-        assert_eq!(send(&app, ok("GET", view, Body::empty())).await.0, 200);
-        assert_eq!(chat.last(), ("GET".into(), view.into(), "".into(), Value::Null));
         let jpeg = app.clone().oneshot(ok("GET", "/api/live/snapshot/c1", Body::empty())).await.unwrap();
         assert_eq!(jpeg.headers()[header::CONTENT_TYPE], "image/jpeg");
         assert_eq!(to_bytes(jpeg.into_body(), 3).await.unwrap().as_ref(), &[1, 2, 3]);
@@ -876,6 +913,58 @@ mod tests {
         assert_eq!(cast.headers()[header::CACHE_CONTROL], "no-store");
         assert_eq!(cast.headers()[header::CONTENT_LENGTH], "230400000");
         assert_eq!(to_bytes(cast.into_body(), 6).await.unwrap().as_ref(), &[1, 2, 3, 4, 5, 6]);
+    }
+
+    #[tokio::test]
+    async fn live_view_xac_thuc_phat_nhieu_anh_va_giai_phong_khi_dong() {
+        let (app, call, chat) = app();
+        let path = "/api/live/view/c1";
+        assert_eq!(send(&app, req("GET", path, None, Body::empty())).await.0, 401);
+        assert_eq!(send(&app, ok("GET", path, Body::empty())).await.0, 404);
+
+        let first = &b"\xff\xd8a\xff\xd9"[..];
+        let tx = watch::Sender::new(Some(Arc::<[u8]>::from(first)));
+        *call.video.lock().unwrap() = Some(tx.clone());
+        let response = app.clone().oneshot(ok("GET", path, Body::empty())).await.unwrap();
+        assert_eq!(response.status(), 200);
+        assert_eq!(response.headers()[header::CONTENT_TYPE], "multipart/x-mixed-replace; boundary=frame");
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        let mut stream = response.into_body().into_data_stream();
+        assert_eq!(stream.next().await.unwrap().unwrap().as_ref(),
+            b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: 5\r\n\r\n\xff\xd8a\xff\xd9\r\n");
+        tx.send_replace(Some(Arc::from(&b"\xff\xd8bc\xff\xd9"[..])));
+        assert_eq!(stream.next().await.unwrap().unwrap().as_ref(),
+            b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: 6\r\n\r\n\xff\xd8bc\xff\xd9\r\n");
+        drop(stream);
+        assert_eq!(tx.receiver_count(), 0);
+
+        let response = app.oneshot(ok("GET", path, Body::empty())).await.unwrap();
+        let mut stream = response.into_body().into_data_stream();
+        assert!(stream.next().await.is_some());
+        *call.video.lock().unwrap() = None;
+        drop(tx);
+        assert!(tokio::time::timeout(Duration::from_millis(100), stream.next()).await.unwrap().is_none());
+        assert_eq!(chat.count(), 0);
+    }
+
+    #[tokio::test]
+    async fn live_view_khong_co_anh_tra_409_va_mat_anh_dong_luong() {
+        let wait = Duration::from_millis(5);
+        let tx = watch::Sender::new(None);
+        let response = live_view(tx.subscribe(), wait, wait).await;
+        assert_eq!(response.status(), 409);
+        let raw = to_bytes(response.into_body(), 4096).await.unwrap();
+        let body: Value = serde_json::from_slice(&raw).unwrap();
+        assert_eq!(body["error"]["code"], "NO_VIDEO");
+
+        tx.send_replace(Some(Arc::from(&b"\xff\xd8a\xff\xd9"[..])));
+        let response = live_view(tx.subscribe(), wait, wait).await;
+        let mut stream = response.into_body().into_data_stream();
+        assert!(stream.next().await.is_some());
+        assert!(tokio::time::timeout(Duration::from_millis(100), stream.next()).await.unwrap().is_none());
+        let frames = tx.subscribe();
+        drop(tx);
+        assert_eq!(live_view(frames, wait, wait).await.status(), 404);
     }
 
     #[tokio::test]

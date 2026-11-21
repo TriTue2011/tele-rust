@@ -8,6 +8,7 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 
 use serde_json::Value;
 
@@ -27,6 +28,9 @@ pub struct CastAudio {
     pub prime: Vec<u8>,
     pub audio: tokio::sync::broadcast::Receiver<Vec<u8>>,
 }
+
+/// Chỉ giữ JPEG mới nhất; kênh đóng khi cuộc gọi kết thúc.
+pub type VideoFrames = tokio::sync::watch::Receiver<Option<Arc<[u8]>>>;
 
 /// Lỗi TDLib: giữ nguyên mã HTTP của TDLib và message để tầng API ánh xạ đúng
 /// hợp đồng Python. Lỗi vận chuyển không có mã.
@@ -122,6 +126,9 @@ pub trait CallControl: Send + Sync + 'static {
     fn say(&self, body: Value) -> BoxFut<'_, Result<Value, GwError>>;
     fn snapshot(&self, _id: &str) -> BoxFut<'_, Result<Binary, GwError>> {
         Box::pin(async { Err(GwError::new(501, "NOT_IMPLEMENTED", "Chưa có ảnh chụp cuộc gọi.")) })
+    }
+    fn video_frames(&self, _id: &str) -> BoxFut<'_, Result<VideoFrames, GwError>> {
+        Box::pin(async { Err(GwError::not_found("Không có cuộc gọi đang diễn ra này.")) })
     }
     fn cast_audio(&self, _id: &str, _token: &str) -> BoxFut<'_, Option<CastAudio>> {
         Box::pin(async { None })

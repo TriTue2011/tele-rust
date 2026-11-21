@@ -442,6 +442,7 @@ async fn audio_frames_and_video_frames_have_separate_counters() {
     let id = info["id"].as_str().unwrap();
     assert_eq!(manager.snapshot("unknown").await.unwrap_err().status, 404);
     assert_eq!(manager.snapshot(id).await.unwrap_err().code, "NO_VIDEO");
+    let mut frames = manager.video_frames(id).await.unwrap();
     let metadata=FrameData{absolute_capture_timestamp_ms:0,rotation:VideoRotation::VideoRotation0,width:8,height:4};
     f.emit(MediaEvent::Frames(42,StreamMode::Playback,StreamDevice::Microphone,vec![Frame{ssrc:0,data:vec![0,128,255,127],frame_data:metadata.clone()}])).await;
     f.emit(MediaEvent::Frames(42,StreamMode::Playback,StreamDevice::Camera,vec![Frame{ssrc:0,data:vec![0;48],frame_data:metadata}])).await;
@@ -460,8 +461,12 @@ async fn audio_frames_and_video_frames_have_separate_counters() {
     }).await.unwrap();
     assert_eq!(jpeg.content_type, "image/jpeg");
     assert!(jpeg.bytes.starts_with(&[0xff, 0xd8]) && jpeg.bytes.ends_with(&[0xff, 0xd9]));
+    frames.changed().await.unwrap();
+    assert_eq!(frames.borrow_and_update().as_deref(), Some(jpeg.bytes.as_slice()));
     manager.hangup(json!({"id":id})).await.unwrap();
     assert_eq!(manager.snapshot(id).await.unwrap_err().status, 404);
+    assert!(frames.has_changed().is_err());
+    assert!(frames.borrow().is_none());
 }
 
 #[tokio::test]

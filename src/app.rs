@@ -10,7 +10,7 @@ use tokio::task::JoinHandle;
 
 use crate::calls::CallManager;
 use crate::chat::ChatService;
-use crate::contract::{Binary, BoxFut, CallControl, CastAudio, ChatControl, GwError, TdLink};
+use crate::contract::{Binary, BoxFut, CallControl, CastAudio, ChatControl, GwError, TdLink, VideoFrames};
 use crate::events::{EventBridge, Webhook};
 use crate::{rest, td};
 
@@ -103,6 +103,9 @@ impl CallControl for ReadyCalls {
     }
     fn cast_audio(&self, id: &str, token: &str) -> BoxFut<'_, Option<CastAudio>> {
         self.inner.cast_audio(id, token)
+    }
+    fn video_frames(&self, id: &str) -> BoxFut<'_, Result<VideoFrames, GwError>> {
+        self.inner.video_frames(id)
     }
 }
 
