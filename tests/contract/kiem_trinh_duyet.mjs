@@ -9,6 +9,8 @@ const phones=['+84900000001','+84900000002'];
 const requests=[], errors=[], callActions=[], startedCalls=[], mediaActions=[], settingsPosts=[], audioFrames=[], audioStreams=[];
 const csp=readFileSync('src/web.rs','utf8').match(/header::CONTENT_SECURITY_POLICY,"([^"]+)"/)[1];
 const chatTitle='Hội thoại thử <em>A</em>';
+const cameraCatalog={id:'rtsp://viewer:catalog-test-password@camera.example/video',name:'Camera thử <em>Danh mục</em>'};
+const speakerUrl='http://192.0.2.10/api/r1_speaker/intercom/DUMMY?k=sample-key';
 let feed=[], calls=[], snapshots=0, snapshotStatus=409, rejectMedia=false, deviceAuto=true;
 const audioTokens=['test-audio-token-000000000000000','next-audio-token-000000000000000'];
 let audioExpires=0, pcmStatus=204;
@@ -50,7 +52,10 @@ const server=http.createServer(async (req,res)=>{
     reply({items:feed.filter(item=>item.id>since),cursor:feed.length,reset:false});return;
   }
   if (url.pathname==='/api/live/calls') {reply({calls});return;}
-  if (url.pathname==='/api/live/devices') {reply({auto:deviceAuto,settings,catalog:{mic:[{id:'ha-mic-test',name:'Micro HA thử'}],speaker:[],camera:[]}});return;}
+  if (url.pathname==='/api/live/devices') {
+    const maskedSettings={...settings,speaker:settings.speaker.replace(/([?&]k=)[^&\s]+/,'$1***')};
+    reply({auto:deviceAuto,settings:maskedSettings,catalog:{mic:[{id:'ha-mic-test',name:'Micro HA thử'}],speaker:[],camera:[cameraCatalog]}});return;
+  }
   if (url.pathname==='/api/live/settings') {
     if (req.method==='GET') {reply(settings);return;}
     let raw='';for await (const chunk of req) raw+=chunk;
@@ -81,7 +86,8 @@ const server=http.createServer(async (req,res)=>{
     let raw='';for await (const chunk of req) raw+=chunk;
     const body=JSON.parse(raw||'{}');startedCalls.push({url,id:body.user_id,video:body.video,body});
     const speaker=body.speaker??settings.speaker;
-    const call={id:'fake-call-out',user_id:body.user_id,outgoing:true,video:!!body.video,state:'dialing',seconds:0,mic_muted:false,playback:{kind:speaker==='browser'?'browser':'file',speaker_configured:!!speaker},emojis:[],view:{frames:0,jpeg:0,size:''}};
+    const id=body.speaker==='browser'?'fake-call-out':'fake-call-auto';
+    const call={id,user_id:body.user_id,outgoing:true,video:!!body.video,state:'dialing',seconds:0,mic_muted:false,playback:{kind:speaker==='browser'?'browser':'file',speaker_configured:!!speaker},emojis:[],view:{frames:0,jpeg:0,size:''}};
     calls=[call];reply(call);return;
   }
   if (req.method==='POST' && ['/api/live/media','/api/live/playback'].includes(url.pathname)) {
@@ -172,6 +178,11 @@ try {
   await wait("!document.querySelector('#call-overlay').hidden && document.querySelector('#call-name').textContent.includes('Hội thoại thử')");
   await wait("document.querySelector('#call-device-line').textContent==='Thiết bị: tự động theo HA'");
   assert.equal(await evaluate("document.querySelector('#call-device-picker').open"),false);
+  await evaluate("document.querySelector('#call-device-change').click()");
+  await wait("document.querySelector('#call-device-picker').open");
+  assert.equal(await evaluate("document.querySelector('#device-speaker').value==='manual' && document.querySelector('#device-speaker-url').value===''") ,true);
+  await evaluate("document.querySelector('#call-device-cancel').click()");
+  await wait("!document.querySelector('#call-device-picker').open && !document.querySelector('#call-answer').disabled");
   assert.equal(await evaluate("document.querySelector('#call-name').textContent"),'🎥 '+chatTitle);
   assert.equal(await evaluate("document.querySelector('#call-emojis').textContent"),'🦊 🔒 <em>B</em>');
   assert.equal(await evaluate("document.querySelector('#call-window em')"),null);
@@ -282,6 +293,13 @@ try {
   await wait("document.querySelector('#msgs').textContent.includes('TIN_DUNG_TAI_KHOAN')");
   assert.equal(await evaluate("document.querySelector('#msgs').textContent.includes('KHONG_DUOC_LAN')"),false);
   assert(requests.some(url=>url.pathname==='/api/chats/42/messages' && url.searchParams.get('account')===phones[1]));
+  settings.speaker=speakerUrl;
+  await evaluate("document.querySelector('#call-a').click()");
+  await wait("!document.querySelector('#call-overlay').hidden && document.querySelector('#call-device-line').textContent==='Thiết bị: tự động theo HA'");
+  assert.deepEqual(startedCalls[0].body,{user_id:7,video:false});
+  assert.equal(await evaluate("document.querySelector('#call-device-picker').open"),false);
+  await evaluate("document.querySelector('#call-end').click()");
+  await wait("document.querySelector('#call-overlay').hidden");
   deviceAuto=false;
   settings={mic:'test',speaker:'',camera:'black',mic_format:'auto',playback:'file'};
   await evaluate("document.querySelector('#call-a').click()");
@@ -290,7 +308,7 @@ try {
   assert.equal(await evaluate("document.querySelector('#device-speaker').value"),'browser');
   await evaluate("document.querySelector('#call-device-picker-form').requestSubmit()");
   await wait("document.querySelector('#call-overlay').hidden===false && document.querySelector('#call-name').textContent.includes('Hội thoại thử')");
-  assert.deepEqual(startedCalls[0].id,7);assert.equal(startedCalls[0].video,false);assert.equal(startedCalls[0].body.speaker,'browser');
+  assert.deepEqual(startedCalls[1].body,{user_id:7,video:false,mic:'browser',speaker:'browser',camera:'black'});
   assert.equal(settingsPosts.at(-1).body.speaker,'browser');
   calls[0].state='active';
   await wait(`document.querySelector('#call-audio').src.includes(${JSON.stringify(`t=${audioTokens[0]}`)}) && window.__audioPlay.length>0`);
@@ -352,6 +370,29 @@ try {
   await evaluate("document.querySelector('#call-answer').click()");
   await waitServer(()=>callActions.some(action=>action.id==='fake-call-nonsecure' && action.path==='/api/live/accept'));
   assert.equal(calls[0].playback.kind,'browser');
+  await wait("document.querySelector('#call-answer').hidden && !document.querySelector('#call-end').disabled");
+  await evaluate("document.querySelector('#call-end').click()");
+  await wait("document.querySelector('#call-overlay').hidden");
+  await evaluate("delete navigator.mediaDevices; document.querySelector('#call-v').click()");
+  await wait("document.querySelector('#call-device-picker').open");
+  assert.equal(await evaluate("document.querySelector('#device-speaker').value"),'browser');
+  assert.equal(await evaluate("document.querySelector('#device-camera').options[2].textContent"),cameraCatalog.name);
+  assert.equal(await evaluate("document.querySelector('#call-device-picker em')"),null);
+  await evaluate(`
+    document.querySelector('#device-camera').value='catalog:0';
+    const speaker=document.querySelector('#device-speaker');
+    speaker.value='manual';speaker.dispatchEvent(new Event('change'));
+    document.querySelector('#device-speaker-url').value=${JSON.stringify(speakerUrl)};
+    document.querySelector('#call-device-picker-form').requestSubmit();
+  `);
+  await wait("!document.querySelector('#call-device-picker').open && !document.querySelector('#call-overlay').hidden");
+  assert.equal(startedCalls.at(-1).body.camera,cameraCatalog.id);
+  assert.equal(startedCalls.at(-1).body.speaker,speakerUrl);
+  assert.equal(await evaluate("document.querySelector('#device-speaker-url').value"),'');
+  assert.deepEqual(await evaluate("JSON.parse(localStorage.getItem('tele-call-device-choice-v1'))"),
+    {mic:{type:'silence'},speaker:{type:'manual'},camera:{type:'catalog'}});
+  await evaluate("document.querySelector('#call-end').click()");
+  await wait("document.querySelector('#call-overlay').hidden");
   assert.equal(readFileSync('web/app.html','utf8').includes('innerHTML'),false);
   assert.equal(await evaluate("document.documentElement.scrollWidth<=window.innerWidth"),true);
   await call('Emulation.setDeviceMetricsOverride',{width:390,height:844,deviceScaleFactor:1,mobile:true});

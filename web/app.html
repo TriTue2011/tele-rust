@@ -101,7 +101,7 @@
     border:1px solid var(--line); border-radius:16px; background:var(--panel); color:var(--fg); }
   #call-device-picker::backdrop { background:#05080bcc; }
   #call-device-picker h2 { margin:0 0 4px; font-size:20px; }
-  #call-device-picker p, #call-device-picker small { margin:4px 0 0; color:var(--mut); font-size:13px; overflow-wrap:anywhere; }
+  #call-device-picker p { margin:4px 0 0; color:var(--mut); font-size:13px; overflow-wrap:anywhere; }
   #call-device-picker label { display:block; margin:14px 0 4px; font-weight:600; }
   #call-device-picker input, #call-device-picker select { width:100%; min-height:40px; padding:8px 10px;
     border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--fg); font:inherit; }
@@ -159,12 +159,12 @@
     <div id="call-stage"><img id="call-image" alt="Hình ảnh từ đối phương" hidden><div id="call-wait">Đang chờ hình…</div><div id="call-emojis" hidden aria-label="Emoji xác thực"></div><small id="call-meta"></small></div>
     <div id="call-controls">
       <p id="call-error" role="alert" hidden></p>
-      <p id="call-device-line" hidden></p>
+      <p id="call-device-line" role="status" hidden></p>
       <audio id="call-audio" controls aria-label="Tiếng cuộc gọi" hidden></audio>
       <button id="call-audio-enable" type="button" class="secondary" hidden>Bật tiếng</button>
       <button id="call-ring" type="button" class="secondary" aria-pressed="false">Bật báo chuông</button>
       <button id="call-answer" type="button" class="green" hidden>Trả lời</button>
-      <button id="call-device-change" type="button" class="secondary" hidden>Đổi thiết bị</button>
+      <button id="call-device-change" type="button" class="secondary" aria-haspopup="dialog" hidden>Đổi</button>
       <button id="call-mic" type="button" class="secondary" hidden></button>
       <button id="call-camera" type="button" class="secondary" hidden></button>
       <button id="call-speaker" type="button" class="secondary" hidden></button>
@@ -202,7 +202,7 @@
     </div>
   </form>
 </dialog>
-<dialog id="call-device-picker" aria-labelledby="call-device-picker-title">
+<dialog id="call-device-picker" aria-labelledby="call-device-picker-title" aria-describedby="call-device-picker-status">
   <form id="call-device-picker-form" autocomplete="off">
     <h2 id="call-device-picker-title">Thiết bị cuộc gọi</h2>
     <p id="call-device-picker-status">Chọn mic, loa và camera cho cuộc gọi này.</p>
@@ -475,13 +475,17 @@
   const devicePicker = $("call-device-picker");
   const pickerSelects = { mic: $("device-mic"), speaker: $("device-speaker"), camera: $("device-camera") };
   const pickerUrls = { mic: $("device-mic-url"), speaker: $("device-speaker-url"), camera: $("device-camera-url") };
-  let pickerCatalogs = { mic: [], speaker: [], camera: [] };
   const deviceKinds = ["mic", "speaker", "camera"];
+  const urlPlaceholders = Object.fromEntries(deviceKinds.map((kind) => [kind, pickerUrls[kind].placeholder]));
+  const pickerCatalogs = { mic: [], speaker: [], camera: [] };
   function localMicAvailable() {
     return Boolean(window.isSecureContext && navigator.mediaDevices && typeof navigator.mediaDevices.getUserMedia === "function");
   }
   function insecureMicMessage() {
-    return "Trình duyệt chỉ cho dùng micro trên trang HTTPS hoặc localhost; hiện đang mở bằng " + location.origin + " — mở trang qua HTTPS (ví dụ qua Home Assistant/ingress) hoặc chọn nguồn khác.";
+    const reason = window.isSecureContext ? "Trình duyệt hiện không cho truy cập micro tại " + location.origin + "."
+      : "Hiện đang mở bằng " + location.origin + ".";
+    return "Trình duyệt chỉ cho dùng micro trên trang HTTPS hoặc localhost. " + reason +
+      " Mở trang qua HTTPS (ví dụ qua Home Assistant/ingress) hoặc chọn nguồn khác.";
   }
   function loadDevicePrefs() {
     try {
@@ -531,7 +535,7 @@
     select.value = [preferred, current, fallback].find(enabled);
     const input = pickerUrls[kind];
     input.value = "";
-    input.placeholder = hasSource ? "Để trống để giữ nguồn đã lưu" : input.defaultPlaceholder;
+    input.placeholder = hasSource ? "Để trống để giữ nguồn đã lưu" : urlPlaceholders[kind];
     updateDeviceUrl(kind);
   }
   function updateDeviceUrl(kind) {
@@ -564,8 +568,9 @@
       const raw = pickerUrls[kind].value.trim();
       const current = callDevices.settings[kind];
       if (!raw && current && !["test", "silence", "black", "browser"].includes(current)) return { type: "manual" };
-      if (!raw || (kind === "speaker" ? !validSpeaker(raw) : !sourceURL(raw)?.hostname)) {
-        return { error: kind === "speaker" ? "Nhập URL cửa bộ đàm hoặc Cast nội bộ hợp lệ." : "URL phải dùng RTSP hoặc HTTP." };
+      const valid = kind === "speaker" ? validSpeaker(raw) : /^(?:rtsp|rtsps|http|https):/.test(raw) && sourceURL(raw)?.hostname;
+      if (!raw || !valid) {
+        return { error: kind === "speaker" ? "Nhập URL cửa bộ đàm hoặc Cast nội bộ hợp lệ." : "Nhập URL RTSP hoặc HTTP hợp lệ." };
       }
       return { type: "manual", value: raw };
     }
@@ -585,7 +590,6 @@
     return new Promise((resolve) => { pendingDevicePicker = resolve; devicePicker.showModal(); });
   }
   for (const kind of deviceKinds) {
-    pickerUrls[kind].defaultPlaceholder = pickerUrls[kind].placeholder;
     pickerSelects[kind].addEventListener("change", () => {
       updateDeviceUrl(kind);
       if (!pickerUrls[kind].hidden) pickerUrls[kind].focus();
@@ -644,8 +648,9 @@
     $("call-device-change").textContent = callDeviceReady ? "Đổi" : "Chọn thiết bị";
     $("call-device-change").disabled = callBusy;
     if (!callInfo) return;
-    line.textContent = callDeviceReady && !callDeviceManual ? "Thiết bị: tự động theo HA" :
+    const message = callDeviceReady && !callDeviceManual ? "Thiết bị: tự động theo HA" :
       callDeviceReady ? "Thiết bị: đã chọn thủ công" : callDeviceLoading ? "Đang tải thiết bị…" : "Chọn thiết bị để trả lời";
+    if (line.textContent !== message) line.textContent = message;
     $("call-answer").disabled = callBusy || !callDeviceReady || callDeviceOpening;
   }
   async function prepareCallDevices(info) {
