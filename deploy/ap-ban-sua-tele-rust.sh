@@ -29,6 +29,8 @@ docker stop "$RS" >/dev/null; docker update --restart no "$RS" >/dev/null
 docker rename "$RS" "$RS-cu-$(date +%Y%m%d-%H%M%S)"
 TDLIB=$(ls "$BASE"/tdjson.libs/libtdjson-*.so* | head -1 | sed "s#$BASE#/opt/rs#")
 docker run -d --name "$RS" --network host --restart no --entrypoint /opt/rs/tggw \
+  --health-cmd "python -c \"import urllib.request; urllib.request.urlopen('http://$HOST:$PORT/health', timeout=4)\"" \
+  --health-interval 30s --health-timeout 5s --health-retries 3 --health-start-period 40s \
   -v "$BASE:/opt/rs:ro" -v "$BASE/data:/data" -v "$SESSION:/data/tdlib" -w /data \
   -e TDJSON_LIB="$TDLIB" -e TGGW_DATA=/data -e TG_API_ID="$API_ID" -e TG_API_HASH="$API_HASH" -e TG_PHONE="$PHONE" \
   -e GATEWAY_TOKEN="$TOKEN" -e GATEWAY_HOST="$HOST" -e REST_PORT="$PORT" \
