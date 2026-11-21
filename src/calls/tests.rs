@@ -390,6 +390,12 @@ async fn push_validates_url_and_cannot_take_cmd_override_or_leak_it() {
     assert!(matches!(f.ops().last().unwrap(),MediaOp::Sources(_,StreamMode::Playback,d) if d.microphone.as_ref().unwrap().input==speaker_command(DUPLEX).unwrap()));
     assert_eq!(f.manager().playback(json!({"id":c["id"],"kind":"push","url":"http://evil/x"})).await.unwrap_err().status,400);
     assert_eq!(f.manager().call_out(json!({"user_id":99,"speaker":"http://evil/x"})).await.unwrap_err().status,400);
+    let muted = f.manager().playback(json!({"id":c["id"],"kind":"external"})).await.unwrap();
+    assert_eq!(muted["playback"]["kind"], "external");
+    assert_eq!(muted["playback"]["speaker_configured"], true);
+    let on = f.manager().playback(json!({"id":c["id"],"kind":"push"})).await.unwrap();
+    assert_eq!(on["playback"]["kind"], "push");
+    assert!(matches!(f.ops().last().unwrap(),MediaOp::Sources(_,StreamMode::Playback,d) if d.microphone.as_ref().unwrap().input==speaker_command(DUPLEX).unwrap()));
     assert!(!f.info().await.to_string().contains("ab-cd"));
 }
 
@@ -405,6 +411,7 @@ async fn outgoing_overrides_use_defaults_for_empty_capture_but_can_clear_speaker
     assert_eq!(info["user_id"], 42);
     assert_eq!(info["mic_muted"], true);
     assert_eq!(info["playback"]["kind"], "file");
+    assert_eq!(f.manager().media(json!({"id":info["id"],"mic_muted":false})).await.unwrap_err().status,400);
     f.ready(7, 42, true, &["8.0.0"]).await;
     assert!(matches!(&f.ops()[1], MediaOp::Sources(_, StreamMode::Capture, d)
         if d.camera.as_ref().unwrap().input.contains("color=c=black")));
@@ -421,6 +428,32 @@ async fn cast_returns_explicit_501_before_tdlib_or_media_side_effects() {
     assert_eq!(error.status,501); assert!(error.message.contains("cổng HTTP")); assert!(f.requests("acceptCall").is_empty());
 }
 
+// Hồi quy lớp «gộp hai tính năng cùng sửa một hàm»: tắt/bật mic (hoan3) phải đi qua cùng đường mô tả nguồn với mic trình duyệt (hoan4),
+// nếu không mic "browser" bị đổi thành im lặng mà từng tính năng riêng vẫn đạt test.
+#[tokio::test]
+async fn browser_mic_survives_mute_unmute_and_only_accepts_pcm_while_selected() {
+    use crate::contract::CallControl;
+    let f=Fixture::new(false); let c=f.outgoing(false).await;
+    let id=c["id"].as_str().unwrap().to_owned();
+    f.ready(7,42,true,&["8.0.0"]).await;
+    f.emit(MediaEvent::Connection(42,ConnectionState::Connected)).await;
+    assert_eq!(f.info().await["state"],"active");
+    let loopback=|f:&Fixture|matches!(f.ops().last().unwrap(),MediaOp::Sources(_,StreamMode::Capture,d)
+        if d.microphone.as_ref().unwrap().input.contains("http://127.0.0.1:") && !d.microphone.as_ref().unwrap().input.contains("anullsrc"));
+    let silent=|f:&Fixture|matches!(f.ops().last().unwrap(),MediaOp::Sources(_,StreamMode::Capture,d) if d.microphone.as_ref().unwrap().input.contains("anullsrc"));
+    let info=f.manager().media(json!({"id":id,"mic":"browser"})).await.unwrap();
+    assert_eq!(info["mic_muted"],false); assert!(loopback(&f),"mic browser phải nối vào nguồn loopback");
+    f.manager().audio_in(&id,vec![0;640]).await.unwrap();
+    let muted=f.manager().media(json!({"id":id,"mic_muted":true})).await.unwrap();
+    assert_eq!(muted["mic_muted"],true); assert!(silent(&f),"tắt mic phải ra im lặng");
+    assert_eq!(f.manager().audio_in(&id,vec![0;640]).await.unwrap_err().status,409,"đang tắt mic thì không nhận PCM từ trình duyệt");
+    let unmuted=f.manager().media(json!({"id":id,"mic_muted":false})).await.unwrap();
+    assert_eq!(unmuted["mic_muted"],false); assert!(loopback(&f),"bật lại mic phải nối lại loopback, không phải im lặng");
+    f.manager().audio_in(&id,vec![0;640]).await.unwrap();
+    f.manager().media(json!({"id":id,"mic":"silence"})).await.unwrap();
+    assert_eq!(f.manager().audio_in(&id,vec![0;640]).await.unwrap_err().status,409);
+}
+
 #[tokio::test]
 async fn capture_can_change_before_or_during_call_and_info_has_python_keys() {
     let f=Fixture::new(false); let c=f.outgoing(true).await;
@@ -429,11 +462,32 @@ async fn capture_can_change_before_or_during_call_and_info_has_python_keys() {
     f.manager().media(json!({"id":c["id"],"mic":"silence","camera_off":true})).await.unwrap(); assert!(f.ops().is_empty());
     f.ready(7,42,true,&["8.0.0"]).await;
     assert!(matches!(&f.ops()[1],MediaOp::Sources(_,StreamMode::Capture,d) if d.camera.is_none() && d.microphone.as_ref().unwrap().input.contains("anullsrc")));
-    let info=f.manager().media(json!({"id":c["id"],"mic":"http://r1/mic?k=key","mic_format":"s16le16k","camera_off":false})).await.unwrap();
+    let info=f.manager().media(json!({"id":c["id"],"mic":"http://192.0.2.10/mic?k=key","mic_format":"s16le16k","camera_off":false})).await.unwrap();
     assert_eq!(info["mic_muted"],false); assert_eq!(info["cam_off"],false);
     assert!(matches!(f.ops().last().unwrap(),MediaOp::Sources(_,StreamMode::Capture,d) if d.camera.is_some()));
+    let muted=f.manager().media(json!({"id":c["id"],"mic_muted":true})).await.unwrap();
+    assert_eq!(muted["mic_muted"],true);
+    assert!(matches!(f.ops().last().unwrap(),MediaOp::Sources(_,StreamMode::Capture,d) if d.microphone.as_ref().unwrap().input.contains("anullsrc")));
+    let unmuted=f.manager().media(json!({"id":c["id"],"mic_muted":false})).await.unwrap();
+    assert_eq!(unmuted["mic_muted"],false);
+    assert!(matches!(f.ops().last().unwrap(),MediaOp::Sources(_,StreamMode::Capture,d) if d.microphone.as_ref().unwrap().input == mic_command("http://192.0.2.10/mic?k=key", "s16le16k")));
     let mut keys=info.as_object().unwrap().keys().map(String::as_str).collect::<Vec<_>>(); keys.sort();
     let mut expected=vec!["id","user_id","outgoing","video","state","emojis","error","seconds","peer_video","view","diag","sig","cpu_max","mic_muted","cam_off","frames_in","frame_bytes","peak","playback","events"]; expected.sort(); assert_eq!(keys,expected);
+}
+
+#[tokio::test]
+async fn mic_toggle_on_incoming_restores_source_chosen_when_accepting() {
+    let f = Fixture::new(false);
+    let call = f.incoming(11, 9, false).await;
+    let source = "http://192.0.2.10/pcm";
+    let manager = f.manager();
+    manager.settings(json!({"mic":source,"mic_format":"s16le16k"})).await.unwrap();
+    manager.accept(json!({"id":call["id"]})).await.unwrap();
+    f.ready(11, 9, false, &["8.0.0"]).await;
+    manager.media(json!({"id":call["id"],"mic_muted":true})).await.unwrap();
+    let result = manager.media(json!({"id":call["id"],"mic_muted":false})).await.unwrap();
+    assert_eq!(result["mic_muted"], false);
+    assert!(matches!(f.ops().last().unwrap(),MediaOp::Sources(_,StreamMode::Capture,d) if d.microphone.as_ref().unwrap().input == mic_command(source, "s16le16k")));
 }
 
 #[tokio::test]
