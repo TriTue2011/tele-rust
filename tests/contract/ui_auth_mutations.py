@@ -102,6 +102,8 @@ def copy_source(snapshot):
                         ignore=shutil.ignore_patterns("__pycache__"))
     for name in ("Cargo.toml", "build.sh"):
         shutil.copy2(ROOT / name, snapshot / name)
+    if (ROOT / ".tggw-build-host").is_file():
+        shutil.copy2(ROOT / ".tggw-build-host", snapshot / ".tggw-build-host")
 
 
 def main():

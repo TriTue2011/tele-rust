@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Dựng gateway Rust trên máy dựng trong container rust tạm, giới hạn CPU để không làm chậm HA.
-# Đặt TGGW_BUILD_HOST hoặc ghi SSH alias vào .tggw-build-host (mặc định: builder).
+# Đặt TGGW_BUILD_HOST thành SSH alias của máy dựng (mặc định: builder).
 # Dùng: ./build.sh           (cargo build --release → binary ở /opt/telegram-gateway-rs-build/target/release/tggw)
 #       ./build.sh test      (cargo test)
 set -euo pipefail
