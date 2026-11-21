@@ -266,6 +266,36 @@ async fn browser_devices_and_media_stay_with_the_selected_account() {
 }
 
 #[tokio::test]
+async fn browser_media_routes_calls_outside_the_recent_ten() {
+    let f=Fixture::new("browser-old-call").await;
+    f.ready("+84900000001").await;
+    let mut first=Value::Null;
+    for user in 800..812 {
+        let response=f.send("POST","/api/live/call",json!({"user_id":user,"mic":"browser","speaker":"browser"})).await;
+        assert_eq!(response.0,200);
+        if first.is_null() { first=response.1; }
+    }
+    let id=first["id"].as_str().unwrap();
+    let listed=f.send("GET","/api/live/calls",Value::Null).await.1;
+    assert_eq!(listed["calls"].as_array().unwrap().len(),10);
+    assert!(listed["calls"].as_array().unwrap().iter().all(|c|c["id"]!=id));
+    let descriptor=f.send("POST","/api/live/media",json!({"id":id,"action":"audio_out"})).await;
+    assert_eq!(descriptor.0,200);
+    let url=descriptor.1["audio_out"]["url"].as_str().unwrap();
+    let response=f.router.clone().oneshot(Request::builder().uri(url).body(Body::empty()).unwrap()).await.unwrap();
+    assert_eq!(response.status(),200);drop(response);
+    assert_eq!(f.send("GET",&format!("/api/live/snapshot/{id}"),Value::Null).await.0,409);
+    let request=Request::builder().method("POST").uri(format!("/api/live/audio/in/{id}"))
+        .header("Authorization","Bearer test-token").body(Body::from(vec![0u8;3200])).unwrap();
+    assert_eq!(f.router.clone().oneshot(request).await.unwrap().status(),409);
+    assert_eq!(f.send("POST","/api/live/hangup",json!({"id":id})).await.0,200);
+    // Kể cả tài khoản mất trạng thái online sau khi cúp, mã cuộc gọi hết vẫn trả 404.
+    f.hub.all()[0].1.ready.store(false,Ordering::Release);
+    assert_eq!(send(&f.router,"GET",url,Value::Null,false).await.0,404);
+    f.finish().await;
+}
+
+#[tokio::test]
 async fn authenticated_ui_2fa_qr_and_archive_contract() {
     let f=Fixture::new("login").await;
     for (method,path) in [("POST","/ui/api/accounts"),("POST","/ui/api/accounts/qr"),("GET","/ui/api/accounts/id"),

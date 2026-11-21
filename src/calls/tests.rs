@@ -576,8 +576,9 @@ async fn browser_mic_reaches_capture_and_ends_with_call() {
     let pcm=vec![7;3200];
     assert_eq!(f.manager().audio_in(id,pcm.clone()).await.unwrap(),json!({"ok":true,"bytes":3200}));
     let mut response=reqwest::get(url).await.unwrap();
-    let first=response.chunk().await.unwrap().unwrap();
-    assert_eq!(first.as_ref(),&pcm[..640]);
+    let mut received=Vec::new();
+    while received.len()<pcm.len() { received.extend_from_slice(&response.chunk().await.unwrap().unwrap()); }
+    assert_eq!(&received[..pcm.len()],pcm.as_slice());
     drop(response);
     assert_eq!(f.manager().audio_in(id,vec![1]).await.unwrap_err().status,400);
     assert_eq!(f.manager().audio_in(id,vec![0;65_538]).await.unwrap_err().status,413);

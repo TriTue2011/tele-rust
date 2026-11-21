@@ -209,7 +209,7 @@ impl Accounts {
         if selected.is_empty() {
             if let Some(id)=body["id"].as_str() {
                 for (phone,e) in self.all() {
-                    if e.calls.calls().await?["calls"].as_array().is_some_and(|calls|calls.iter().any(|c|c["id"]==id)) {
+                    if e.calls.owns_call(id).await {
                         return self.select(&phone);
                     }
                 }
@@ -371,20 +371,24 @@ impl CallControl for Accounts {
     }
     fn audio_in(&self,id:&str,pcm:Vec<u8>)->BoxFut<'_,Result<Value,GwError>> {
         let id=id.to_owned(); Box::pin(async move {
-            let (_,e)=self.select_call(&json!({"id":id})).await?;
-            e.calls.audio_in(&id,pcm).await
+            for (_,e) in self.all() {
+                if e.calls.owns_call(&id).await { return e.calls.audio_in(&id,pcm).await; }
+            }
+            Err(GwError::not_found("Không có cuộc gọi này."))
         })
     }
     fn audio_out(&self,id:&str,token:&str)->BoxFut<'_,Result<AudioOut,GwError>> {
         let (id,token)=(id.to_owned(),token.to_owned()); Box::pin(async move {
-            let (_,e)=self.select_call(&json!({"id":id})).await?;
-            e.calls.audio_out(&id,&token).await
+            for (_,e) in self.all() {
+                if e.calls.owns_call(&id).await { return e.calls.audio_out(&id,&token).await; }
+            }
+            Err(GwError::not_found("Không có cuộc gọi này."))
         })
     }
     fn snapshot(&self,id:&str)->BoxFut<'_,Result<Binary,GwError>> {
         let id=id.to_owned(); Box::pin(async move {
             for (_,e) in self.all() {
-                if e.calls.calls().await?["calls"].as_array().is_some_and(|calls|calls.iter().any(|c|c["id"]==id)) {
+                if e.calls.owns_call(&id).await {
                     return e.calls.snapshot(&id).await;
                 }
             }
@@ -394,7 +398,7 @@ impl CallControl for Accounts {
     fn video_frames(&self,id:&str)->BoxFut<'_,Result<crate::contract::VideoFrames,GwError>> {
         let id=id.to_owned(); Box::pin(async move {
             for (_,e) in self.all() {
-                if e.calls.calls().await?["calls"].as_array().is_some_and(|calls|calls.iter().any(|c|c["id"]==id)) {
+                if e.calls.owns_call(&id).await {
                     return e.calls.video_frames(&id).await;
                 }
             }

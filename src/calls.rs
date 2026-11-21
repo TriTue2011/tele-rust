@@ -44,6 +44,7 @@ enum Command {
     CastAudio(String, String, oneshot::Sender<Option<CastAudio>>),
     AudioIn(String, Vec<u8>, oneshot::Sender<Reply>, tokio::sync::OwnedSemaphorePermit),
     AudioOut(String, String, oneshot::Sender<Result<AudioOut, GwError>>),
+    OwnsCall(String, oneshot::Sender<bool>),
     RestoreMic(String, u64, String, String, PathBuf),
     SayReady(String, Result<Vec<u8>, GwError>, oneshot::Sender<Reply>),
     RefreshCapture(String),
@@ -117,6 +118,12 @@ impl CallManager {
     pub fn events(&self) -> broadcast::Receiver<Value> { self.handle.events.subscribe() }
 
     pub(crate) async fn resolve(&self,body:Value)->Reply { self.request(Action::Resolve,body).await }
+
+    pub(crate) async fn owns_call(&self, id: &str) -> bool {
+        let (tx, rx) = oneshot::channel();
+        if self.handle.sender.send(Command::OwnsCall(id.to_owned(), tx)).is_err() { return false; }
+        rx.await.unwrap_or(false)
+    }
 
     /// Ngừng nhận lệnh, kết thúc các cuộc gọi hiện tại rồi chờ actor dọn media.
     pub async fn shutdown(&self, wait: Duration) -> Result<(), String> {
@@ -415,6 +422,7 @@ impl Actor {
                             .and_then(|audio| audio.subscribe(&token));
                         let _ = reply.send(result);
                     }
+                    Some(Command::OwnsCall(id, reply)) => { let _ = reply.send(self.calls.iter().any(|c| c.id == id)); }
                     Some(Command::RestoreMic(id, revision, mic, fmt, path)) => {
                         self.restore_mic(&id, revision, mic, fmt, path).await;
                     }
