@@ -132,6 +132,29 @@ async fn chat_feed_emits_only_final_message_metadata_to_events() {
     assert_eq!(value["events"].as_array().unwrap().len(), 1);
     assert_eq!(value["events"][0]["type"], "message_new");
     assert_eq!(value["events"][0]["data"], json!({"peer":"••••","tin_id":"7"}));
+    td.updates.send(json!({"@type":"updateMessageEdited","chat_id":5,"message_id":7})).unwrap();
+    td.updates.send(json!({"@type":"updateMessageContent","chat_id":5,"message_id":7})).unwrap();
+    td.updates.send(json!({"@type":"updateDeleteMessages","chat_id":5,"message_ids":[7],"is_permanent":false})).unwrap();
+    td.updates.send(json!({"@type":"updateDeleteMessages","chat_id":5,"message_ids":[7,8],"is_permanent":true})).unwrap();
+    let mut contact = td_message(9);
+    contact["content"] = json!({"@type":"messageContactRegistered"});
+    td.updates.send(json!({"@type":"updateNewMessage","message":contact})).unwrap();
+    let value = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let value = bridge.store.poll(0).await.unwrap();
+            if value["cursor"].as_u64().unwrap() >= 6 { break value; }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }).await.unwrap();
+    let actual: Vec<_> = value["events"].as_array().unwrap().iter().map(|e| json!({"type":e["type"],"data":e["data"]})).collect();
+    assert_eq!(actual, vec![
+        json!({"type":"message_new","data":{"peer":"••••","tin_id":"7"}}),
+        json!({"type":"message_edited","data":{"chat_id":5,"message_id":7}}),
+        json!({"type":"message_edited","data":{"chat_id":5,"message_id":7}}),
+        json!({"type":"message_deleted","data":{"chat_id":5,"ids":[7,8]}}),
+        json!({"type":"message_new","data":{"peer":"••••","tin_id":"9"}}),
+        json!({"type":"contact_joined","data":{"peer":"••••"}}),
+    ]);
     drop(chat);
     bridge.shutdown().await;
     std::fs::remove_dir_all(data).unwrap();
@@ -254,6 +277,13 @@ async fn downloads_are_bounded_private_and_never_follow_symlinks() {
     assert_eq!(response.headers()[header::CONTENT_LENGTH], "8");
     assert_eq!(to_bytes(response.into_body(), 100).await.unwrap().as_ref(), "ghi chú".as_bytes());
     let response = get("/api/calltrace/abcdef").await.unwrap();
+    let listing = get("/api/calltrace").await.unwrap();
+    assert_eq!(listing.status(), 200);
+    let listing: Value = serde_json::from_slice(&to_bytes(listing.into_body(), 4096).await.unwrap()).unwrap();
+    assert_eq!(listing["ok"], true);
+    assert_eq!(listing["keep"], 3);
+    assert_eq!(listing["calls"][0]["id"], "abcdef");
+    assert_eq!(listing["calls"][0]["live"], false);
     assert_eq!(response.headers()[header::CONTENT_DISPOSITION], "inline; filename=\"calltrace-abcdef.log\"");
     assert_eq!(to_bytes(response.into_body(), 100).await.unwrap(), "trace");
     assert_eq!(get("/api/calltrace/ABCDEF").await.unwrap().status(), 404);

@@ -69,7 +69,7 @@ impl CastSink {
         let path = format!("/api/live/cast/{id}/{}.mp3", self.token);
         let task = tokio::spawn(async move {
             if session::run(target, rest_port, path, stopped).await.is_err() {
-                eprintln!("Không kết nối được loa Cast hoặc phiên phát đã ngắt.");
+                log::warn!("Không kết nối được loa Cast hoặc phiên phát đã ngắt.");
             }
         });
         self.control = Some((stop, task));

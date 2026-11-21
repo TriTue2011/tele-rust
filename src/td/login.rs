@@ -35,7 +35,7 @@ impl fmt::Debug for LoginConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("LoginConfig")
             .field("data_dir", &self.data_dir)
-            .field("api_id", &self.api_id)
+            .field("api_id", &"***")
             .field("api_hash", &"***")
             .field("phone", &if self.phone.is_empty() { "" } else { "***" })
             .finish()
@@ -45,14 +45,21 @@ impl fmt::Debug for LoginConfig {
 impl LoginConfig {
     /// Đọc `TGGW_DATA` (mặc định `/data` như `DATA_DIR` của bản Python), `TG_API_ID`, `TG_API_HASH`, `TG_PHONE`.
     pub fn from_env() -> Result<Self, String> {
-        let data_dir = PathBuf::from(std::env::var("TGGW_DATA").unwrap_or_else(|_| "/data".into()));
-        let api_id = std::env::var("TG_API_ID").map_err(|_| "thiếu TG_API_ID".to_owned())?;
+        Self::from_lookup(|name| std::env::var(name).ok())
+    }
+
+    fn from_lookup(get: impl Fn(&str) -> Option<String>) -> Result<Self, String> {
+        let alias = |rust, python| crate::config::alias(&get, rust, python);
+        let data_dir = PathBuf::from(alias("TGGW_DATA", "DATA_DIR").unwrap_or_else(|| "/data".into()));
+        if data_dir.as_os_str().is_empty() { return Err("TGGW_DATA/DATA_DIR không được rỗng.".into()); }
+        let api_id = alias("TG_API_ID", "TELEGRAM_API_ID").ok_or_else(|| "thiếu TG_API_ID (hoặc TELEGRAM_API_ID)".to_owned())?;
         let api_id = api_id.trim().parse::<i32>().map_err(|_| "TG_API_ID phải là số nguyên".to_owned())?;
-        let api_hash = std::env::var("TG_API_HASH").unwrap_or_default().trim().to_owned();
+        if api_id <= 0 { return Err("TG_API_ID/TELEGRAM_API_ID phải là số nguyên dương.".into()); }
+        let api_hash = alias("TG_API_HASH", "TELEGRAM_API_HASH").unwrap_or_default().trim().to_owned();
         if api_hash.is_empty() {
             return Err("thiếu TG_API_HASH".into());
         }
-        let phone = std::env::var("TG_PHONE").unwrap_or_default().trim().to_owned();
+        let phone = get("TG_PHONE").unwrap_or_default().trim().to_owned();
         Ok(Self { data_dir, api_id, api_hash, phone })
     }
 
@@ -70,6 +77,27 @@ impl LoginConfig {
     }
     pub fn password_file(&self) -> PathBuf {
         self.data_dir.join("login_password.txt")
+    }
+}
+
+#[cfg(test)]
+mod config_tests {
+    use super::*;
+    #[test]
+    fn python_names_fallback_rust_names_win_even_when_invalid() {
+        let load = |vars: &[(&str, &str)]| LoginConfig::from_lookup(|k| vars.iter().find(|(key,_)| *key == k).map(|(_,v)| (*v).into()));
+        let python = [("TELEGRAM_API_ID", "12345"), ("TELEGRAM_API_HASH", "fake-python-hash"), ("DATA_DIR", "data/python")];
+        let cfg = load(&python).unwrap();
+        assert_eq!(cfg.api_id, 12345); assert_eq!(cfg.api_hash, "fake-python-hash"); assert_eq!(cfg.data_dir, PathBuf::from("data/python"));
+        let mut both = python.to_vec();
+        both.extend_from_slice(&[("TG_API_ID", "67890"), ("TG_API_HASH", "fake-rust-hash"), ("TGGW_DATA", "data/rust")]);
+        let cfg = load(&both).unwrap();
+        assert_eq!(cfg.api_id, 67890); assert_eq!(cfg.api_hash, "fake-rust-hash"); assert_eq!(cfg.data_dir, PathBuf::from("data/rust"));
+        for (key, value) in [("TG_API_ID", "secret-invalid"), ("TG_API_ID", "0"), ("TG_API_HASH", ""), ("TGGW_DATA", "")] {
+            let mut vars = python.to_vec(); vars.push((key,value));
+            let error = load(&vars).unwrap_err();
+            assert!(error.contains(key)); assert!(!error.contains("secret-invalid"));
+        }
     }
 }
 
@@ -158,14 +186,14 @@ pub async fn run(client: &TdClient, cfg: &LoginConfig) -> Result<(), String> {
                     .map_err(|e| format!("Telegram từ chối số điện thoại: {}", e.message.replace(&cfg.phone, "***")))?;
             }
             "authorizationStateWaitCode" => {
-                eprintln!("[td] chờ mã đăng nhập: submit_code() hoặc ghi vào {}", cfg.code_file().display());
+                log::info!("[td] chờ mã đăng nhập: submit_code() hoặc ghi vào {}", cfg.code_file().display());
                 let input = Input { slot: &client.code, file: cfg.code_file(), what: "mã" };
                 if !submit(client, &mut rx, input, "checkAuthenticationCode", "code").await? {
                     continue; // trạng thái đã đổi trong lúc chờ → xử lý ngay trạng thái mới
                 }
             }
             "authorizationStateWaitPassword" => {
-                eprintln!("[td] chờ mật khẩu 2FA: submit_password() hoặc ghi vào {}", cfg.password_file().display());
+                log::info!("[td] chờ mật khẩu 2FA: submit_password() hoặc ghi vào {}", cfg.password_file().display());
                 let input = Input { slot: &client.password, file: cfg.password_file(), what: "mật khẩu" };
                 if !submit(client, &mut rx, input, "checkAuthenticationPassword", "password").await? {
                     continue;
@@ -231,7 +259,7 @@ async fn submit(
 fn read_input_file(path: &Path, entered: SystemTime, what: &str) -> Option<String> {
     let modified = fs::metadata(path).and_then(|m| m.modified()).ok()?;
     if modified + Duration::from_secs(2) < entered {
-        eprintln!("[td] bỏ qua tệp {what} cũ {} (có trước lúc chờ)", path.display());
+        log::info!("[td] bỏ qua tệp {what} cũ {} (có trước lúc chờ)", path.display());
         let _ = fs::remove_file(path);
         return None;
     }
@@ -241,6 +269,6 @@ fn read_input_file(path: &Path, entered: SystemTime, what: &str) -> Option<Strin
         return None;
     }
     let _ = fs::remove_file(path);
-    eprintln!("[td] đã đọc {what} từ {}", path.display());
+    log::info!("[td] đã đọc {what} từ {}", path.display());
     Some(v)
 }

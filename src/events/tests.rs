@@ -79,6 +79,33 @@ async fn event_poll_auth_shape_permission_and_cursor_after_restart() {
     bridge.shutdown().await;
 }
 
+#[tokio::test]
+async fn account_status_reports_disconnect_and_waits_for_tdlib_to_finish_catchup() {
+    let root = Temp::new();
+    let bridge = EventBridge::start(&root.0, "+000123", None).await.unwrap();
+    let connection = |state: &str| json!({"@type":"updateConnectionState", "state":{"@type":state}});
+    let authorization = |state: &str| json!({"@type":"updateAuthorizationState", "authorization_state":{"@type":state}});
+    bridge.sink.account_update(&authorization("authorizationStateReady"));
+    bridge.sink.account_update(&connection("connectionStateReady"));
+    bridge.sink.account_login(true);
+    bridge.sink.account_update(&connection("connectionStateWaitingForNetwork"));
+    bridge.sink.account_update(&connection("connectionStateConnecting"));
+    bridge.sink.account_update(&connection("connectionStateUpdating"));
+    let offline = wait_for_cursor(&bridge.store, 2).await;
+    assert_eq!(offline["events"][1]["data"], json!({"status":"offline"}));
+    bridge.sink.account_update(&connection("connectionStateReady"));
+    bridge.sink.account_update(&connection("connectionStateReady"));
+    bridge.sink.account_update(&authorization("authorizationStateClosed"));
+    let events = wait_for_cursor(&bridge.store, 4).await;
+    let statuses: Vec<_> = events["events"].as_array().unwrap().iter().map(|e| {
+        assert_eq!(e["type"], "account_status");
+        assert_eq!(e["account"], "+000123");
+        e["data"]["status"].as_str().unwrap()
+    }).collect();
+    assert_eq!(statuses, ["online", "offline", "online", "offline"]);
+    bridge.shutdown().await;
+}
+
 #[test]
 fn rotation_keeps_latest_files_and_ignores_uncommitted_write() {
     let root = Temp::new();

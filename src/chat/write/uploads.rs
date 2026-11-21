@@ -80,8 +80,14 @@ pub(super) async fn voice_ogg(raw: Vec<u8>) -> Result<Vec<u8>, GwError> {
 }
 
 pub(super) async fn synthesize(dir: &Path, text: &str, voice: &str, rate: &str) -> Result<Vec<u8>, GwError> {
-    let voice = if voice.is_empty() { "vi-VN-HoaiMyNeural" } else { voice };
-    let rate = if rate.is_empty() { "+0%" } else { rate };
+    let raw = synthesize_audio(dir, text, voice, rate).await.map_err(|e| {
+        if e.code == "TTS_UNAVAILABLE" { media_error(&e.message) } else { e }
+    })?;
+    voice_ogg(raw).await.map_err(|e| media_error(&e.message))
+}
+
+pub(crate) async fn synthesize_audio(dir: &Path, text: &str, voice: &str, rate: &str) -> Result<Vec<u8>, GwError> {
+    let (voice, rate) = crate::config::tts(voice, rate).map_err(GwError::bad_request)?;
     let input = Upload::save(dir, "tts.txt", text.as_bytes().to_vec()).await?;
     let audio = Upload::save(dir, "tts.mp3", Vec::new()).await?;
     for _ in 0..3 {
@@ -90,13 +96,15 @@ pub(super) async fn synthesize(dir: &Path, text: &str, voice: &str, rate: &str) 
             .arg("--write-media").arg(audio.path()).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).kill_on_drop(true);
         let result = timeout(TRANSCODE_TIMEOUT, cmd.output()).await
             .map_err(|_| media_error("tổng hợp giọng quá 60 giây"))?
-            .map_err(|_| media_error("edge-tts chưa cài trên image này; TTS mặc định chưa chạy được."))?;
+            .map_err(|e| if e.kind() == io::ErrorKind::NotFound {
+                GwError::new(501, "TTS_UNAVAILABLE", "Gateway chưa có bộ đọc giọng (TTS).")
+            } else { media_error("Không chạy được bộ tổng hợp giọng.") })?;
         if result.status.success() {
             let path = audio.path().to_owned();
             let data = tokio::task::spawn_blocking(move || fs::read(path)).await.ok().and_then(Result::ok)
                 .ok_or_else(|| media_error("không đọc được âm thanh TTS"))?;
             if data.is_empty() { return Err(media_error("bộ tổng hợp giọng không trả âm thanh")); }
-            return voice_ogg(data).await.map_err(|e| media_error(&e.message));
+            return Ok(data);
         }
         if !String::from_utf8_lossy(&result.stderr).contains("NoAudioReceived") { break; }
     }

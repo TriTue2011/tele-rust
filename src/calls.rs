@@ -7,6 +7,7 @@ mod media;
 mod cast;
 mod sources;
 mod snapshot;
+pub(crate) mod trace;
 pub mod versions;
 
 pub use sources::{camera_command, is_cast_spec, mic_command, speaker_command, valid_speaker_url};
@@ -39,6 +40,7 @@ enum Command {
     VideoJpeg(String, Option<Vec<u8>>),
     CastAudio(String, String, oneshot::Sender<Option<CastAudio>>),
     RestoreMic(String, u64, String, String, PathBuf),
+    SayReady(String, Result<Vec<u8>, GwError>, oneshot::Sender<Reply>),
     RefreshCapture(String),
     Shutdown(Option<std::sync::mpsc::Sender<()>>, Instant),
 }
@@ -67,6 +69,7 @@ impl CallManager {
     }
 
     pub(crate) fn with_cast(td: Arc<dyn TdLink>, data_dir: &Path, cast_port: Option<u16>) -> Result<Self, GwError> {
+        trace::Config::from_env().map_err(GwError::bad_request)?;
         Self::spawn(td, data_dir.to_path_buf(), Box::new(NativeMedia(NTgCalls::new())),
             p2p_enabled(std::env::var("TELEGRAM_P2P").ok().as_deref()), cast_port)
     }
@@ -202,6 +205,7 @@ struct LiveCall {
     peer_video: bool,
     view: Value,
     snapshot: snapshot::Snapshot,
+    trace: Option<trace::Trace>,
     sig: [u64; 4],
     frames_in: u64,
     frame_bytes: u64,
@@ -214,6 +218,7 @@ struct LiveCall {
     events: VecDeque<Value>,
     capture_revision: u64,
     speech_revision: Option<u64>,
+    speech_pending: bool,
 }
 
 impl LiveCall {
@@ -226,15 +231,19 @@ impl LiveCall {
         let mut c = Self { id, td_id: None, user_id, outgoing, video, state: if outgoing { "dialing" } else { "ringing" },
             accepted: false, ready_done: false, media_created: false, pending_signaling: Vec::new(), devices, playback_kind, playback_cmd,
             playback_path, playback_final: None, cast: None, cam_off: false, view_on: video, peer_video: false,
-            view: json!({"frames":0,"jpeg":0,"size":"","dropped":0,"bad":0}), snapshot: Default::default(), sig: [0;4], frames_in: 0, frame_bytes: 0,
-            peak: 0, error: String::new(), emojis: json!([]), started: Instant::now(), active: None, ended: None, events: VecDeque::new(), capture_revision: 0, speech_revision: None };
+            view: json!({"frames":0,"jpeg":0,"size":"","dropped":0,"bad":0}), snapshot: Default::default(), trace: None, sig: [0;4], frames_in: 0, frame_bytes: 0,
+            peak: 0, error: String::new(), emojis: json!([]), started: Instant::now(), active: None, ended: None,
+            events: VecDeque::new(), capture_revision: 0, speech_revision: None, speech_pending: false };
+        c.trace = trace::Trace::open(data_dir, &c.id);
         c.log(if outgoing { "tạo cuộc gọi đi" } else { "tạo cuộc gọi đến" });
         c
     }
 
     fn log(&mut self, text: &str) {
         // Không ghi nguồn, URL hoặc command ra nhật ký cuộc gọi.
+        log::debug!("Cuộc gọi {}: {}", self.id, text);
         self.events.push_back(json!({"t":(self.started.elapsed().as_secs_f64()*100.0).round()/100.0,"e":sources::mask(text)}));
+        if let Some(trace) = &self.trace { trace.line("su-kien", text); }
         while self.events.len() > 200 { self.events.pop_front(); }
     }
 
@@ -313,7 +322,16 @@ impl Actor {
                                 Err(_) => break,
                             }
                         }
-                        let result = self.api(action, body).await; let _ = reply.send(result);
+                        if matches!(action, Action::Say) {
+                            self.say(body, reply);
+                        } else {
+                            let result = self.api(action, body).await;
+                            let _ = reply.send(result);
+                        }
+                    }
+                    Some(Command::SayReady(id, pcm, reply)) => {
+                        let result = self.finish_speech(&id, pcm).await;
+                        let _ = reply.send(result);
                     }
                     Some(Command::Update(update, reply)) => { let result = self.update(update).await.map(|_| json!({"ok":true})); let _ = reply.send(result); }
                     Some(Command::Media(event)) => self.media_event(event).await,
@@ -363,7 +381,15 @@ impl Actor {
                 },
                 Some(frame) = frames.recv() => self.media_event(frame).await,
                 _ = expire_frames.tick(), if !self.calls.is_empty() => {
-                    for c in &mut self.calls { c.snapshot.expire(); }
+                    for c in &mut self.calls {
+                        c.snapshot.expire();
+                        if c.state != "ended" {
+                            if let Some(trace) = &mut c.trace {
+                                trace.sample(&[c.sig[0], c.sig[1], c.sig[2], c.sig[3], c.frames_in, c.frame_bytes,
+                                    c.view["frames"].as_u64().unwrap_or(0), c.view["bad"].as_u64().unwrap_or(0)]);
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -421,7 +447,7 @@ impl Actor {
             }
             Action::Media => self.set_media(body).await,
             Action::Playback => self.set_playback(body).await,
-            Action::Say => self.say(body).await,
+            Action::Say => unreachable!("Say chuẩn bị âm thanh ngoài actor"),
         }
     }
 
@@ -496,10 +522,10 @@ impl Actor {
                         if reply["state"].is_object() { self.update(json!({"@type":"updateCall","call":reply})).await?; }
                         Ok(self.calls[i].info())
                     }
-                    Err(e) => { self.end(i, "createCall không trả mã cuộc gọi").await; Err(e) }
+                    Err(e) => { self.fail(i, "createCall không trả mã cuộc gọi").await; Err(e) }
                 }
             }
-            Err(e) => { self.end(i, "createCall thất bại").await; Err(e) }
+            Err(e) => { self.fail(i, "createCall thất bại").await; Err(e) }
         }
     }
 
@@ -551,10 +577,13 @@ impl Actor {
             let _ = fs::remove_file(self.data_dir.join("live").join(format!("{}_say_{revision}.wav", c.id)));
         }
         let reason = c.td_id.map(|_| sources::mask(why));
-        let _ = self.events.send(json!({"kind":"ended","call":c.info(),"reason":reason}));
+        let summary = c.info();
+        let _ = self.events.send(json!({"kind":"ended","call":summary,"reason":reason}));
+        if let Some(trace) = &mut c.trace { trace.finish(&summary); }
     }
 
     async fn fail(&mut self, i: usize, why: &str) {
+        if let Some(trace) = &self.calls[i].trace { trace.bad(why); }
         self.calls[i].error = sources::mask(why);
         let _ = self.discard(i).await;
         self.end(i, why).await;
@@ -631,7 +660,11 @@ impl Actor {
                         let reason = state["reason"]["@type"].as_str().unwrap_or("?");
                         self.end(i, &format!("TDLib: bị kết thúc ({reason})")).await;
                     }
-                    "callStateError" => { self.calls[i].error = sources::mask(state["error"]["message"].as_str().unwrap_or("lỗi TDLib")); self.end(i,"TDLib: lỗi cuộc gọi").await; }
+                    "callStateError" => {
+                        self.calls[i].error = sources::mask(state["error"]["message"].as_str().unwrap_or("lỗi TDLib"));
+                        if let Some(trace) = &self.calls[i].trace { trace.bad("TDLib: lỗi cuộc gọi"); }
+                        self.end(i,"TDLib: lỗi cuộc gọi").await;
+                    }
                     "callStateHangingUp" => self.end(i,"TDLib: đang cúp").await,
                     _ => (),
                 }
@@ -642,6 +675,7 @@ impl Actor {
                     let bytes = STANDARD.decode(update["data"].as_str().unwrap_or("")).map_err(|_| GwError::bad_request("Báo hiệu không phải base64"))?;
                     self.calls[i].sig[2] += 1;
                     self.calls[i].sig[3] += bytes.len() as u64;
+                    if let Some(trace) = &self.calls[i].trace { trace.line("goi-rx", &format!("#{} baohieu len={}", self.calls[i].sig[2], bytes.len())); }
                     if self.calls[i].media_created {
                         if self.media.execute(MediaOp::Signaling(self.calls[i].user_id, bytes)).await.is_err() { self.fail(i,"NTgCalls không nhận được báo hiệu").await; return Err(media_error()); }
                     } else { self.calls[i].pending_signaling.push(bytes); }
@@ -740,6 +774,7 @@ impl Actor {
             MediaEvent::Signaling(_, bytes) => {
                 self.calls[i].sig[0] += 1;
                 self.calls[i].sig[1] += bytes.len() as u64;
+                if let Some(trace) = &self.calls[i].trace { trace.line("goi-tx", &format!("#{} baohieu len={}", self.calls[i].sig[0], bytes.len())); }
                 if self.td_request(json!({"@type":"sendCallSignalingData","call_id":self.calls[i].td_id,"data":STANDARD.encode(bytes)})).await.is_err() {
                     self.fail(i,"TDLib không gửi được báo hiệu").await;
                 }
@@ -770,10 +805,12 @@ impl Actor {
                         let key = if snapshot::valid(w, h, frame.data.len()) { "frames" } else { "bad" };
                         c.view[key] = json!(c.view[key].as_u64().unwrap_or(0)+1);
                         if key == "frames" {
+                            if c.view["frames"] == 1 { c.log(&format!("NTgCalls: khung hình đầu {w}x{h}")); }
                             c.view["size"] = json!(format!("{w}x{h}"));
                             c.snapshot.submit(w, h, frame.data, c.id.clone(), self.sender.clone());
                         }
                     } else {
+                        if c.frames_in == 0 { c.log("NTgCalls: khung tiếng đầu"); }
                         c.frames_in += 1; c.frame_bytes += frame.data.len() as u64;
                         for sample in frame.data.chunks_exact(2).take(960) { c.peak = c.peak.max((i16::from_le_bytes([sample[0],sample[1]]) as i32).abs()); }
                     }
@@ -795,18 +832,56 @@ impl Actor {
         }
     }
 
-    async fn say(&mut self, body: Value) -> Reply {
+    fn speech_target(&self, body: &Value) -> Result<usize, GwError> {
+        let i = self.find(body)?;
+        if self.calls[i].state != "active" { return Err(missing()); }
+        if self.calls[i].speech_pending || self.calls[i].speech_revision.is_some() {
+            return Err(GwError::new(409, "CALL_BUSY", "Cuộc gọi đang đọc một đoạn tiếng"));
+        }
+        Ok(i)
+    }
+
+    fn say(&mut self, body: Value, reply: oneshot::Sender<Reply>) {
+        let (i, raw) = match self.prepare_speech(&body) {
+            Ok(input) => input,
+            Err(e) => { let _ = reply.send(Err(e)); return; }
+        };
+        self.calls[i].speech_pending = true;
+        let id = self.calls[i].id.clone();
+        let tx = self.sender.clone();
+        let dir = self.data_dir.join("uploads");
+        tokio::spawn(async move {
+            let pcm = async {
+                let audio = match raw {
+                    Some(audio) => audio,
+                    None => crate::chat::synthesize_audio(&dir, body["text"].as_str().unwrap().trim(),
+                        body["voice"].as_str().unwrap_or(""), body["rate"].as_str().unwrap_or("")).await
+                        .map_err(|e| if e.status == 502 { GwError::new(502, "TTS_FAILED", "Không đọc được giọng.") } else { e })?,
+                };
+                decode_audio(audio).await
+            };
+            let _ = tx.send(Command::SayReady(id, pcm.await, reply));
+        });
+    }
+
+    fn prepare_speech(&self, body: &Value) -> Result<(usize, Option<Vec<u8>>), GwError> {
+        if !body.is_object() { return Err(GwError::bad_request("Cần JSON object")); }
         let text = body["text"].as_str().unwrap_or("").trim();
         let raw = body["audio_b64"].as_str().filter(|s| !s.is_empty());
         if raw.is_none() && (text.is_empty() || text.chars().count()>1000) { return Err(GwError::bad_request("Cần audio_b64 hoặc text (1-1000 ký tự).")); }
-        let i = self.find(&body)?;
-        if self.calls[i].state != "active" { return Err(missing()); }
-        if self.calls[i].speech_revision.is_some() { return Err(GwError::new(409,"CALL_BUSY","Cuộc gọi đang đọc một đoạn tiếng")); }
-        let Some(raw) = raw else { return Err(GwError::new(501,"TTS_UNAVAILABLE","Gateway chưa có bộ đọc giọng (TTS).")); };
-        if raw.len()>28_000_000 { return Err(GwError::bad_request("Âm thanh quá lớn.")); }
-        let audio = STANDARD.decode(raw).map_err(|_| GwError::bad_request("audio_b64 không phải base64 hợp lệ."))?;
-        let pcm = decode_audio(audio).await?;
-        self.start_speech(i, &pcm).await
+        let i = self.speech_target(body)?;
+        let raw = raw.map(|raw| {
+            if raw.len()>28_000_000 { return Err(GwError::bad_request("Âm thanh quá lớn.")); }
+            STANDARD.decode(raw).map_err(|_| GwError::bad_request("audio_b64 không phải base64 hợp lệ."))
+        }).transpose()?;
+        Ok((i, raw))
+    }
+
+    async fn finish_speech(&mut self, id: &str, pcm: Result<Vec<u8>, GwError>) -> Reply {
+        // Cuộc gọi có thể kết thúc trong lúc Edge TTS đang trả âm thanh.
+        let i = self.calls.iter().position(|c| c.id == id && c.state == "active").ok_or_else(missing)?;
+        self.calls[i].speech_pending = false;
+        self.start_speech(i, &pcm?).await
     }
 
     async fn start_speech(&mut self, i: usize, pcm: &[u8]) -> Reply {

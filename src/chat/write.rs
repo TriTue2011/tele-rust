@@ -1,4 +1,5 @@
 mod uploads;
+pub(crate) use uploads::synthesize_audio;
 
 use serde_json::{json, Value};
 

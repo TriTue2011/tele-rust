@@ -107,7 +107,7 @@ impl Media for NativeMedia {
             // Lỗi binding có thể chứa command/URL có khóa: KHÔNG công bố chuỗi lỗi gốc, chỉ tên LOẠI lỗi
             // (enum cố định như ShellError/ConnectionError) để chẩn đoán được mà không lộ bí mật.
             result.map_err(|e| {
-                eprintln!("NTgCalls: thao tác lỗi, loại {:?}", e.kind);
+                log::error!("NTgCalls: thao tác lỗi, loại {:?}", e.kind);
                 "Thao tác NTgCalls thất bại".into()
             })
         })

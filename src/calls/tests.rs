@@ -111,6 +111,8 @@ impl Drop for Fixture {
         for name in ["live_settings.json","live_settings.json.tmp"] { let _=fs::remove_file(self.dir.join(name)); }
         if let Ok(files)=fs::read_dir(self.dir.join("live")) { for file in files.flatten() { let _=fs::remove_file(file.path()); } }
         let _=fs::remove_dir(self.dir.join("live")); let _=fs::remove_dir(&self.dir);
+        if let Ok(files)=fs::read_dir(self.dir.join("calltrace")) { for file in files.flatten() { let _=fs::remove_file(file.path()); } }
+        let _=fs::remove_dir(self.dir.join("calltrace")); let _=fs::remove_dir(&self.dir);
     }
 }
 
@@ -475,6 +477,10 @@ async fn failures_end_cleanly_and_never_publish_backend_urls() {
     f.media.lock().unwrap().fail=Some("connect");
     assert_eq!(f.manager().handle_update(ready(7,42,true,&["8.0.0"])).await.unwrap_err().status,502);
     let info=f.info().await; assert_eq!(info["state"],"ended"); assert!(!info.to_string().contains("ab-cd"));
+    let id = info["id"].as_str().unwrap();
+    let trace = fs::read_to_string(f.dir.join("calltrace").join(format!("{id}.log"))).unwrap();
+    assert!(trace.contains("su-kien") && trace.contains("tong-ket") && trace.contains("danh-dau-loi"));
+    assert!(f.dir.join("calltrace").join(format!("{id}.loi")).exists());
     assert!(matches!(f.ops().last().unwrap(),MediaOp::Stop(42))); assert_eq!(f.requests("discardCall").len(),1);
 }
 
@@ -499,12 +505,14 @@ async fn peer_resolution_busy_and_tdlib_failure() {
 }
 
 #[tokio::test]
-async fn say_requires_active_call_valid_input_and_reports_unavailable_tts() {
+async fn say_requires_active_call_and_valid_input_before_using_tts() {
     let f=Fixture::new(false); let c=f.outgoing(false).await;
     assert_eq!(f.manager().say(json!({"id":c["id"],"text":""})).await.unwrap_err().status,400);
     assert_eq!(f.manager().say(json!({"id":c["id"],"text":"xin chào"})).await.unwrap_err().status,404);
     f.ready(7,42,true,&["8.0.0"]).await; f.emit(MediaEvent::Connection(42,ConnectionState::Connected)).await;
-    assert_eq!(f.manager().say(json!({"id":c["id"],"text":"xin chào"})).await.unwrap_err().code,"TTS_UNAVAILABLE");
+    let invalid_tts = f.manager().say(json!({"id":c["id"],"text":"xin chào","rate":"fast"})).await.unwrap_err();
+    assert_eq!(invalid_tts.status, 400);
+    assert!(invalid_tts.message.contains("TTS_RATE"));
     assert_eq!(f.manager().say(json!({"id":c["id"],"audio_b64":"!!"})).await.unwrap_err().status,400);
     let encoded=wav(&[0,0,1,0]); assert_eq!(&encoded[..4],b"RIFF"); assert_eq!(u32::from_le_bytes(encoded[40..44].try_into().unwrap()),4);
 }

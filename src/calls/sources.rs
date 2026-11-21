@@ -139,6 +139,8 @@ fn audio(media_source: MediaSource, input: String, keep_open: bool) -> AudioDesc
 }
 
 pub(super) fn playback_description(kind: &str, cmd: &str, path: &str, video: bool) -> Result<MediaDescription, GwError> {
+    let (width, height, fps) = crate::config::rx_video(&std::env::var("TELEGRAM_RX_VIDEO").unwrap_or_else(|_| "640x360@15".into()))
+        .map_err(GwError::bad_request)?;
     let (src, input) = match kind {
         "external" => (MediaSource::External, String::new()),
         "file" => (MediaSource::File, path.to_owned()),
@@ -151,7 +153,7 @@ pub(super) fn playback_description(kind: &str, cmd: &str, path: &str, video: boo
         // NTgCalls chỉ bật audio incoming khi PLAYBACK có writer Microphone.
         microphone: Some(audio(src, input, false)),
         speaker: None,
-        camera: video.then(|| VideoDescription { media_source: MediaSource::External, width: 640, height: 360, fps: 15, input: String::new(), keep_open: false }),
+        camera: video.then(|| VideoDescription { media_source: MediaSource::External, width, height, fps, input: String::new(), keep_open: false }),
         screen: None,
     })
 }

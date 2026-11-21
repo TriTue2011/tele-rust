@@ -51,7 +51,7 @@ where
             Ok(()) => { let _ = status.send(LoginStatus::Ready); }
             Err(_) => {
                 let _ = status.send(LoginStatus::Failed);
-                eprintln!("LỖI: đăng nhập nền thất bại; HTTP vẫn hoạt động.");
+                log::error!("LỖI: đăng nhập nền thất bại; HTTP vẫn hoạt động.");
             }
         }
     })
@@ -63,7 +63,7 @@ where
     F: Future<Output = ()>,
 {
     if let Err(e) = calls.await {
-        eprintln!("LỖI: không dọn được CallManager hoàn toàn: {e}");
+        log::error!("LỖI: không dọn được CallManager hoàn toàn: {e}");
     }
     close_tdlib.await;
 }
@@ -116,7 +116,7 @@ struct ReadyChat {
 
 impl ChatControl for ReadyChat {
     fn handle(&self, method: &str, path: &str, query: &str, body: Value) -> BoxFut<'_, Result<Value, GwError>> {
-        if self.session.is_ready() { self.inner.handle(method, path, query, body) } else { account_offline() }
+        if path == "/api/calltrace" || self.session.is_ready() { self.inner.handle(method, path, query, body) } else { account_offline() }
     }
     fn bytes(&self, path: &str, query: &str) -> BoxFut<'_, Result<Binary, GwError>> {
         if path.starts_with("/api/calltrace/") || self.session.is_ready() {
@@ -157,7 +157,7 @@ impl App {
         });
         let chat: Arc<dyn ChatControl> = Arc::new(ReadyChat {
             session: Session { auth: auth_rx, status: login_rx },
-            inner: Arc::new(ChatService::with_events(td_link, login_config.phone.clone(), &login_config.data_dir, Some(events.sink.clone()))),
+            inner: Arc::new(ChatService::with_events(td_link, login_config.phone.clone(), &login_config.data_dir, Some(events.sink.clone())).follow_calls(manager.events())),
         });
         let app = rest::router_with_events(call_control, chat, rest_config, Some(events.store.clone()));
         let (stop_tx, stop_rx) = oneshot::channel();
@@ -166,8 +166,7 @@ impl App {
         let login_events = events.sink.clone();
         let login_task = spawn_login(async move {
             let result = td::login::run(&login_client, &login_config).await;
-            let status = if result.is_ok() { "online" } else { "offline" };
-            login_events.emit("account_status", serde_json::json!({"status":status}));
+            login_events.account_login(result.is_ok());
             result
         }, login_tx);
 
@@ -180,7 +179,7 @@ impl App {
                     Err(_) => {
                         server.abort();
                         let _ = server.await;
-                        eprintln!("LỖI: HTTP quá thời gian dừng êm; đã đóng các kết nối còn lại.");
+                        log::error!("LỖI: HTTP quá thời gian dừng êm; đã đóng các kết nối còn lại.");
                         Ok(())
                     }
                 }

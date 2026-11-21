@@ -466,7 +466,7 @@ where
     F: Future<Output = ()> + Send + 'static,
 {
     let addr = listener.local_addr().map_err(|e| format!("không đọc được địa chỉ HTTP: {e}"))?;
-    eprintln!("tggw serve: nghe http://{addr}");
+    log::info!("tggw serve: nghe http://{addr}");
     axum::serve(listener, app).with_graceful_shutdown(shutdown).await.map_err(|e| format!("HTTP lỗi: {e}"))
 }
 

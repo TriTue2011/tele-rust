@@ -264,7 +264,8 @@ impl TdClient {
     /// Tạo client, khởi động luồng nhận và «đánh thức» TDLib (client chỉ thật sự chạy sau lần td_send đầu tiên).
     fn start(api: Arc<dyn TdApi>, receiver_guard: Option<ReceiverGuard>) -> Arc<Self> {
         // TDLib mặc định ghi log rất dài: chỉ giữ lỗi (như bản Python).
-        api.execute(&json!({"@type": "setLogVerbosityLevel", "new_verbosity_level": 1}));
+        // TDLib thô không đi qua bộ che bí mật Rust: tắt nó ở mọi LOG_LEVEL.
+        api.execute(&json!({"@type": "setLogVerbosityLevel", "new_verbosity_level": 0}));
         let client_id = api.create_client_id();
         let (updates, _) = broadcast::channel(UPDATES_CAPACITY);
         let (auth, _) = watch::channel(String::new());

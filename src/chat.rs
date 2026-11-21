@@ -4,6 +4,7 @@ mod files;
 mod services;
 mod shape;
 mod write;
+pub(crate) use write::synthesize_audio;
 #[cfg(test)]
 mod tests;
 
@@ -25,6 +26,7 @@ pub struct ChatService {
     uploads: PathBuf,
     state: Arc<State>,
     updates: tokio::task::JoinHandle<()>,
+    call_updates: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl ChatService {
@@ -37,7 +39,12 @@ impl ChatService {
         let state = Arc::new(State::default());
         let updates = tokio::spawn(state.clone().receive(td.updates(), events));
         let data_dir = data_dir.as_ref().to_path_buf();
-        Self { td, account: account.into(), uploads: data_dir.join("uploads"), data_dir, state, updates }
+        Self { td, account: account.into(), uploads: data_dir.join("uploads"), data_dir, state, updates, call_updates: None }
+    }
+
+    pub(crate) fn follow_calls(mut self, source: tokio::sync::broadcast::Receiver<Value>) -> Self {
+        self.call_updates = Some(tokio::spawn(self.state.clone().receive_calls(source)));
+        self
     }
 
     async fn request(&self, req: Value) -> Reply {
@@ -162,6 +169,11 @@ impl ChatService {
                 let wait = if wait.is_nan() { 25.0 } else { wait.clamp(0.0, 25.0) };
                 Ok(self.state.since(q.int("since", 0)?, Duration::from_secs_f64(wait)).await)
             }
+            ("GET", ["", "api", "calltrace"]) => {
+                let dir = self.data_dir.clone();
+                tokio::task::spawn_blocking(move || crate::calls::trace::list(&dir)).await.ok()
+                    .and_then(Result::ok).ok_or_else(|| GwError::new(500, "CALL_STORAGE", "Không đọc được danh sách nhật ký."))
+            }
             ("POST", ["", "api", "chats", id, op @ ("send" | "send_file" | "send_album" | "read")]) =>
                 self.write_chat(path_id(id)?, op, &q, &body).await,
             ("POST", ["", "api", "messages", op @ ("edit" | "delete" | "forward" | "react")]) =>
@@ -186,7 +198,10 @@ impl ChatControl for ChatService {
 }
 
 impl Drop for ChatService {
-    fn drop(&mut self) { self.updates.abort(); }
+    fn drop(&mut self) {
+        self.updates.abort();
+        if let Some(task) = &self.call_updates { task.abort(); }
+    }
 }
 
 struct Query<'a>(&'a str);

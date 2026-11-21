@@ -9,6 +9,15 @@ use telegram_gateway_rs::td;
 
 #[tokio::main]
 async fn main() {
+    if let Err(e) = telegram_gateway_rs::config::validate() {
+        eprintln!("LỖI cấu hình: {e}");
+        std::process::exit(2);
+    }
+    let data_dir = std::env::var("TGGW_DATA").or_else(|_| std::env::var("DATA_DIR")).unwrap_or_else(|_| "/data".into());
+    if let Err(e) = telegram_gateway_rs::logging::init(data_dir.into()) {
+        eprintln!("LỖI cấu hình nhật ký: {e}");
+        std::process::exit(2);
+    }
     let path = std::env::var("TDJSON_LIB").unwrap_or_else(|_| "libtdjson.so".into());
     let cmd = std::env::args().nth(1).unwrap_or_else(|| "version".into());
     if cmd == "protocol" {
@@ -16,14 +25,14 @@ async fn main() {
     }
     if cmd == "login" {
         if let Err(e) = run_login(&path).await {
-            eprintln!("LỖI đăng nhập: {e}");
+            log::error!("LỖI đăng nhập: {e}");
             std::process::exit(3);
         }
         return;
     }
     if cmd == "serve" {
         if let Err(e) = telegram_gateway_rs::app::App::start().await {
-            eprintln!("LỖI: {e}");
+            log::error!("LỖI: {e}");
             std::process::exit(2);
         }
         return;
@@ -31,24 +40,24 @@ async fn main() {
     let td = match td::TdJson::open(&path) {
         Ok(t) => t,
         Err(e) => {
-            eprintln!("LỖI: {e}");
+            log::error!("LỖI: {e}");
             std::process::exit(2);
         }
     };
     match cmd.as_str() {
         "version" => {
             // Tắt nhật ký TDLib ra stderr (mặc định khá ồn) trước khi hỏi.
-            td.execute(&serde_json::json!({"@type": "setLogVerbosityLevel", "new_verbosity_level": 1}));
+            td.execute(&serde_json::json!({"@type": "setLogVerbosityLevel", "new_verbosity_level": 0}));
             match td.version() {
                 Some(v) => println!("TDLib {v}"),
                 None => {
-                    eprintln!("LỖI: TDLib không trả phiên bản");
+                    log::error!("LỖI: TDLib không trả phiên bản");
                     std::process::exit(3);
                 }
             }
         }
         other => {
-            eprintln!("lệnh lạ: {other} (có: version, login, protocol, serve)");
+            log::error!("lệnh lạ: {other} (có: version, login, protocol, serve)");
             std::process::exit(64);
         }
     }
@@ -80,7 +89,7 @@ fn run_protocol() {
         Ok(p) => println!("NTgCalls {} | tgcalls {:?} | udp_p2p={} udp_reflector={} layer {}..{}",
                           ntgcalls::version(), p.library_versions, p.udp_p2p, p.udp_reflector, p.min_layer, p.max_layer),
         Err(e) => {
-            eprintln!("LỖI ntgcalls: {e:?}");
+            log::error!("LỖI ntgcalls: {e:?}");
             std::process::exit(3);
         }
     }

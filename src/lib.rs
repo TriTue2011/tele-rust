@@ -7,3 +7,5 @@ pub mod contract;
 mod events;
 pub mod rest;
 pub mod td;
+pub mod logging;
+pub mod config;

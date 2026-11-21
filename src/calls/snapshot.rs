@@ -21,8 +21,8 @@ impl Default for Snapshot {
 }
 
 pub(super) fn valid(w: usize, h: usize, bytes: usize) -> bool {
-    (2..=1920).contains(&w) && (2..=1920).contains(&h) && w % 2 == 0 && h % 2 == 0
-        && w * h <= 1920 * 1080 && bytes == w * h * 3 / 2
+    (2..=3840).contains(&w) && (2..=2160).contains(&h) && w % 2 == 0 && h % 2 == 0
+        && bytes == w * h * 3 / 2
 }
 
 impl Snapshot {

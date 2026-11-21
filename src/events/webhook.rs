@@ -16,7 +16,7 @@ impl Webhook {
         if url.is_empty() { return None; }
         let token = std::env::var("HA_WEBHOOK_TOKEN").unwrap_or_default();
         let webhook = Self::new(&url, &token);
-        if webhook.is_none() { eprintln!("Cấu hình webhook HA không hợp lệ. Sự kiện vẫn có trên API poll."); }
+        if webhook.is_none() { log::warn!("Cấu hình webhook HA không hợp lệ. Sự kiện vẫn có trên API poll."); }
         webhook
     }
 
@@ -41,7 +41,7 @@ impl Webhook {
         loop {
             match source.recv().await {
                 Ok(event) => self.deliver(event).await,
-                Err(broadcast::error::RecvError::Lagged(_)) => eprintln!("Webhook HA chậm. Các sự kiện còn trong spool có thể lấy qua poll."),
+                Err(broadcast::error::RecvError::Lagged(_)) => log::warn!("Webhook HA chậm. Các sự kiện còn trong spool có thể lấy qua poll."),
                 Err(broadcast::error::RecvError::Closed) => return,
             }
         }
@@ -60,7 +60,7 @@ impl Webhook {
             }
             if attempt < 2 { tokio::time::sleep(Duration::from_secs(1 << attempt)).await; }
         }
-        eprintln!("Không gửi được sự kiện đến webhook HA. Có thể lấy qua poll.");
+        log::warn!("Không gửi được sự kiện đến webhook HA. Có thể lấy qua poll.");
     }
 }
 

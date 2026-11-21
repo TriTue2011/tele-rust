@@ -17,7 +17,7 @@ impl ChatService {
         }
         if let Some(id) = path.strip_prefix("/api/calltrace/") {
             let missing = || GwError::not_found("Không có nhật ký cho cuộc gọi này.");
-            if !(6..=32).contains(&id.len()) || !id.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+            if !crate::calls::trace::valid_id(id) {
                 return Err(missing());
             }
             let bytes = read_bounded(self.data_dir.clone(), format!("calltrace/{id}.log").into(), missing).await?;

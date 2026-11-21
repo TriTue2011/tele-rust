@@ -17,6 +17,15 @@ pub(crate) use webhook::Webhook;
 pub(crate) struct EventSink {
     account: Arc<str>,
     queue: mpsc::Sender<Value>,
+    status: Arc<Mutex<AccountStatus>>,
+}
+
+#[derive(Default)]
+struct AccountStatus {
+    login: Option<bool>,
+    authorized: Option<bool>,
+    connected: Option<bool>,
+    published: Option<bool>,
 }
 
 impl EventSink {
@@ -24,7 +33,40 @@ impl EventSink {
         let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs_f64();
         let event = json!({"type":kind,"account":self.account.as_ref(),"timestamp":timestamp,"data":data});
         if let Err(mpsc::error::TrySendError::Full(_)) = self.queue.try_send(event) {
-            eprintln!("Hàng đợi sự kiện đầy.");
+            log::warn!("Hàng đợi sự kiện đầy.");
+        }
+    }
+
+    pub(crate) fn account_login(&self, ready: bool) {
+        self.update_status(|s| s.login = Some(ready));
+    }
+
+    pub(crate) fn account_update(&self, update: &Value) {
+        match update["@type"].as_str() {
+            Some("updateAuthorizationState") => {
+                let ready = update["authorization_state"]["@type"] == "authorizationStateReady";
+                self.update_status(|s| s.authorized = Some(ready));
+            }
+            Some("updateConnectionState") => match update["state"]["@type"].as_str() {
+                Some("connectionStateReady") => self.update_status(|s| s.connected = Some(true)),
+                Some("connectionStateWaitingForNetwork" | "connectionStateConnectingToProxy" |
+                    "connectionStateConnecting" | "connectionStateUpdating") => {
+                    self.update_status(|s| s.connected = Some(false));
+                }
+                _ => (),
+            },
+            _ => (),
+        }
+    }
+
+    fn update_status(&self, update: impl FnOnce(&mut AccountStatus)) {
+        let mut s = self.status.lock().unwrap();
+        update(&mut s);
+        let Some(login) = s.login else { return };
+        let online = login && s.authorized != Some(false) && s.connected != Some(false);
+        if s.published != Some(online) {
+            self.emit("account_status", json!({"status":if online { "online" } else { "offline" }}));
+            s.published = Some(online);
         }
     }
 
@@ -32,7 +74,7 @@ impl EventSink {
         loop {
             match source.recv().await {
                 Ok(event) => self.call(&event),
-                Err(broadcast::error::RecvError::Lagged(_)) => eprintln!("Mất cập nhật sự kiện cuộc gọi."),
+                Err(broadcast::error::RecvError::Lagged(_)) => log::warn!("Mất cập nhật sự kiện cuộc gọi."),
                 Err(broadcast::error::RecvError::Closed) => return,
             }
         }
@@ -106,11 +148,12 @@ impl EventBridge {
                 let written = tokio::task::spawn_blocking(move || writer.0.lock().unwrap().append(event)).await;
                 match written {
                     Ok(Ok(event)) => { let _ = published.send(event); }
-                    _ => eprintln!("Không ghi được sự kiện."),
+                    _ => log::error!("Không ghi được sự kiện."),
                 }
             }
         });
-        Ok(Self { store, sink: EventSink { account: account.into(), queue: tx }, stop: Some(stop), worker, webhook })
+        let sink = EventSink { account: account.into(), queue: tx, status: Default::default() };
+        Ok(Self { store, sink, stop: Some(stop), worker, webhook })
     }
 
     pub(crate) async fn shutdown(mut self) {
