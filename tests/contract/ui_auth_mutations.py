@@ -27,7 +27,7 @@ MUTATIONS = [
     ("TC-04", "tc04_wrong_password_and_unknown_user_have_similar_median_timing", "src/ui_auth.rs",
      'let valid = verify_password(password, salt, expected) && candidate.is_some();',
      'let valid = candidate.is_some() && verify_password(password, salt, expected);'),
-    ("TC-05", "tc05_sixth_wrong_login_is_rate_limited", "src/ui_auth.rs",
+    ("TC-05", "qa_tc05_parallel_wrong_logins_cannot_bypass_the_five_attempt_limit", "src/ui_auth.rs",
      'if attempts.len() >= MAX_FAILURES {',
      'if false && attempts.len() >= MAX_FAILURES {'),
     ("TC-07", "tc07_cookie_writes_require_csrf_header_or_matching_origin", "src/rest.rs",
@@ -92,7 +92,7 @@ def main():
             replace_once(snapshot / filename, before, after)
             # Use the same build script/container; select just the named control.
             replace_once(snapshot / "build.sh", 'ARGS="cargo test --release 2>&1"',
-                         f'ARGS="cargo test --release --test ui_auth {test} -- --exact 2>&1"')
+                         f'ARGS="cargo clean -p telegram-gateway-rs && cargo test --release --test ui_auth {test} -- --exact 2>&1"')
             print(f"RUN {case}: {test}", flush=True)
             result = subprocess.run(["./build.sh", "test"], cwd=snapshot,
                                     env={**os.environ, "TGGW_BUILD_DIR": "/opt/tggw-build-dn"},
