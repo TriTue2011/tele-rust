@@ -34,7 +34,7 @@ pub fn mic_command(spec: &str, fmt: &str) -> String {
     let base = "ffmpeg -hide_banner -loglevel error -nostdin";
     let out = "-f s16le -ac 1 -ar 48000 pipe:1";
     match spec {
-        "silence" => format!("{base} -re -f lavfi -i \"anullsrc=r=48000:cl=mono\" {out}"),
+        "silence" | "browser" => format!("{base} -re -f lavfi -i \"anullsrc=r=48000:cl=mono\" {out}"),
         "" | "test" => format!("{base} -re -f lavfi -i \"sine=frequency=440:sample_rate=48000\" -af volume=0.25 {out}"),
         _ if fmt == "s16le16k" => format!("{base} -f s16le -ar 16000 -ac 1 -i {} {out}", quote(spec)),
         _ if spec.starts_with("rtsp://") || spec.starts_with("rtsps://") => format!("{base} -rtsp_transport tcp -i {} -vn {out}", quote(spec)),
@@ -76,7 +76,7 @@ pub(super) fn mask(value: &str) -> String {
 pub(super) fn source(value: &Value, key: &str) -> Result<String, GwError> {
     let s = value.as_str().ok_or_else(|| GwError::bad_request(format!("{key} phải là chuỗi")))?.trim();
     let s = if s.is_empty() { "test" } else { s };
-    let special = s == "test" || (key == "mic" && s == "silence") || (key == "camera" && s == "black");
+    let special = s == "test" || (key == "mic" && matches!(s, "silence" | "browser")) || (key == "camera" && s == "black");
     if s.contains('\0') || !(special || s.starts_with('/') || s.starts_with("./") || ["rtsp://", "rtsps://", "http://", "https://", "rtmp://"].iter().any(|p| s.starts_with(p))) {
         return Err(GwError::bad_request(format!("{key} phải là nguồn thử, URL rtsp/http hoặc đường dẫn tệp")));
     }

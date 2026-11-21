@@ -564,6 +564,33 @@ async fn native_binding_protocol_and_callback_registration_smoke_test() {
 }
 
 #[tokio::test]
+async fn browser_mic_reaches_capture_and_ends_with_call() {
+    let f=Fixture::new(false);
+    let c=f.manager().call_out(json!({"user_id":42,"mic":"browser"})).await.unwrap();
+    let id=c["id"].as_str().unwrap();
+    assert_eq!(f.manager().audio_in(id,vec![0;3200]).await.unwrap_err().status,409);
+    f.ready(7,42,true,&["8.0.0"]).await;
+    f.emit(MediaEvent::Connection(42,ConnectionState::Connected)).await;
+    let command=f.ops().iter().find_map(|op|match op { MediaOp::Sources(_,StreamMode::Capture,d)=>Some(d.microphone.as_ref().unwrap().input.clone()),_=>None }).unwrap();
+    let url=command.split_whitespace().find(|s|s.starts_with("http://127.0.0.1:")).unwrap();
+    let pcm=vec![7;3200];
+    assert_eq!(f.manager().audio_in(id,pcm.clone()).await.unwrap(),json!({"ok":true,"bytes":3200}));
+    let mut response=reqwest::get(url).await.unwrap();
+    let first=response.chunk().await.unwrap().unwrap();
+    assert_eq!(first.as_ref(),&pcm[..640]);
+    drop(response);
+    assert_eq!(f.manager().audio_in(id,vec![1]).await.unwrap_err().status,400);
+    assert_eq!(f.manager().audio_in(id,vec![0;65_538]).await.unwrap_err().status,413);
+    f.manager().hangup(json!({"id":id})).await.unwrap();
+    assert_eq!(f.manager().audio_in(id,vec![0;2]).await.unwrap_err().status,404);
+    assert!(reqwest::get(url).await.is_err());
+    let trace=fs::read_to_string(f.dir.join("calltrace").join(format!("{id}.log"))).unwrap();
+    assert!(!trace.contains(url) && !trace.contains("127.0.0.1"));
+    let other=f.manager().call_out(json!({"user_id":43,"mic":"silence"})).await.unwrap();
+    assert_eq!(f.manager().audio_in(other["id"].as_str().unwrap(),vec![0;2]).await.unwrap_err().status,409);
+}
+
+#[tokio::test]
 async fn shutdown_discards_active_call_once_and_rejects_new_requests() {
     let f=Fixture::new(false); f.outgoing(false).await;
     f.manager().shutdown(Duration::from_secs(3)).await.unwrap();

@@ -124,6 +124,10 @@ pub trait CallControl: Send + Sync + 'static {
     fn media(&self, body: Value) -> BoxFut<'_, Result<Value, GwError>>;
     fn playback(&self, body: Value) -> BoxFut<'_, Result<Value, GwError>>;
     fn say(&self, body: Value) -> BoxFut<'_, Result<Value, GwError>>;
+    /// PCM thô s16le 16 kHz mono, ≤64 KiB; 404 hết cuộc gọi, 409 chưa active/browser, 429 đầy.
+    fn audio_in(&self, _id: &str, _pcm: Vec<u8>) -> BoxFut<'_, Result<Value, GwError>> {
+        Box::pin(async { Err(GwError::not_found("Không có cuộc gọi này.")) })
+    }
     fn snapshot(&self, _id: &str) -> BoxFut<'_, Result<Binary, GwError>> {
         Box::pin(async { Err(GwError::new(501, "NOT_IMPLEMENTED", "Chưa có ảnh chụp cuộc gọi.")) })
     }

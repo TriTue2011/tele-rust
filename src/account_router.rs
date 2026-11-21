@@ -361,6 +361,12 @@ impl CallControl for Accounts {
     }
     route_call!(accept); route_call!(hangup); route_call!(settings);
     route_call!(media); route_call!(playback); route_call!(say);
+    fn audio_in(&self,id:&str,pcm:Vec<u8>)->BoxFut<'_,Result<Value,GwError>> {
+        let id=id.to_owned(); Box::pin(async move {
+            let (_,e)=self.select_call(&json!({"id":id})).await?;
+            e.calls.audio_in(&id,pcm).await
+        })
+    }
     fn snapshot(&self,id:&str)->BoxFut<'_,Result<Binary,GwError>> {
         let id=id.to_owned(); Box::pin(async move {
             for (_,e) in self.all() {

@@ -60,6 +60,7 @@ struct Ctx {
     hits: Mutex<VecDeque<Instant>>,
     version: String,
     started: Instant,
+    audio_slots: tokio::sync::Semaphore,
 }
 
 impl Ctx {
@@ -79,13 +80,18 @@ impl Ctx {
 
     /// `_auth` của routes.py.
     fn auth(&self, headers: &HeaderMap) -> Result<(), GwError> {
+        self.bearer(headers)?;
+        if self.rate_limited() {
+            return Err(GwError::new(429, "RATE_LIMITED", "Quá 120 request/phút cho token này."));
+        }
+        Ok(())
+    }
+
+    fn bearer(&self, headers: &HeaderMap) -> Result<(), GwError> {
         let h = headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()).unwrap_or("");
         let token = h.strip_prefix("Bearer ").unwrap_or("");
         if self.token.is_empty() || !ct_eq(token.as_bytes(), self.token.as_bytes()) {
             return Err(GwError::new(401, "UNAUTHORIZED", "Thiếu hoặc sai token."));
-        }
-        if self.rate_limited() {
-            return Err(GwError::new(429, "RATE_LIMITED", "Quá 120 request/phút cho token này."));
         }
         Ok(())
     }
@@ -123,6 +129,7 @@ enum Kind {
     ChatBytes,
     Snapshot,
     LiveView,
+    AudioIn,
     Events,
 }
 
@@ -212,10 +219,23 @@ async fn handle(ctx: Arc<Ctx>, spec: Spec, req: Request) -> Response {
             }
         }
     }
-    if let Err(e) = ctx.auth(&parts.headers) {
+    // Mic ~10 POST/s có hạn mức riêng theo cuộc gọi; không tiêu hạn mức điều khiển 120/phút.
+    let auth = if matches!(spec.kind, Kind::AudioIn) { ctx.bearer(&parts.headers) } else { ctx.auth(&parts.headers) };
+    if let Err(e) = auth {
         return error_resp(&e);
     }
     let out = match spec.kind {
+        Kind::AudioIn => {
+            let Ok(_permit) = ctx.audio_slots.try_acquire() else {
+                return error_resp(&GwError::new(429, "AUDIO_BACKPRESSURE", "Quá nhiều khối mic đang chờ."));
+            };
+            let raw = match tokio::time::timeout(Duration::from_secs(5), to_bytes(body, 64 * 1024)).await {
+                Err(_) => return error_resp(&GwError::new(408, "AUDIO_TIMEOUT", "Quá thời gian nhận PCM.")),
+                Ok(Err(_)) => return error_resp(&GwError::new(413, "AUDIO_TOO_LARGE", "PCM vượt 64 KiB.")),
+                Ok(Ok(raw)) => raw,
+            };
+            ctx.call.audio_in(path.rsplit('/').next().unwrap(), raw.to_vec()).await
+        }
         Kind::ChatBytes => return bytes_resp(ctx.chat.bytes(&path, &query).await),
         Kind::Snapshot if ctx.accounts => return bytes_resp(ctx.chat.bytes(&path,&query).await),
         Kind::Snapshot => return bytes_resp(ctx.call.snapshot(path.rsplit('/').next().unwrap()).await),
@@ -418,6 +438,7 @@ fn router_with(ctx: Arc<Ctx>) -> Router {
     // Cuộc gọi → CallControl.
     r = r
         .route("/api/live/calls", route(get, s(LiveCalls)))
+        .route("/api/live/audio/in/:call_id", route(post, s(AudioIn)))
         .route("/api/live/settings", add(route(get, s(ChatGet)), post, s(Live(Settings))))
         .route("/api/live/view/:call_id", route(get, s(LiveView)))
         .route("/api/live/snapshot/:call_id", route(get, s(Snapshot)))
@@ -445,13 +466,14 @@ pub(crate) fn router_with_events(call: Arc<dyn CallControl>, chat: Arc<dyn ChatC
         hits: Mutex::new(VecDeque::new()),
         version: cfg.version,
         started: Instant::now(),
+        audio_slots: tokio::sync::Semaphore::new(8),
     }))
 }
 
 pub(crate) fn router_accounts(accounts: Arc<crate::account_router::Accounts>, cfg: RestConfig) -> Router {
     router_with(Arc::new(Ctx {
         call:accounts.clone(),chat:accounts,events:None,accounts:true,token:cfg.token,limit:cfg.rate_limit_per_minute,
-        hits:Mutex::new(VecDeque::new()),version:cfg.version,started:Instant::now(),
+        hits:Mutex::new(VecDeque::new()),version:cfg.version,started:Instant::now(),audio_slots:tokio::sync::Semaphore::new(8),
     }))
 }
 
@@ -609,6 +631,9 @@ mod tests {
         fn say(&self, b: Value) -> BoxFut<'_, Result<Value, GwError>> {
             self.rec("say", "", "", b)
         }
+        fn audio_in(&self, id: &str, pcm: Vec<u8>) -> BoxFut<'_, Result<Value, GwError>> {
+            self.rec("audio_in", id, "", json!(pcm))
+        }
         fn snapshot(&self, id: &str) -> BoxFut<'_, Result<Binary, GwError>> {
             let reply = self.rec("snapshot", id, "", Value::Null);
             Box::pin(async move {
@@ -759,6 +784,7 @@ mod tests {
                 Instant::now() - Duration::from_secs(61), Instant::now(),
             ])),
             version: "thu".into(), started: Instant::now(),
+            audio_slots: tokio::sync::Semaphore::new(8),
         };
         assert!(!ctx.rate_limited());
         let before = ctx.hits.lock().unwrap().clone();
@@ -812,6 +838,20 @@ mod tests {
         let (app, call, _) = app();
         assert_eq!(send(&app, ok("POST", "/api/live/hangup", Body::empty())).await.0, 200);
         assert_eq!(call.last(), ("hangup".into(), "".into(), "".into(), json!({})));
+    }
+
+    #[tokio::test]
+    async fn browser_pcm_is_raw_bearer_limited_and_does_not_spend_control_budget() {
+        let (call, chat) = (Arc::new(Fake::default()), Arc::new(Fake::default()));
+        let app = app_limit(&call, &chat, 1);
+        let path = "/api/live/audio/in/c1";
+        assert_eq!(send(&app, req("POST", path, None, vec![0; 2])).await.0, 401);
+        assert_eq!(send(&app, req("POST", &format!("{path}?t={TOK}"), None, vec![0; 2])).await.0, 401);
+        assert_eq!(send(&app, ok("POST", path, vec![0; 65_538])).await.0, 413);
+        for _ in 0..31 { assert_eq!(send(&app, ok("POST", path, vec![1, 2, 3, 4])).await.0, 200); }
+        assert_eq!(call.last(), ("audio_in".into(), "c1".into(), "".into(), json!([1,2,3,4])));
+        assert_eq!(send(&app, ok("GET", "/api/live/calls", Body::empty())).await.0, 200);
+        assert_eq!(send(&app, ok("GET", "/api/live/calls", Body::empty())).await.0, 429);
     }
 
     #[tokio::test]

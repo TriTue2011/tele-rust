@@ -7,6 +7,7 @@ mod media;
 mod cast;
 mod sources;
 mod snapshot;
+mod browser;
 pub(crate) mod trace;
 pub mod versions;
 
@@ -39,6 +40,7 @@ enum Command {
     VideoFrames(String, oneshot::Sender<Result<VideoFrames, GwError>>),
     VideoJpeg(String, Option<Vec<u8>>),
     CastAudio(String, String, oneshot::Sender<Option<CastAudio>>),
+    AudioIn(String, Vec<u8>, oneshot::Sender<Reply>, tokio::sync::OwnedSemaphorePermit),
     RestoreMic(String, u64, String, String, PathBuf),
     SayReady(String, Result<Vec<u8>, GwError>, oneshot::Sender<Reply>),
     RefreshCapture(String),
@@ -49,6 +51,7 @@ struct Handle {
     sender: mpsc::UnboundedSender<Command>,
     events: broadcast::Sender<Value>,
     shutting_down: AtomicBool,
+    audio_slots: Arc<tokio::sync::Semaphore>,
 }
 
 impl Drop for Handle {
@@ -80,7 +83,7 @@ impl CallManager {
         let (sender, receiver) = mpsc::unbounded_channel();
         let (frame_sender, frame_receiver) = mpsc::channel(3);
         let (events, _) = broadcast::channel(256);
-        let handle = Arc::new(Handle { sender: sender.clone(), events: events.clone(), shutting_down: AtomicBool::new(false) });
+        let handle = Arc::new(Handle { sender: sender.clone(), events: events.clone(), shutting_down: AtomicBool::new(false), audio_slots: Arc::new(tokio::sync::Semaphore::new(8)) });
         let (startup_tx, startup_rx) = std::sync::mpsc::sync_channel(1);
         std::thread::Builder::new().name("tggw-calls".into()).spawn(move || {
             let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
@@ -150,6 +153,17 @@ impl CallControl for CallManager {
     fn media(&self, body: Value) -> BoxFut<'_, Reply> { Box::pin(self.request(Action::Media, body)) }
     fn playback(&self, body: Value) -> BoxFut<'_, Reply> { Box::pin(self.request(Action::Playback, body)) }
     fn say(&self, body: Value) -> BoxFut<'_, Reply> { Box::pin(self.request(Action::Say, body)) }
+    fn audio_in(&self, id: &str, pcm: Vec<u8>) -> BoxFut<'_, Reply> {
+        let id = id.to_owned();
+        Box::pin(async move {
+            if pcm.len() > browser::MAX_PCM { return Err(GwError::new(413, "AUDIO_TOO_LARGE", "PCM vượt 64 KiB.")); }
+            let permit = self.handle.audio_slots.clone().try_acquire_owned()
+                .map_err(|_| GwError::new(429, "AUDIO_BACKPRESSURE", "Quá nhiều khối mic đang chờ."))?;
+            let (tx, rx) = oneshot::channel();
+            self.handle.sender.send(Command::AudioIn(id, pcm, tx, permit)).map_err(|_| runtime_error())?;
+            rx.await.map_err(|_| runtime_error())?
+        })
+    }
     fn snapshot(&self, id: &str) -> BoxFut<'_, Result<Binary, GwError>> {
         let id = id.to_owned();
         Box::pin(async move {
@@ -202,6 +216,7 @@ struct LiveCall {
     playback_path: PathBuf,
     playback_final: Option<u64>,
     cast: Option<cast::CastSink>,
+    browser_mic: Option<browser::BrowserMic>,
     cam_off: bool,
     view_on: bool,
     peer_video: bool,
@@ -232,7 +247,7 @@ impl LiveCall {
         let playback_path = data_dir.join("live").join(format!("{id}_in.pcm"));
         let mut c = Self { id, td_id: None, user_id, outgoing, video, state: if outgoing { "dialing" } else { "ringing" },
             accepted: false, ready_done: false, media_created: false, pending_signaling: Vec::new(), devices, playback_kind, playback_cmd,
-            playback_path, playback_final: None, cast: None, cam_off: false, view_on: video, peer_video: false,
+            playback_path, playback_final: None, cast: None, browser_mic: None, cam_off: false, view_on: video, peer_video: false,
             view: json!({"frames":0,"jpeg":0,"size":"","dropped":0,"bad":0}), snapshot: Default::default(), trace: None, sig: [0;4], frames_in: 0, frame_bytes: 0,
             peak: 0, error: String::new(), emojis: json!([]), started: Instant::now(), active: None, ended: None,
             events: VecDeque::new(), capture_revision: 0, speech_revision: None, speech_pending: false };
@@ -264,6 +279,15 @@ impl LiveCall {
 
     fn playback(&self) -> Result<ntgcalls::MediaDescription, GwError> {
         self.playback_with(&self.playback_kind, &self.playback_cmd, self.cast.as_ref())
+    }
+
+    async fn capture_description(&mut self, profile: (i16, i16, u8)) -> Result<ntgcalls::MediaDescription, GwError> {
+        let mut description = self.devices.capture(self.video, self.cam_off, profile);
+        if self.devices.mic == "browser" {
+            if self.browser_mic.is_none() { self.browser_mic = Some(browser::BrowserMic::open().await?); }
+            description.microphone.as_mut().unwrap().input = self.browser_mic.as_ref().unwrap().command();
+        } else { self.browser_mic = None; }
+        Ok(description)
     }
 
     fn playback_with(&self, kind: &str, cmd: &str, cast: Option<&cast::CastSink>) -> Result<ntgcalls::MediaDescription, GwError> {
@@ -359,6 +383,15 @@ impl Actor {
                         let stream = self.calls.iter().find(|c| c.id == id && c.state != "ended")
                             .and_then(|c| c.cast.as_ref()).and_then(|cast| cast.subscribe(&token));
                         let _ = reply.send(stream);
+                    }
+                    Some(Command::AudioIn(id, pcm, reply, _permit)) => {
+                        let result = self.calls.iter().find(|c| c.id == id && c.state != "ended").ok_or_else(missing)
+                            .and_then(|c| {
+                                if c.state != "active" || c.devices.mic != "browser" { return Err(GwError::new(409, "CALL_NOT_ACTIVE", "Cuộc gọi chưa nhận hoặc không dùng mic browser.")); }
+                                c.browser_mic.as_ref().ok_or_else(media_error)?.push(&pcm)?;
+                                Ok(json!({"ok":true,"bytes":pcm.len()}))
+                            });
+                        let _ = reply.send(result);
                     }
                     Some(Command::RestoreMic(id, revision, mic, fmt, path)) => {
                         self.restore_mic(&id, revision, mic, fmt, path).await;
@@ -564,6 +597,7 @@ impl Actor {
         let c = &mut self.calls[i];
         c.state = "ended";
         c.snapshot = Default::default();
+        c.browser_mic = None;
         if let Some(cast) = c.cast.take() { cast.close().await; }
         c.ended = Some(Instant::now());
         if let Some(id) = c.td_id { self.handled.insert(id); }
@@ -695,7 +729,8 @@ impl Actor {
         c.log("NTgCalls: create_p2p_call");
         self.media.execute(MediaOp::Create(c.user_id)).await.map_err(|_| media_error())?;
         c.media_created = true;
-        self.media.execute(MediaOp::Sources(c.user_id, StreamMode::Capture, c.devices.capture(c.video, c.cam_off, self.profile))).await.map_err(|_| media_error())?;
+        let capture = c.capture_description(self.profile).await?;
+        self.media.execute(MediaOp::Sources(c.user_id, StreamMode::Capture, capture)).await.map_err(|_| media_error())?;
         c.cast = LiveCall::open_cast(&c.playback_kind, &c.playback_cmd).await?;
         self.media.execute(MediaOp::Sources(c.user_id, StreamMode::Playback, c.playback()?)).await.map_err(|_| media_error())?;
         if let Some(cast) = &mut c.cast {
@@ -712,8 +747,11 @@ impl Actor {
     }
 
     async fn capture(&mut self, i: usize) -> Result<(), GwError> {
-        let c = &self.calls[i];
-        if c.media_created { self.media.execute(MediaOp::Sources(c.user_id, StreamMode::Capture, c.devices.capture(c.video,c.cam_off,self.profile))).await.map_err(|_| media_error())?; }
+        let c = &mut self.calls[i];
+        if c.media_created {
+            let capture = c.capture_description(self.profile).await?;
+            self.media.execute(MediaOp::Sources(c.user_id, StreamMode::Capture, capture)).await.map_err(|_| media_error())?;
+        }
         Ok(())
     }
 
