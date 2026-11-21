@@ -70,11 +70,14 @@ async fn get(app: &Router, path: &str, cookie: &str) -> Response {
     app.clone().oneshot(Request::get(path).header(header::COOKIE, cookie).body(Body::empty()).unwrap()).await.unwrap()
 }
 
-fn isolated(response: &Response) {
+fn isolated(response: &Response) { isolated_corp(response, "same-origin") }
+
+/// Loa Cast/R1 tải âm thanh khác nguồn bằng token riêng: CORP phải là `cross-origin` (nếu `same-origin` loa im), nhưng vẫn nosniff + CSP sandbox.
+fn isolated_corp(response: &Response, corp: &str) {
     assert_eq!(response.status(), 200);
     assert_eq!(response.headers().get(header::X_CONTENT_TYPE_OPTIONS).and_then(|h| h.to_str().ok()), Some("nosniff"));
     assert_eq!(response.headers().get(header::CONTENT_SECURITY_POLICY).and_then(|h| h.to_str().ok()), Some("default-src 'none'; sandbox"));
-    assert_eq!(response.headers().get("cross-origin-resource-policy").and_then(|h| h.to_str().ok()), Some("same-origin"));
+    assert_eq!(response.headers().get("cross-origin-resource-policy").and_then(|h| h.to_str().ok()), Some(corp));
 }
 
 #[tokio::test]
@@ -100,11 +103,11 @@ async fn cao01_files_are_isolated_and_only_safe_media_can_be_inline() {
         isolated(&response);
         assert!(!to_bytes(response.into_body(), 1024).await.unwrap().is_empty());
     }
-    for (path, expected) in [("/api/live/view/c1", &b"--frame"[..]),
-        ("/api/live/audio/out/c1?t=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", &b"RIFF"[..]),
-        ("/api/live/cast/c1/fake.mp3", &b"MP3"[..])] {
+    for (path, expected, corp) in [("/api/live/view/c1", &b"--frame"[..], "same-origin"),
+        ("/api/live/audio/out/c1?t=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", &b"RIFF"[..], "cross-origin"),
+        ("/api/live/cast/c1/fake.mp3", &b"MP3"[..], "cross-origin")] {
         let response = get(&app, path, cookie).await;
-        isolated(&response);
+        isolated_corp(&response, corp);
         assert!(!response.headers().contains_key(header::CONTENT_DISPOSITION));
         let mut stream = response.into_body().into_data_stream();
         let chunk = tokio::time::timeout(Duration::from_secs(1), stream.next()).await.unwrap().unwrap().unwrap();

@@ -198,11 +198,18 @@ fn bytes_resp(result: Result<Binary, GwError>) -> Response {
     }
 }
 
-fn isolate_binary(mut response: Response) -> Response {
+/// Phản hồi tệp/nhị phân của người dùng (cần cookie/Bearer): chỉ cùng nguồn được nhúng.
+fn isolate_binary(response: Response) -> Response { isolate_with(response, "same-origin") }
+
+/// Luồng âm thanh dành cho THIẾT BỊ NGOÀI trình duyệt cùng nguồn (loa Google Cast, loa R1): đường này không dùng cookie mà dùng token riêng
+/// từng cuộc gọi trong URL, và bộ nhận của loa tải theo kiểu khác nguồn — `same-origin` sẽ làm loa im. Vẫn giữ nosniff + CSP sandbox.
+fn isolate_media(response: Response) -> Response { isolate_with(response, "cross-origin") }
+
+fn isolate_with(mut response: Response, corp: &'static str) -> Response {
     for (name, value) in [
         (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
         (header::CONTENT_SECURITY_POLICY, "default-src 'none'; sandbox"),
-        (header::HeaderName::from_static("cross-origin-resource-policy"), "same-origin"),
+        (header::HeaderName::from_static("cross-origin-resource-policy"), corp),
     ] { response.headers_mut().insert(name, value.parse().unwrap()); }
     response
 }
@@ -543,7 +550,7 @@ async fn cast_stream(State(ctx): State<Arc<Ctx>>, req: Request) -> Response {
         let left = left - chunk.len();
         Some((Ok::<_, std::convert::Infallible>(chunk), (prime, audio, left)))
     });
-    isolate_binary(([(header::CONTENT_TYPE, "audio/mpeg".into()), (header::CACHE_CONTROL, "no-store".into()),
+    isolate_media(([(header::CONTENT_TYPE, "audio/mpeg".into()), (header::CACHE_CONTROL, "no-store".into()),
         (header::CONTENT_LENGTH, CAST_LENGTH.to_string())], Body::from_stream(chunks)).into_response())
 }
 
@@ -573,7 +580,7 @@ fn audio_out_response(stream: crate::contract::AudioOut) -> Response {
             };
             Some((Ok::<_, std::convert::Infallible>(chunk), (prime, audio, stopped, expires)))
         });
-    isolate_binary(([(header::CONTENT_TYPE,"audio/wav"),(header::CACHE_CONTROL,"no-store"),
+    isolate_media(([(header::CONTENT_TYPE,"audio/wav"),(header::CACHE_CONTROL,"no-store"),
         (header::REFERRER_POLICY,"no-referrer")],Body::from_stream(chunks)).into_response())
 }
 
