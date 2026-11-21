@@ -103,6 +103,14 @@ impl AccountStore {
         self.save(rows)
     }
 
+    pub fn refresh_name(&mut self, phone: &str, name: &str) -> io::Result<()> {
+        let Some(index) = self.rows.iter().position(|a|a.phone==phone) else { return Ok(()) };
+        if name.is_empty() || self.rows[index].display_name == name { return Ok(()) }
+        let mut rows = self.rows.clone();
+        rows[index].display_name = name.into();
+        self.save(rows)
+    }
+
     fn save(&mut self, rows: Vec<Account>) -> io::Result<()> {
         atomic_json(&self.data.join("accounts.json"), &Value::Array(rows.iter().map(Account::disk).collect()))?;
         self.rows = rows;
@@ -215,6 +223,54 @@ mod tests {
         assert!(store.archive("+84900000001").is_err());
         assert!(second.join("khoa").is_file());
         assert_eq!(store.rows().len(),1);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn refresh_name_does_not_create_legacy_ledger_or_write_empty_unchanged_or_unknown_names() {
+        use std::os::unix::fs::MetadataExt;
+        let dir=PathBuf::from(format!("target/accounts-refresh-legacy-{}",std::process::id()));
+        fs::create_dir_all(dir.join("tdlib/files")).unwrap();
+        let phone="+84900000000";
+        let mut store=AccountStore::open(&dir,phone).unwrap();
+        store.refresh_name(phone,"Tên tươi").unwrap();
+        assert!(store.legacy);
+        assert!(store.rows().is_empty());
+        assert!(!dir.join("accounts.json").exists());
+        store.keep_legacy(phone).unwrap();
+        store.refresh_name(phone,"Tên lưu").unwrap();
+        let ledger=fs::File::open(dir.join("accounts.json")).unwrap();
+        let before=ledger.metadata().unwrap();
+        let bytes=fs::read(dir.join("accounts.json")).unwrap();
+        for (phone,name) in [(phone,"Tên lưu"),(phone,""),("+84900000001","Tên lạ")] {
+            store.refresh_name(phone,name).unwrap();
+        }
+        let after=fs::metadata(dir.join("accounts.json")).unwrap();
+        assert_eq!(before.ino(),after.ino());
+        assert_eq!(before.modified().unwrap(),after.modified().unwrap());
+        assert_eq!(fs::read(dir.join("accounts.json")).unwrap(),bytes);
+        assert_eq!(AccountStore::open(&dir,phone).unwrap().session_dir(phone),dir.join("tdlib"));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn failed_name_refresh_preserves_memory_and_can_be_retried() {
+        let dir=PathBuf::from(format!("target/accounts-refresh-error-{}",std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let phone="+84900000000";
+        let mut store=AccountStore::open(&dir,phone).unwrap();
+        store.put_online(phone,"Tên cũ".into()).unwrap();
+        let path=dir.join("accounts.json");
+        let saved=dir.join("accounts.saved");
+        fs::rename(&path,&saved).unwrap();
+        fs::create_dir(&path).unwrap();
+        assert!(store.refresh_name(phone,"Tên mới").is_err());
+        assert_eq!(store.rows()[0].display_name,"Tên cũ");
+        assert!(!fs::read_dir(&dir).unwrap().any(|e|e.unwrap().path().extension().is_some_and(|s|s=="tmp")));
+        fs::remove_dir(&path).unwrap();
+        fs::rename(saved,&path).unwrap();
+        store.refresh_name(phone,"Tên mới").unwrap();
+        assert_eq!(AccountStore::open(&dir,phone).unwrap().rows()[0].display_name,"Tên mới");
         fs::remove_dir_all(dir).unwrap();
     }
 }

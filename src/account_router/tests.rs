@@ -195,7 +195,7 @@ async fn restart_restores_all_online_accounts_without_sending_phone_or_code() {
     let mut store=AccountStore::open(&dir,"").unwrap();
     for phone in ["+84900000001","+84900000002"] {store.put_online(phone,"Thử".into()).unwrap();}
     let mut rows:Value=serde_json::from_slice(&std::fs::read(dir.join("accounts.json")).unwrap()).unwrap();
-    rows.as_array_mut().unwrap().push(json!({"phone":"+84900000003","status":"offline"}));
+    rows.as_array_mut().unwrap().push(json!({"phone":"+84900000003","display_name":"Tên offline","status":"offline"}));
     crate::accounts::atomic_json(&dir.join("accounts.json"),&rows).unwrap();
     let (api,factory)=crate::td::fake::Fake::factory();
     api.restored.store(true,Ordering::Relaxed);
@@ -212,6 +212,8 @@ async fn restart_restores_all_online_accounts_without_sending_phone_or_code() {
     }
     assert_eq!(hub.all().len(),2);
     assert_eq!(send(&router,"GET","/api/me?account=%2B84900000003",Value::Null,true).await.0,503);
+    assert_eq!(send(&router,"GET","/api/accounts",Value::Null,true).await.1["tai_khoan"][2],
+        json!({"phone":"+84900000003","display_name":"Tên offline","status":"offline"}));
     let sent=api.sent.lock().unwrap().clone();
     let parameters:Vec<_>=sent.iter().filter(|(_,r)|r["@type"]=="setTdlibParameters").collect();
     assert_eq!(parameters.len(),2);
@@ -300,6 +302,7 @@ async fn downloads_use_selected_python_session_and_reject_other_account_paths() 
 
 #[tokio::test]
 async fn account_names_follow_get_me_independently_and_keep_saved_name_on_error_or_offline() {
+    use std::os::unix::fs::MetadataExt;
     let f=Fixture::new("fresh-names").await;
     f.ready("+84900000001").await;f.ready("+84900000002").await;
     assert_eq!(f.send("GET","/api/accounts",Value::Null).await,
@@ -314,15 +317,53 @@ async fn account_names_follow_get_me_independently_and_keep_saved_name_on_error_
     assert_eq!(f.send("GET","/api/accounts",Value::Null).await.1["tai_khoan"],json!([
         {"phone":"+84900000001","display_name":"Tên mới","status":"online"},
         {"phone":"+84900000002","display_name":"Tên riêng","status":"online"}]));
+    let path=f.dir.join("accounts.json");
+    let saved=std::fs::read(&path).unwrap();
+    let rows:Value=serde_json::from_slice(&saved).unwrap();
+    assert_eq!(rows[0]["display_name"],"Tên mới");
+    assert_eq!(rows[1]["display_name"],"Tên riêng");
+    let ledger=std::fs::File::open(&path).unwrap();
+    let inode=ledger.metadata().unwrap().ino();
     f.api.profiles.lock().unwrap().insert(1,json!({"@type":"error","code":500,"message":"fake getMe failure"}));
     f.api.profiles.lock().unwrap().insert(2,json!({"@type":"user","id":2,"first_name":"","last_name":""}));
     assert_eq!(f.send("GET","/api/accounts",Value::Null).await.1["tai_khoan"],json!([
-        {"phone":"+84900000001","display_name":"Account 1","status":"online"},
-        {"phone":"+84900000002","display_name":"Account 2","status":"online"}]));
+        {"phone":"+84900000001","display_name":"Tên mới","status":"online"},
+        {"phone":"+84900000002","display_name":"Tên riêng","status":"online"}]));
     f.hub.all()[0].1.ready.store(false,Ordering::Release);
     f.api.sent.lock().unwrap().clear();
     assert_eq!(f.send("GET","/api/accounts",Value::Null).await.1["tai_khoan"][0],
-        json!({"phone":"+84900000001","display_name":"Account 1","status":"offline"}));
+        json!({"phone":"+84900000001","display_name":"Tên mới","status":"offline"}));
     assert!(!f.api.sent.lock().unwrap().iter().any(|(id,r)|*id==1 && r["@type"]=="getMe"));
+    assert_eq!(std::fs::read(&path).unwrap(),saved);
+    assert_eq!(std::fs::metadata(&path).unwrap().ino(),inode);
+    f.finish().await;
+}
+
+#[tokio::test]
+async fn account_name_is_saved_once_and_repeated_polls_preserve_ledger_metadata() {
+    use std::os::unix::fs::{MetadataExt,PermissionsExt};
+    let f=Fixture::new("saved-name").await;
+    f.ready("+84900000000").await;
+    let path=f.dir.join("accounts.json");
+    let original=std::fs::File::open(&path).unwrap();
+    let mut expected:Value=serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    expected[0]["display_name"]=json!("Tên đổi");
+    f.api.profiles.lock().unwrap().insert(1,json!({"@type":"user","id":1,"first_name":"Tên đổi"}));
+    assert_eq!(f.send("GET","/api/accounts",Value::Null).await,
+        (200,json!({"tai_khoan":[{"phone":"+84900000000","display_name":"Tên đổi","status":"online"}]})));
+    let saved=std::fs::File::open(&path).unwrap();
+    let metadata=saved.metadata().unwrap();
+    assert_ne!(metadata.ino(),original.metadata().unwrap().ino());
+    assert_eq!(metadata.permissions().mode() & 0o777,0o600);
+    let bytes=std::fs::read(&path).unwrap();
+    assert_eq!(serde_json::from_slice::<Value>(&bytes).unwrap(),expected);
+    for _ in 0..3 {
+        assert_eq!(f.send("GET","/api/accounts",Value::Null).await.1["tai_khoan"][0]["display_name"],"Tên đổi");
+        let after=std::fs::metadata(&path).unwrap();
+        assert_eq!(after.ino(),metadata.ino());
+        assert_eq!(after.modified().unwrap(),metadata.modified().unwrap());
+        assert_eq!(std::fs::read(&path).unwrap(),bytes);
+    }
+    assert_eq!(AccountStore::open(&f.dir,"").unwrap().rows()[0].display_name,"Tên đổi");
     f.finish().await;
 }

@@ -249,7 +249,13 @@ impl Accounts {
             };
             for (index, entry) in online {
                 if let Ok(name) = entry.chat.account_name().await {
-                    if !name.is_empty() { rows[index]["display_name"] = json!(name); }
+                    if !name.is_empty() {
+                        let phone = rows[index]["phone"].as_str().unwrap();
+                        if self.store.lock().unwrap().refresh_name(phone,&name).is_err() {
+                            log::warn!("Không cập nhật được tên trong sổ tài khoản.");
+                        }
+                        rows[index]["display_name"] = json!(name);
+                    }
                 }
             }
             return Ok(json!({"tai_khoan":rows}));
