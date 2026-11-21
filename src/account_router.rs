@@ -2,7 +2,7 @@
 use std::{collections::BTreeMap, path::PathBuf, sync::{Arc, Mutex, RwLock, atomic::{AtomicBool, Ordering}}, time::Duration};
 use serde_json::{json, Value};
 use crate::{accounts::AccountStore, calls::CallManager, chat::ChatService,
-    contract::{Binary, BoxFut, CallControl, CastAudio, ChatControl, GwError, TdLink},
+    contract::{AudioOut, Binary, BoxFut, CallControl, CastAudio, ChatControl, GwError, TdLink},
     events::{EventBridge, EventStore, Webhook}, td::{self, login::LoginConfig, TdClient}};
 
 pub(crate) struct Entry {
@@ -365,6 +365,12 @@ impl CallControl for Accounts {
         let id=id.to_owned(); Box::pin(async move {
             let (_,e)=self.select_call(&json!({"id":id})).await?;
             e.calls.audio_in(&id,pcm).await
+        })
+    }
+    fn audio_out(&self,id:&str,token:&str)->BoxFut<'_,Result<AudioOut,GwError>> {
+        let (id,token)=(id.to_owned(),token.to_owned()); Box::pin(async move {
+            let (_,e)=self.select_call(&json!({"id":id})).await?;
+            e.calls.audio_out(&id,&token).await
         })
     }
     fn snapshot(&self,id:&str)->BoxFut<'_,Result<Binary,GwError>> {

@@ -591,6 +591,30 @@ async fn browser_mic_reaches_capture_and_ends_with_call() {
 }
 
 #[tokio::test]
+async fn browser_audio_uses_decoded_frames_and_never_logs_tokens() {
+    let f=Fixture::new(false);
+    f.manager().settings(json!({"speaker":"browser"})).await.unwrap();
+    let c=f.outgoing(false).await;let id=c["id"].as_str().unwrap();
+    assert_eq!(c["playback"]["kind"],"browser");
+    let response=f.manager().media(json!({"id":id,"action":"audio_out"})).await.unwrap();
+    let url=response["audio_out"]["url"].as_str().unwrap();
+    let token=url.split("?t=").nth(1).unwrap();
+    assert_eq!(token.len(),32);
+    assert_eq!(f.manager().audio_out(id,"wrong").await.err().unwrap().status,403);
+    let mut stream=f.manager().audio_out(id,token).await.unwrap();
+    f.ready(7,42,true,&["8.0.0"]).await;
+    assert!(matches!(&f.ops()[2],MediaOp::Sources(_,StreamMode::Playback,d) if d.microphone.as_ref().unwrap().media_source==MediaSource::External));
+    let metadata=FrameData{absolute_capture_timestamp_ms:0,rotation:VideoRotation::VideoRotation0,width:0,height:0};
+    f.emit(MediaEvent::Frames(42,StreamMode::Playback,StreamDevice::Microphone,vec![Frame{ssrc:0,data:vec![1,2,3,4],frame_data:metadata}])).await;
+    assert_eq!(stream.audio.recv().await.unwrap(),[1,2,3,4]);
+    f.manager().hangup(json!({"id":id})).await.unwrap();
+    assert!(stream.stopped.changed().await.is_err());
+    assert_eq!(f.manager().audio_out(id,token).await.err().unwrap().status,404);
+    let trace=fs::read_to_string(f.dir.join("calltrace").join(format!("{id}.log"))).unwrap();
+    assert!(!trace.contains(token));assert!(!f.info().await.to_string().contains(token));
+}
+
+#[tokio::test]
 async fn shutdown_discards_active_call_once_and_rejects_new_requests() {
     let f=Fixture::new(false); f.outgoing(false).await;
     f.manager().shutdown(Duration::from_secs(3)).await.unwrap();

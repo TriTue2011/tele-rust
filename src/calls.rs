@@ -8,6 +8,7 @@ mod cast;
 mod sources;
 mod snapshot;
 mod browser;
+mod browser_audio;
 pub(crate) mod trace;
 pub mod versions;
 
@@ -22,7 +23,7 @@ use ntgcalls::{ConnectionState, NTgCalls, Protocol, StreamDevice, StreamMode};
 use serde_json::{json, Value};
 use tokio::sync::{broadcast, mpsc, oneshot};
 
-use crate::contract::{Binary, BoxFut, CallControl, CastAudio, GwError, TdLink, VideoFrames};
+use crate::contract::{AudioOut, Binary, BoxFut, CallControl, CastAudio, GwError, TdLink, VideoFrames};
 use crate::events::{mask_peer, mask_peer_id};
 use media::{Media, MediaEvent, MediaOp, NativeMedia, Ready};
 use sources::{Devices, playback_description, video_profile};
@@ -41,6 +42,7 @@ enum Command {
     VideoJpeg(String, Option<Vec<u8>>),
     CastAudio(String, String, oneshot::Sender<Option<CastAudio>>),
     AudioIn(String, Vec<u8>, oneshot::Sender<Reply>, tokio::sync::OwnedSemaphorePermit),
+    AudioOut(String, String, oneshot::Sender<Result<AudioOut, GwError>>),
     RestoreMic(String, u64, String, String, PathBuf),
     SayReady(String, Result<Vec<u8>, GwError>, oneshot::Sender<Reply>),
     RefreshCapture(String),
@@ -164,6 +166,14 @@ impl CallControl for CallManager {
             rx.await.map_err(|_| runtime_error())?
         })
     }
+    fn audio_out(&self, id: &str, token: &str) -> BoxFut<'_, Result<AudioOut, GwError>> {
+        let (id, token) = (id.to_owned(), token.to_owned());
+        Box::pin(async move {
+            let (tx, rx) = oneshot::channel();
+            self.handle.sender.send(Command::AudioOut(id, token, tx)).map_err(|_| runtime_error())?;
+            rx.await.map_err(|_| runtime_error())?
+        })
+    }
     fn snapshot(&self, id: &str) -> BoxFut<'_, Result<Binary, GwError>> {
         let id = id.to_owned();
         Box::pin(async move {
@@ -217,6 +227,7 @@ struct LiveCall {
     playback_final: Option<u64>,
     cast: Option<cast::CastSink>,
     browser_mic: Option<browser::BrowserMic>,
+    browser_audio: Option<browser_audio::BrowserAudio>,
     cam_off: bool,
     view_on: bool,
     peer_video: bool,
@@ -242,12 +253,12 @@ impl LiveCall {
     fn new(user_id: i64, outgoing: bool, video: bool, devices: Devices, data_dir: &Path) -> Self {
         static SEQUENCE: AtomicU64 = AtomicU64::new(1);
         let id = format!("{:x}{:x}{:x}", std::process::id(), SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos(), SEQUENCE.fetch_add(1, Ordering::Relaxed));
-        let playback_kind = if devices.speaker.is_empty() { devices.playback.clone() } else { "push".into() };
+        let playback_kind = if devices.speaker == "browser" { "browser".into() } else if devices.speaker.is_empty() { devices.playback.clone() } else { "push".into() };
         let playback_cmd = if playback_kind == "push" { devices.speaker.clone() } else { String::new() };
         let playback_path = data_dir.join("live").join(format!("{id}_in.pcm"));
         let mut c = Self { id, td_id: None, user_id, outgoing, video, state: if outgoing { "dialing" } else { "ringing" },
             accepted: false, ready_done: false, media_created: false, pending_signaling: Vec::new(), devices, playback_kind, playback_cmd,
-            playback_path, playback_final: None, cast: None, browser_mic: None, cam_off: false, view_on: video, peer_video: false,
+            playback_path, playback_final: None, cast: None, browser_mic: None, browser_audio: None, cam_off: false, view_on: video, peer_video: false,
             view: json!({"frames":0,"jpeg":0,"size":"","dropped":0,"bad":0}), snapshot: Default::default(), trace: None, sig: [0;4], frames_in: 0, frame_bytes: 0,
             peak: 0, error: String::new(), emojis: json!([]), started: Instant::now(), active: None, ended: None,
             events: VecDeque::new(), capture_revision: 0, speech_revision: None, speech_pending: false };
@@ -292,6 +303,7 @@ impl LiveCall {
 
     fn playback_with(&self, kind: &str, cmd: &str, cast: Option<&cast::CastSink>) -> Result<ntgcalls::MediaDescription, GwError> {
         let path = self.playback_path.to_string_lossy();
+        if kind == "browser" { return playback_description("external", "", &path, self.view_on); }
         if let Some(cast) = cast { return playback_description("shell", &cast.encoder_command(), &path, self.view_on); }
         playback_description(kind, cmd, &path, self.view_on)
     }
@@ -391,6 +403,12 @@ impl Actor {
                                 c.browser_mic.as_ref().ok_or_else(media_error)?.push(&pcm)?;
                                 Ok(json!({"ok":true,"bytes":pcm.len()}))
                             });
+                        let _ = reply.send(result);
+                    }
+                    Some(Command::AudioOut(id, token, reply)) => {
+                        let result = self.calls.iter().find(|c| c.id == id && c.state != "ended").ok_or_else(missing)
+                            .and_then(|c| c.browser_audio.as_ref().ok_or_else(|| GwError::new(409,"NO_AUDIO_OUT","Chưa cấp luồng âm thanh.")))
+                            .and_then(|audio| audio.subscribe(&token));
                         let _ = reply.send(result);
                     }
                     Some(Command::RestoreMic(id, revision, mic, fmt, path)) => {
@@ -530,8 +548,8 @@ impl Actor {
         }
         if let Some(speaker) = overrides.remove("speaker") {
             let speaker = speaker.as_str().ok_or_else(|| GwError::bad_request("speaker phải là chuỗi"))?.trim();
-            if !speaker.is_empty() && !valid_speaker_url(speaker) {
-                return Err(GwError::bad_request("speaker phải là cửa bộ đàm hoặc cast:// nội bộ"));
+            if !speaker.is_empty() && speaker != "browser" && !valid_speaker_url(speaker) {
+                return Err(GwError::bad_request("speaker phải là browser, cửa bộ đàm hoặc cast:// nội bộ"));
             }
             devices.speaker = speaker.to_owned();
         }
@@ -572,7 +590,7 @@ impl Actor {
         let mut devices = self.defaults.clone();
         // apply_defaults: chỉ external/file được thừa kế nếu không có speaker.
         if !matches!(devices.playback.as_str(), "external" | "file") { devices.playback = "file".into(); }
-        let kind = if devices.speaker.is_empty() { devices.playback.clone() } else { "push".into() };
+        let kind = if devices.speaker == "browser" { "browser".into() } else if devices.speaker.is_empty() { devices.playback.clone() } else { "push".into() };
         c.check_playback(&kind, &devices.speaker, self.cast_port)?;
         self.td_request(json!({"@type":"acceptCall","call_id":c.td_id,"protocol":self.protocol_json()})).await?;
         let c = &mut self.calls[i];
@@ -598,6 +616,7 @@ impl Actor {
         c.state = "ended";
         c.snapshot = Default::default();
         c.browser_mic = None;
+        c.browser_audio = None;
         if let Some(cast) = c.cast.take() { cast.close().await; }
         c.ended = Some(Instant::now());
         if let Some(id) = c.td_id { self.handled.insert(id); }
@@ -758,6 +777,11 @@ impl Actor {
     async fn set_media(&mut self, body: Value) -> Reply {
         let i = self.find(&body)?;
         if self.calls[i].state == "ended" { return Err(missing()); }
+        if body["action"] == "audio_out" {
+            let c = &mut self.calls[i];
+            if c.browser_audio.is_none() { c.browser_audio = Some(browser_audio::BrowserAudio::new()?); }
+            return Ok(json!({"audio_out":c.browser_audio.as_mut().unwrap().descriptor(&c.id)?}));
+        }
         if !["mic","camera","camera_off","video"].iter().any(|k| body.get(*k).is_some()) && !matches!(body["mic_format"].as_str(),Some("auto"|"s16le16k")) {
             return Err(GwError::bad_request("Cần mic, camera, camera_off hoặc video."));
         }
@@ -851,6 +875,7 @@ impl Actor {
                             c.snapshot.submit(w, h, frame.data, c.id.clone(), self.sender.clone());
                         }
                     } else {
+                        if let Some(audio) = &c.browser_audio { audio.push(&frame.data); }
                         if c.frames_in == 0 { c.log("NTgCalls: khung tiếng đầu"); }
                         c.frames_in += 1; c.frame_bytes += frame.data.len() as u64;
                         for sample in frame.data.chunks_exact(2).take(960) { c.peak = c.peak.max((i16::from_le_bytes([sample[0],sample[1]]) as i32).abs()); }

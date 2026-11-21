@@ -29,6 +29,14 @@ pub struct CastAudio {
     pub audio: tokio::sync::broadcast::Receiver<Vec<u8>>,
 }
 
+/// WAV từ PCM playback đã giải mã. Kết thúc/hết hạn đóng cả người nghe hiện tại.
+pub struct AudioOut {
+    pub prime: Vec<u8>,
+    pub audio: tokio::sync::broadcast::Receiver<Vec<u8>>,
+    pub stopped: tokio::sync::watch::Receiver<()>,
+    pub expires: std::time::Instant,
+}
+
 /// Chỉ giữ JPEG mới nhất; kênh đóng khi cuộc gọi kết thúc.
 pub type VideoFrames = tokio::sync::watch::Receiver<Option<Arc<[u8]>>>;
 
@@ -126,6 +134,9 @@ pub trait CallControl: Send + Sync + 'static {
     fn say(&self, body: Value) -> BoxFut<'_, Result<Value, GwError>>;
     /// PCM thô s16le 16 kHz mono, ≤64 KiB; 404 hết cuộc gọi, 409 chưa active/browser, 429 đầy.
     fn audio_in(&self, _id: &str, _pcm: Vec<u8>) -> BoxFut<'_, Result<Value, GwError>> {
+        Box::pin(async { Err(GwError::not_found("Không có cuộc gọi này.")) })
+    }
+    fn audio_out(&self, _id: &str, _token: &str) -> BoxFut<'_, Result<AudioOut, GwError>> {
         Box::pin(async { Err(GwError::not_found("Không có cuộc gọi này.")) })
     }
     fn snapshot(&self, _id: &str) -> BoxFut<'_, Result<Binary, GwError>> {

@@ -352,6 +352,36 @@ async fn cast_stream(State(ctx): State<Arc<Ctx>>, req: Request) -> Response {
         (header::CONTENT_LENGTH, CAST_LENGTH.to_string())], Body::from_stream(chunks)).into_response()
 }
 
+/// Token media ngắn hạn, chỉ lấy từ POST /media đã qua Bearer. Không nhận Bearer trong query.
+async fn audio_out_stream(State(ctx): State<Arc<Ctx>>, req: Request) -> Response {
+    let id = req.uri().path().rsplit('/').next().unwrap();
+    let token = query_get(req.uri().query().unwrap_or(""), "t").unwrap_or_default();
+    if token.len() != 32 || !token.bytes().all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b)) {
+        return error_resp(&GwError::new(403,"MEDIA_TOKEN","Thiếu, sai hoặc hết hạn token âm thanh."));
+    }
+    match ctx.call.audio_out(id, &token).await {
+        Ok(stream) => audio_out_response(stream),
+        Err(e) => error_resp(&e),
+    }
+}
+
+fn audio_out_response(stream: crate::contract::AudioOut) -> Response {
+    let chunks = futures_util::stream::unfold((Some(stream.prime), stream.audio, stream.stopped, stream.expires),
+        |(mut prime, mut audio, mut stopped, expires)| async move {
+            if stopped.has_changed().is_err() || Instant::now() >= expires { return None; }
+            let chunk = if let Some(header) = prime.take() { header } else {
+                tokio::select! { biased;
+                    _ = stopped.changed() => return None,
+                    _ = tokio::time::sleep_until(expires.into()) => return None,
+                    data = audio.recv() => match data { Ok(bytes) => bytes, Err(_) => return None },
+                }
+            };
+            Some((Ok::<_, std::convert::Infallible>(chunk), (prime, audio, stopped, expires)))
+        });
+    ([(header::CONTENT_TYPE,"audio/wav"),(header::CACHE_CONTROL,"no-store"),
+        (header::REFERRER_POLICY,"no-referrer"),(header::X_CONTENT_TYPE_OPTIONS,"nosniff")],Body::from_stream(chunks)).into_response()
+}
+
 async fn next_jpeg(frames: &mut VideoFrames, limit: Duration) -> Result<Option<Arc<[u8]>>, ()> {
     tokio::time::timeout(limit, async {
         while frames.has_changed().is_ok() && frames.changed().await.is_ok() {
@@ -439,6 +469,7 @@ fn router_with(ctx: Arc<Ctx>) -> Router {
     r = r
         .route("/api/live/calls", route(get, s(LiveCalls)))
         .route("/api/live/audio/in/:call_id", route(post, s(AudioIn)))
+        .route("/api/live/audio/out/:call_id", on(get, audio_out_stream).on(MethodFilter::HEAD, method_not_allowed).fallback(method_not_allowed))
         .route("/api/live/settings", add(route(get, s(ChatGet)), post, s(Live(Settings))))
         .route("/api/live/view/:call_id", route(get, s(LiveView)))
         .route("/api/live/snapshot/:call_id", route(get, s(Snapshot)))
@@ -852,6 +883,29 @@ mod tests {
         assert_eq!(call.last(), ("audio_in".into(), "c1".into(), "".into(), json!([1,2,3,4])));
         assert_eq!(send(&app, ok("GET", "/api/live/calls", Body::empty())).await.0, 200);
         assert_eq!(send(&app, ok("GET", "/api/live/calls", Body::empty())).await.0, 429);
+    }
+
+    #[tokio::test]
+    async fn browser_audio_stream_has_wav_headers_and_closes_at_expiry_or_end() {
+        let (app,_,_) = app();
+        for path in ["/api/live/audio/out/c1", "/api/live/audio/out/c1?t=wrong", "/api/live/audio/out/c1?token=bi-mat-thu"] {
+            assert_eq!(send(&app,req("GET",path,None,Body::empty())).await.0,403);
+        }
+        let (audio,receiver)=tokio::sync::broadcast::channel(2);
+        let (alive,stopped)=tokio::sync::watch::channel(());
+        let response=audio_out_response(crate::contract::AudioOut {prime:b"RIFF".to_vec(),audio:receiver,stopped,expires:Instant::now()+Duration::from_secs(1)});
+        assert_eq!(response.headers()[header::CONTENT_TYPE],"audio/wav");
+        assert_eq!(response.headers()[header::CACHE_CONTROL],"no-store");
+        assert!(!response.headers().contains_key(header::CONTENT_LENGTH));
+        let mut body=response.into_body().into_data_stream();
+        assert_eq!(body.next().await.unwrap().unwrap().as_ref(),b"RIFF");
+        audio.send(vec![1,2]).unwrap();assert_eq!(body.next().await.unwrap().unwrap().as_ref(),[1,2]);
+        drop(alive);assert!(body.next().await.is_none());
+        let (_alive,stopped)=tokio::sync::watch::channel(());
+        let response=audio_out_response(crate::contract::AudioOut{prime:vec![0],audio:audio.subscribe(),stopped,expires:Instant::now()+Duration::from_millis(10)});
+        let mut body=response.into_body().into_data_stream();
+        assert!(body.next().await.is_some());
+        assert!(tokio::time::timeout(Duration::from_millis(100),body.next()).await.unwrap().is_none());
     }
 
     #[tokio::test]

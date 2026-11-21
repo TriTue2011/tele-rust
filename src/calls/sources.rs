@@ -115,7 +115,7 @@ impl Devices {
         if let Some(value) = body.get("speaker") {
             let value = value.as_str().ok_or_else(|| GwError::bad_request("speaker phải là chuỗi"))?.trim();
             if !value.contains("k=***") {
-                if !value.is_empty() && !valid_speaker_url(value) { return Err(GwError::bad_request("speaker phải là cửa bộ đàm hoặc cast:// nội bộ")); }
+                if !value.is_empty() && value != "browser" && !valid_speaker_url(value) { return Err(GwError::bad_request("speaker phải là browser, cửa bộ đàm hoặc cast:// nội bộ")); }
                 self.speaker = value.to_owned();
             }
         }
