@@ -13,5 +13,6 @@ pub mod contract;
 mod events;
 pub mod rest;
 pub mod td;
+pub mod ui_auth;
 pub mod logging;
 pub mod config;

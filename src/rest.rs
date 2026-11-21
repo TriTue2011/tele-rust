@@ -27,8 +27,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use axum::body::{to_bytes, Body};
-use axum::extract::{Request, State};
-use axum::http::{header, HeaderMap, StatusCode};
+use axum::extract::{ConnectInfo, Request, State};
+use axum::http::{header, HeaderMap, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{on, MethodFilter, MethodRouter};
 use axum::Router;
@@ -38,6 +38,7 @@ use subtle::ConstantTimeEq;
 
 use crate::contract::{Binary, BoxFut, CallControl, ChatControl, GwError, VideoFrames};
 use crate::events::EventStore;
+use crate::ui_auth::{AuthError, UiAuth};
 
 /// Như `MAX_BODY_BYTES` của routes.py.
 const MAX_BODY_BYTES: usize = 400_000;
@@ -57,6 +58,7 @@ struct Ctx {
     events: Option<EventStore>,
     accounts: bool,
     token: String,
+    ui_auth: Arc<UiAuth>,
     limit: usize,
     hits: Mutex<VecDeque<Instant>>,
     snapshot_hits: Mutex<VecDeque<Instant>>,
@@ -81,9 +83,25 @@ impl Ctx {
     }
 
     /// `_auth` của routes.py.
-    fn auth(&self, headers: &HeaderMap, kind: Kind) -> Result<(), GwError> {
-        self.bearer(headers)?;
-        if matches!(kind, Kind::Snapshot) {
+    async fn auth(&self, parts: &axum::http::request::Parts, kind: Kind) -> Result<Option<String>, GwError> {
+        let refreshed_cookie = if self.bearer(&parts.headers).is_ok() {
+            None
+        } else if let Some(token) = cookie_token(&parts.headers) {
+            if matches!(parts.method, Method::POST | Method::PUT | Method::DELETE | Method::PATCH)
+                && !csrf_valid(&parts.headers, self.ui_auth.secure_cookie() || parts.uri.scheme_str() == Some("https")) {
+                return Err(GwError::new(403, "CSRF_FORBIDDEN", "Yêu cầu ghi bằng cookie thiếu kiểm tra CSRF."));
+            }
+            let secure = request_is_secure(parts, self.ui_auth.secure_cookie());
+            let auth = self.ui_auth.clone();
+            let session = tokio::task::spawn_blocking(move || auth.validate_session(&token, secure))
+                .await.map_err(|_| auth_task_error())?.map_err(auth_error)?;
+            session.refreshed_cookie
+        } else {
+            return Err(unauthorized());
+        };
+        if matches!(kind, Kind::AudioIn) {
+            // Audio PCM keeps its existing per-call rate limit rather than consuming the control budget.
+        } else if matches!(kind, Kind::Snapshot) {
             let limit = self.limit.saturating_mul(3);
             if Self::rate_limited(&self.snapshot_hits, limit) {
                 return Err(GwError::new(429, "RATE_LIMITED", format!("Quá {limit} yêu cầu ảnh/phút cho token này.")));
@@ -91,7 +109,7 @@ impl Ctx {
         } else if Self::rate_limited(&self.hits, self.limit) {
             return Err(GwError::new(429, "RATE_LIMITED", "Quá 120 request/phút cho token này."));
         }
-        Ok(())
+        Ok(refreshed_cookie)
     }
 
     fn bearer(&self, headers: &HeaderMap) -> Result<(), GwError> {
@@ -140,6 +158,7 @@ enum Kind {
     LiveView,
     AudioIn,
     Events,
+    Auth,
 }
 
 #[derive(Clone, Copy)]
@@ -158,15 +177,41 @@ fn bytes_resp(result: Result<Binary, GwError>) -> Response {
     match result {
         Err(error) => error_resp(&error),
         Ok(content) => {
-            let mut response = ([(header::CONTENT_TYPE, content.content_type),
+            // Untrusted Telegram files may be navigated to with the web session cookie.
+            // Only passive media gets its original MIME type; unknown types are downloads.
+            let mime = content.content_type.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+            let inline = matches!(mime.as_str(), "image/png" | "image/jpeg" | "image/gif" | "image/webp")
+                || mime.starts_with("audio/") || mime.starts_with("video/");
+            let content_type = if inline { content.content_type } else { "application/octet-stream".into() };
+            let mut response = ([(header::CONTENT_TYPE, content_type),
                 (header::CACHE_CONTROL, content.cache_control.to_owned()),
                 (header::CONTENT_LENGTH, content.bytes.len().to_string())], content.bytes).into_response();
-            if let Some(disposition) = content.disposition {
-                response.headers_mut().insert(header::CONTENT_DISPOSITION, disposition.parse().unwrap());
+            if !inline {
+                let disposition = content.disposition.filter(|value| value.starts_with("attachment;"))
+                    .and_then(|value| value.parse().ok()).unwrap_or_else(|| "attachment".parse().unwrap());
+                response.headers_mut().insert(header::CONTENT_DISPOSITION, disposition);
+            } else if let Some(disposition) = content.disposition {
+                if let Ok(value) = disposition.parse() { response.headers_mut().insert(header::CONTENT_DISPOSITION, value); }
             }
-            response
+            isolate_binary(response)
         }
     }
+}
+
+/// Phản hồi tệp/nhị phân của người dùng (cần cookie/Bearer): chỉ cùng nguồn được nhúng.
+fn isolate_binary(response: Response) -> Response { isolate_with(response, "same-origin") }
+
+/// Luồng âm thanh dành cho THIẾT BỊ NGOÀI trình duyệt cùng nguồn (loa Google Cast, loa R1): đường này không dùng cookie mà dùng token riêng
+/// từng cuộc gọi trong URL, và bộ nhận của loa tải theo kiểu khác nguồn — `same-origin` sẽ làm loa im. Vẫn giữ nosniff + CSP sandbox.
+fn isolate_media(response: Response) -> Response { isolate_with(response, "cross-origin") }
+
+fn isolate_with(mut response: Response, corp: &'static str) -> Response {
+    for (name, value) in [
+        (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+        (header::CONTENT_SECURITY_POLICY, "default-src 'none'; sandbox"),
+        (header::HeaderName::from_static("cross-origin-resource-policy"), corp),
+    ] { response.headers_mut().insert(name, value.parse().unwrap()); }
+    response
 }
 
 /// `ApiError` → JSON như `_api_error_handler` (errors.py).
@@ -229,30 +274,35 @@ async fn handle(ctx: Arc<Ctx>, spec: Spec, req: Request) -> Response {
         }
     }
     // Mic ~10 POST/s có hạn mức riêng theo cuộc gọi; không tiêu hạn mức điều khiển 120/phút.
-    let auth = if matches!(spec.kind, Kind::AudioIn) { ctx.bearer(&parts.headers) } else { ctx.auth(&parts.headers, spec.kind) };
-    if let Err(e) = auth {
-        return error_resp(&e);
+    if matches!(spec.kind, Kind::Auth) {
+        let mut response = auth_handle(ctx.ui_auth.clone(), parts, body).await;
+        response.headers_mut().insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
+        return response;
     }
+    let refreshed_cookie = match ctx.auth(&parts, spec.kind).await {
+        Ok(cookie) => cookie,
+        Err(error) => return error_resp(&error),
+    };
     let out = match spec.kind {
         Kind::AudioIn => {
             let Ok(_permit) = ctx.audio_slots.try_acquire() else {
-                return error_resp(&GwError::new(429, "AUDIO_BACKPRESSURE", "Quá nhiều khối mic đang chờ."));
+                return with_cookie(error_resp(&GwError::new(429, "AUDIO_BACKPRESSURE", "Quá nhiều khối mic đang chờ.")), refreshed_cookie.as_deref());
             };
             let raw = match tokio::time::timeout(Duration::from_secs(5), to_bytes(body, 64 * 1024)).await {
-                Err(_) => return error_resp(&GwError::new(408, "AUDIO_TIMEOUT", "Quá thời gian nhận PCM.")),
-                Ok(Err(_)) => return error_resp(&GwError::new(413, "AUDIO_TOO_LARGE", "PCM vượt 64 KiB.")),
+                Err(_) => return with_cookie(error_resp(&GwError::new(408, "AUDIO_TIMEOUT", "Quá thời gian nhận PCM.")), refreshed_cookie.as_deref()),
+                Ok(Err(_)) => return with_cookie(error_resp(&GwError::new(413, "AUDIO_TOO_LARGE", "PCM vượt 64 KiB.")), refreshed_cookie.as_deref()),
                 Ok(Ok(raw)) => raw,
             };
             ctx.call.audio_in(path.rsplit('/').next().unwrap(), raw.to_vec()).await
         }
-        Kind::ChatBytes => return bytes_resp(ctx.chat.bytes(&path, &query).await),
-        Kind::Snapshot if ctx.accounts => return bytes_resp(ctx.chat.bytes(&path,&query).await),
-        Kind::Snapshot => return bytes_resp(ctx.call.snapshot(path.rsplit('/').next().unwrap()).await),
+        Kind::ChatBytes => return with_cookie(bytes_resp(ctx.chat.bytes(&path, &query).await), refreshed_cookie.as_deref()),
+        Kind::Snapshot if ctx.accounts => return with_cookie(bytes_resp(ctx.chat.bytes(&path,&query).await), refreshed_cookie.as_deref()),
+        Kind::Snapshot => return with_cookie(bytes_resp(ctx.call.snapshot(path.rsplit('/').next().unwrap()).await), refreshed_cookie.as_deref()),
         Kind::Events if ctx.accounts => ctx.chat.handle("GET", "/api/events", &query, Value::Null).await,
-        Kind::LiveView => return match ctx.call.video_frames(path.rsplit('/').next().unwrap()).await {
+        Kind::LiveView => return with_cookie(match ctx.call.video_frames(path.rsplit('/').next().unwrap()).await {
             Ok(frames) => live_view(frames, Duration::from_secs(8), Duration::from_secs(30)).await,
             Err(e) => error_resp(&e),
-        },
+        }, refreshed_cookie.as_deref()),
         Kind::Events => match &ctx.events {
             Some(store) => store.poll(since).await,
             None => Err(GwError::new(501, "NOT_IMPLEMENTED", "Chưa có bộ lưu sự kiện.")),
@@ -293,11 +343,151 @@ async fn handle(ctx: Arc<Ctx>, spec: Spec, req: Request) -> Response {
             Ok(b) => ctx.chat.handle("POST", &path, &query, b).await,
         },
         Kind::SendFile => send_file(&ctx, &path, &query, body).await,
+        Kind::Auth => unreachable!(),
     };
-    match out {
+    with_cookie(match out {
         Ok(v) => json_resp(StatusCode::OK, &v),
         Err(e) => error_resp(&e),
+    }, refreshed_cookie.as_deref())
+}
+
+fn unauthorized() -> GwError { GwError::new(401, "UNAUTHORIZED", "Thiếu hoặc sai token.") }
+
+fn auth_task_error() -> GwError {
+    GwError::new(500, "AUTH_STORAGE", "Không xử lý được đăng nhập web.")
+}
+
+fn auth_error(error: AuthError) -> GwError {
+    let mut out = GwError::new(error.status, error.code, error.message);
+    out.retry_after_seconds = error.retry_after;
+    out
+}
+
+fn with_cookie(mut response: Response, cookie: Option<&str>) -> Response {
+    if let Some(cookie) = cookie {
+        if let Ok(value) = cookie.parse() { response.headers_mut().insert(header::SET_COOKIE, value); }
     }
+    response
+}
+
+fn cookie_token(headers: &HeaderMap) -> Option<String> {
+    headers.get(header::COOKIE)?.to_str().ok()?.split(';').find_map(|part| {
+        let (name, value) = part.trim().split_once('=')?;
+        (name == "tggw_session" && !value.is_empty()).then(|| value.to_owned())
+    })
+}
+
+fn csrf_valid(headers: &HeaderMap, secure: bool) -> bool {
+    // This header is a CSRF boundary only while CORS stays disabled.
+    if headers.get("x-requested-with").and_then(|value| value.to_str().ok()) == Some("fetch") { return true; }
+    let Some(host) = headers.get(header::HOST).and_then(|value| value.to_str().ok()) else { return false; };
+    let Some(origin) = headers.get(header::ORIGIN).and_then(|value| value.to_str().ok()) else { return false; };
+    let Some(authority) = origin.strip_prefix("https://").or_else(|| (!secure).then(|| origin.strip_prefix("http://")).flatten()) else { return false; };
+    let authority = authority.strip_suffix('/').unwrap_or(authority);
+    !authority.contains('/') && authority.eq_ignore_ascii_case(host)
+}
+
+fn request_is_secure(parts: &axum::http::request::Parts, configured: bool) -> bool {
+    configured || parts.uri.scheme_str() == Some("https") || parts.headers.get(header::ORIGIN)
+        .and_then(|value| value.to_str().ok()).is_some_and(|origin| origin.starts_with("https://"))
+}
+
+async fn auth_handle(auth: Arc<UiAuth>, parts: axum::http::request::Parts, body: Body) -> Response {
+    let action = parts.uri.path().rsplit('/').next().unwrap_or_default();
+    let payload = if parts.method == Method::POST {
+        let raw = match tokio::time::timeout(Duration::from_secs(5), to_bytes(body, 8192)).await {
+            Ok(Ok(raw)) => raw,
+            Ok(Err(_)) => return error_resp(&GwError::bad_request("Thân đăng nhập web vượt 8 KB.")),
+            Err(_) => return error_resp(&GwError::new(408, "AUTH_TIMEOUT", "Quá thời gian nhận yêu cầu đăng nhập web.")),
+        };
+        match serde_json::from_slice::<Value>(&raw) {
+            Ok(body) if body.is_object() => body,
+            _ if raw.is_empty() => json!({}),
+            _ => return error_resp(&GwError::bad_request("Thân đăng nhập web phải là JSON object.")),
+        }
+    } else { Value::Null };
+    // Slow request bodies must not occupy slots reserved for password hashing.
+    let permit = if matches!(action, "setup" | "login" | "password") { Some(auth.hash_permit().await) } else { None };
+    tokio::task::spawn_blocking(move || { let _permit = permit; auth_action(&auth, &parts, &payload) })
+        .await.unwrap_or_else(|_| error_resp(&auth_task_error()))
+}
+
+fn auth_action(auth: &UiAuth, parts: &axum::http::request::Parts, payload: &Value) -> Response {
+    let action = parts.uri.path().rsplit('/').next().unwrap_or_default();
+    let secure = request_is_secure(parts, auth.secure_cookie());
+    let current_cookie = cookie_token(&parts.headers);
+    if action == "status" {
+        let status = match auth.status(current_cookie.as_deref(), secure) {
+            Ok(status) => status,
+            Err(error) => return error_resp(&auth_error(error)),
+        };
+        let body = json!({"da_thiet_lap":status.configured, "dang_nhap":status.logged_in_as.is_some(),
+            "nguoi_dung":status.logged_in_as});
+        return with_cookie(json_resp(StatusCode::OK, &body), status.refreshed_cookie.as_deref());
+    }
+    if matches!(action, "setup" | "login") && !parts.headers.get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.split(';').next().unwrap().trim().eq_ignore_ascii_case("application/json")) {
+        return error_resp(&GwError::bad_request("Yêu cầu đăng nhập web cần Content-Type application/json."));
+    }
+    let outcome = match action {
+        "setup" => {
+            let (Some(token), Some(user), Some(password)) = (str_field(payload, "token"), str_field(payload, "ten"), str_field(payload, "mat_khau")) else {
+                return error_resp(&GwError::bad_request("Thiếu token, tên đăng nhập hoặc mật khẩu."));
+            };
+            auth.setup(token, user, password, secure).map(|grant| (json!({"ok":true,"nguoi_dung":grant.username}), Some(grant.cookie)))
+        }
+        "login" => {
+            let (Some(user), Some(password)) = (str_field(payload, "ten"), str_field(payload, "mat_khau")) else {
+                return error_resp(&GwError::bad_request("Thiếu tên đăng nhập hoặc mật khẩu."));
+            };
+            let remember = payload.get("ghi_nho").and_then(Value::as_bool).unwrap_or(true);
+            let ip = parts.extensions.get::<ConnectInfo<SocketAddr>>().map(|ConnectInfo(addr)| addr.ip().to_string()).unwrap_or_else(|| "unknown".into());
+            auth.login(user, password, remember, &ip, secure).map(|grant| (json!({"ok":true,"nguoi_dung":grant.username}), Some(grant.cookie)))
+        }
+        "logout" => {
+            let Some(token) = current_cookie.as_deref() else { return error_resp(&auth_error(crate::ui_auth::AuthError {
+                status:401,code:"UNAUTHORIZED",message:"Chưa đăng nhập hoặc phiên đã hết hạn.",retry_after:None,
+            })); };
+            if !csrf_valid(&parts.headers, auth.secure_cookie() || parts.uri.scheme_str() == Some("https")) { return error_resp(&GwError::new(403,"CSRF_FORBIDDEN","Yêu cầu ghi bằng cookie thiếu kiểm tra CSRF.")); }
+            auth.logout(token).map(|_| (json!({"ok":true}), Some(clear_cookie(secure))))
+        }
+        "logout-all" => {
+            let Some(token) = current_cookie.as_deref() else { return error_resp(&auth_error(crate::ui_auth::AuthError {
+                status:401,code:"UNAUTHORIZED",message:"Chưa đăng nhập hoặc phiên đã hết hạn.",retry_after:None,
+            })); };
+            if !csrf_valid(&parts.headers, auth.secure_cookie() || parts.uri.scheme_str() == Some("https")) { return error_resp(&GwError::new(403,"CSRF_FORBIDDEN","Yêu cầu ghi bằng cookie thiếu kiểm tra CSRF.")); }
+            auth.logout_all(token).map(|_| (json!({"ok":true}), Some(clear_cookie(secure))))
+        }
+        "password" => {
+            let Some(token) = current_cookie.as_deref() else { return error_resp(&auth_error(crate::ui_auth::AuthError {
+                status:401,code:"UNAUTHORIZED",message:"Chưa đăng nhập hoặc phiên đã hết hạn.",retry_after:None,
+            })); };
+            if !csrf_valid(&parts.headers, auth.secure_cookie() || parts.uri.scheme_str() == Some("https")) { return error_resp(&GwError::new(403,"CSRF_FORBIDDEN","Yêu cầu ghi bằng cookie thiếu kiểm tra CSRF.")); }
+            let (Some(old), Some(new)) = (str_field(payload, "cu"), str_field(payload, "moi")) else {
+                return error_resp(&GwError::bad_request("Thiếu mật khẩu cũ hoặc mới."));
+            };
+            auth.change_password(token, old, new).map(|_| (json!({"ok":true}), None))
+        }
+        _ => unreachable!("chỉ gọi cho đường dẫn đã đăng ký"),
+    };
+    match outcome {
+        Ok((value, cookie)) => with_cookie(json_resp(StatusCode::OK, &value), cookie.as_deref()),
+        Err(error) => {
+            let error = auth_error(error);
+            let mut response = error_resp(&error);
+            if let Some(seconds) = error.retry_after_seconds {
+                response.headers_mut().insert(header::RETRY_AFTER, seconds.to_string().parse().unwrap());
+            }
+            response
+        }
+    }
+}
+
+fn str_field<'a>(value: &'a Value, name: &str) -> Option<&'a str> { value.get(name).and_then(Value::as_str) }
+
+fn clear_cookie(secure: bool) -> String {
+    format!("tggw_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0{}", if secure { "; Secure" } else { "" })
 }
 
 /// Phần vận chuyển của `send_file` (chat_routes.py): kiểm `kind` trước khi đọc thân, thân thô ≤ 64 MB, không rỗng.
@@ -360,8 +550,8 @@ async fn cast_stream(State(ctx): State<Arc<Ctx>>, req: Request) -> Response {
         let left = left - chunk.len();
         Some((Ok::<_, std::convert::Infallible>(chunk), (prime, audio, left)))
     });
-    ([(header::CONTENT_TYPE, "audio/mpeg".into()), (header::CACHE_CONTROL, "no-store".into()),
-        (header::CONTENT_LENGTH, CAST_LENGTH.to_string())], Body::from_stream(chunks)).into_response()
+    isolate_media(([(header::CONTENT_TYPE, "audio/mpeg".into()), (header::CACHE_CONTROL, "no-store".into()),
+        (header::CONTENT_LENGTH, CAST_LENGTH.to_string())], Body::from_stream(chunks)).into_response())
 }
 
 /// Token media ngắn hạn, chỉ lấy từ POST /media đã qua Bearer. Không nhận Bearer trong query.
@@ -390,8 +580,8 @@ fn audio_out_response(stream: crate::contract::AudioOut) -> Response {
             };
             Some((Ok::<_, std::convert::Infallible>(chunk), (prime, audio, stopped, expires)))
         });
-    ([(header::CONTENT_TYPE,"audio/wav"),(header::CACHE_CONTROL,"no-store"),
-        (header::REFERRER_POLICY,"no-referrer"),(header::X_CONTENT_TYPE_OPTIONS,"nosniff")],Body::from_stream(chunks)).into_response()
+    isolate_media(([(header::CONTENT_TYPE,"audio/wav"),(header::CACHE_CONTROL,"no-store"),
+        (header::REFERRER_POLICY,"no-referrer")],Body::from_stream(chunks)).into_response())
 }
 
 async fn next_jpeg(frames: &mut VideoFrames, limit: Duration) -> Result<Option<Arc<[u8]>>, ()> {
@@ -418,8 +608,8 @@ async fn live_view(mut frames: VideoFrames, first_wait: Duration, idle: Duration
         part.extend_from_slice(b"\r\n");
         Some((Ok::<_, std::convert::Infallible>(part), frames))
     });
-    ([(header::CONTENT_TYPE, "multipart/x-mixed-replace; boundary=frame"),
-        (header::CACHE_CONTROL, "no-store")], Body::from_stream(parts)).into_response()
+    isolate_binary(([(header::CONTENT_TYPE, "multipart/x-mixed-replace; boundary=frame"),
+        (header::CACHE_CONTROL, "no-store")], Body::from_stream(parts)).into_response())
 }
 
 /// Một phương thức → `spec`; phương thức khác → 405 kiểu FastAPI.
@@ -450,6 +640,11 @@ fn router_with(ctx: Arc<Ctx>) -> Router {
     let mut r = Router::new().route("/health", on(get, health).on(MethodFilter::HEAD, method_not_allowed).fallback(method_not_allowed));
     for path in ["/","/app.html","/ui/app.html"] {r=r.route(path,on(get,crate::web::app));}
     for path in ["/index.html","/ui/","/ui/index.html"] {r=r.route(path,on(get,crate::web::accounts));}
+    r = r.route("/ui/qrcode.min.js", on(get, crate::web::qrcode));
+    r = r.route("/ui/api/auth/status", route(get, s(Auth)));
+    for action in ["setup", "login", "logout", "logout-all", "password"] {
+        r = r.route(&format!("/ui/api/auth/{action}"), route(post, s(Auth)));
+    }
     r=r.route("/ui/api/accounts",route(post,s(Ui)))
         .route("/ui/api/accounts/qr",route(post,s(Ui)))
         .route("/ui/api/accounts/:login_id",add(route(get,s(Ui)),MethodFilter::DELETE,s(Ui)));
@@ -458,7 +653,7 @@ fn router_with(ctx: Arc<Ctx>) -> Router {
     }
     // Chỉ đọc → ChatControl (routes.py + chat_routes.py).
     for p in ["/api/accounts", "/api/me", "/api/chats", "/api/contacts", "/api/search", "/api/feed",
-              "/api/calls", "/api/calltrace"] {
+              "/api/calls", "/api/calltrace", "/api/contacts/blocked"] {
         r = r.route(p, route(get, s(ChatGet)));
     }
     r = r
@@ -470,6 +665,7 @@ fn router_with(ctx: Arc<Ctx>) -> Router {
     for p in ["/api/send_message", "/api/send_media", "/api/send_voice", "/api/call", "/api/answer_call",
               "/api/hangup_call", "/api/audio/in", "/api/audio/upload", "/api/messages/edit", "/api/messages/delete",
               "/api/messages/forward", "/api/messages/react", "/api/resolve", "/api/translate", "/api/contacts/open",
+              "/api/contacts/add", "/api/contacts/edit", "/api/contacts/remove", "/api/contacts/block", "/api/contacts/unblock",
               "/api/do/:name"] {
         r = r.route(p, route(post, s(ChatPost)));
     }
@@ -500,26 +696,45 @@ pub fn router(call: Arc<dyn CallControl>, chat: Arc<dyn ChatControl>, cfg: RestC
     router_with_events(call, chat, cfg, None)
 }
 
+pub fn router_with_ui_auth(call: Arc<dyn CallControl>, chat: Arc<dyn ChatControl>, cfg: RestConfig, ui_auth: Arc<UiAuth>) -> Router {
+    router_with(Arc::new(Ctx {
+        call, chat, events: None, accounts: false, token: cfg.token, ui_auth,
+        limit: cfg.rate_limit_per_minute, hits: Mutex::new(VecDeque::new()),
+        snapshot_hits: Mutex::new(VecDeque::new()), version: cfg.version,
+        started: Instant::now(), audio_slots: tokio::sync::Semaphore::new(8),
+    }))
+}
+
+pub(crate) fn router_accounts_with_ui_auth(accounts: Arc<crate::account_router::Accounts>, cfg: RestConfig, ui_auth: Arc<UiAuth>) -> Router {
+    router_with(Arc::new(Ctx {
+        call: accounts.clone(), chat: accounts, events: None, accounts: true, token: cfg.token,
+        ui_auth, limit: cfg.rate_limit_per_minute, hits: Mutex::new(VecDeque::new()),
+        snapshot_hits: Mutex::new(VecDeque::new()), version: cfg.version,
+        started: Instant::now(), audio_slots: tokio::sync::Semaphore::new(8),
+    }))
+}
+
+#[cfg(test)]
+pub(crate) fn router_accounts(accounts: Arc<crate::account_router::Accounts>, cfg: RestConfig) -> Router {
+    let ui_auth = Arc::new(UiAuth::in_memory(&cfg.token));
+    router_accounts_with_ui_auth(accounts, cfg, ui_auth)
+}
+
 pub(crate) fn router_with_events(call: Arc<dyn CallControl>, chat: Arc<dyn ChatControl>, cfg: RestConfig, events: Option<EventStore>) -> Router {
+    let ui_auth = Arc::new(UiAuth::in_memory(&cfg.token));
     router_with(Arc::new(Ctx {
         call,
         chat,
         events,
         accounts: false,
         token: cfg.token,
+        ui_auth,
         limit: cfg.rate_limit_per_minute,
         hits: Mutex::new(VecDeque::new()),
         snapshot_hits: Mutex::new(VecDeque::new()),
         version: cfg.version,
         started: Instant::now(),
         audio_slots: tokio::sync::Semaphore::new(8),
-    }))
-}
-
-pub(crate) fn router_accounts(accounts: Arc<crate::account_router::Accounts>, cfg: RestConfig) -> Router {
-    router_with(Arc::new(Ctx {
-        call:accounts.clone(),chat:accounts,events:None,accounts:true,token:cfg.token,limit:cfg.rate_limit_per_minute,
-        hits:Mutex::new(VecDeque::new()),snapshot_hits:Mutex::new(VecDeque::new()),version:cfg.version,started:Instant::now(),audio_slots:tokio::sync::Semaphore::new(8),
     }))
 }
 
@@ -562,7 +777,8 @@ where
 {
     let addr = listener.local_addr().map_err(|e| format!("không đọc được địa chỉ HTTP: {e}"))?;
     log::info!("tggw serve: nghe http://{addr}");
-    axum::serve(listener, app).with_graceful_shutdown(shutdown).await.map_err(|e| format!("HTTP lỗi: {e}"))
+    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
+        .with_graceful_shutdown(shutdown).await.map_err(|e| format!("HTTP lỗi: {e}"))
 }
 
 pub async fn shutdown_signal() {
@@ -828,7 +1044,7 @@ mod tests {
         let ctx = Ctx {
             events: None,
             accounts: false,
-            call: fake.clone(), chat: fake, token: TOK.into(), limit: 2,
+            call: fake.clone(), chat: fake, token: TOK.into(), ui_auth: Arc::new(UiAuth::in_memory(TOK)), limit: 2,
             hits: Mutex::new(VecDeque::from([
                 Instant::now() - Duration::from_secs(61), Instant::now(),
             ])),

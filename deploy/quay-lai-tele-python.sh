@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Quay lại gateway Telegram Python: dừng bản Rust (KHÔNG xoá), khởi động lại Python. Từ chối khi đang có cuộc gọi trừ khi đặt BO_QUA_CUOC_GOI=1.
 set -euo pipefail
-ssh ha200 "BO_QUA=${BO_QUA_CUOC_GOI:-0} bash -s" <<'REMOTE'
+ssh "${TGGW_BUILD_HOST:-builder}" "BO_QUA=${BO_QUA_CUOC_GOI:-0} bash -s" <<'REMOTE'
 set -euo pipefail
 PY=telegram-gateway; RS=telegram-gateway-rs
 TOKEN=$(docker inspect "$RS" --format '{{range .Config.Env}}{{println .}}{{end}}' | sed -n 's/^GATEWAY_TOKEN=//p')

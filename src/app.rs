@@ -142,11 +142,20 @@ impl App {
         let login_config = td::login::LoginConfig::from_env()
             .map_err(|e| format!("Cấu hình đăng nhập không hợp lệ: {e}"))?;
         let (addr, rest_config) = rest::serve_config_from_env()?;
+        let secure_cookie = crate::ui_auth::secure_cookie_from_env()?;
+        let data_dir = login_config.data_dir.clone();
+        let ui_auth = std::sync::Arc::new(crate::ui_auth::UiAuth::open(
+            &data_dir,
+            &rest_config.token,
+            std::env::var("TG_UI_USER").ok().as_deref(),
+            std::env::var("TG_UI_PASSWORD").ok().as_deref(),
+            secure_cookie,
+        )?);
         let listener = tokio::net::TcpListener::bind(addr).await.map_err(|e| format!("Không nghe được {addr}: {e}"))?;
         let cast_port = listener.local_addr().map_err(|_| "Không đọc được cổng HTTP.")?.port();
         let library = std::env::var("TDJSON_LIB").unwrap_or_else(|_| "libtdjson.so".into());
         let accounts = crate::account_router::Accounts::new(login_config, library, cast_port).await?;
-        let app = rest::router_accounts(accounts.clone(), rest_config);
+        let app = rest::router_accounts_with_ui_auth(accounts.clone(), rest_config, ui_auth);
         let (stop_tx, stop_rx) = oneshot::channel();
         let mut server = tokio::spawn(rest::serve(listener, app, async move { let _ = stop_rx.await; }));
         let sweeping=accounts.clone();

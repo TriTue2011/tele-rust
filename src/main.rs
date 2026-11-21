@@ -2,24 +2,31 @@
 //!
 //! Chạy: `TDJSON_LIB=/đường/tới/libtdjson.so tggw version|login|protocol|serve`
 
-use std::time::Duration;
+use std::{io::{self, IsTerminal, Write}, process::Command, time::Duration};
 
 use telegram_gateway_rs::contract::TdLink;
 use telegram_gateway_rs::td;
 
 #[tokio::main]
 async fn main() {
+    let cmd = std::env::args().nth(1).unwrap_or_else(|| "version".into());
+    let data_dir = std::env::var("TGGW_DATA").or_else(|_| std::env::var("DATA_DIR")).unwrap_or_else(|_| "/data".into());
+    if cmd == "passwd" {
+        if let Err(error) = run_passwd(&data_dir) {
+            eprintln!("LỖI đặt lại mật khẩu: {error}");
+            std::process::exit(2);
+        }
+        return;
+    }
     if let Err(e) = telegram_gateway_rs::config::validate() {
         eprintln!("LỖI cấu hình: {e}");
         std::process::exit(2);
     }
-    let data_dir = std::env::var("TGGW_DATA").or_else(|_| std::env::var("DATA_DIR")).unwrap_or_else(|_| "/data".into());
     if let Err(e) = telegram_gateway_rs::logging::init(data_dir.into()) {
         eprintln!("LỖI cấu hình nhật ký: {e}");
         std::process::exit(2);
     }
     let path = std::env::var("TDJSON_LIB").unwrap_or_else(|_| "libtdjson.so".into());
-    let cmd = std::env::args().nth(1).unwrap_or_else(|| "version".into());
     if cmd == "protocol" {
         return run_protocol();
     }
@@ -57,10 +64,35 @@ async fn main() {
             }
         }
         other => {
-            log::error!("lệnh lạ: {other} (có: version, login, protocol, serve)");
+            log::error!("lệnh lạ: {other} (có: version, login, protocol, serve, passwd)");
             std::process::exit(64);
         }
     }
+}
+
+fn run_passwd(data_dir: &str) -> Result<(), String> {
+    let password = match std::env::var("TG_UI_PASSWORD") {
+        Ok(password) => password,
+        Err(_) => {
+            eprint!("Mật khẩu mới: ");
+            io::stderr().flush().map_err(|_| "Không đọc được mật khẩu từ terminal.".to_owned())?;
+            let hidden = io::stdin().is_terminal();
+            if hidden && !Command::new("stty").arg("-echo").status().map_err(|_| "Không thể tắt echo terminal.".to_owned())?.success() {
+                return Err("Không thể tắt echo terminal.".into());
+            }
+            let mut password = String::new();
+            let read = io::stdin().read_line(&mut password);
+            let restored = if hidden { Command::new("stty").arg("echo").status().map_err(|_| "Không khôi phục được echo terminal.".to_owned())?.success() } else { true };
+            if hidden { eprintln!(); }
+            read.map_err(|_| "Không đọc được mật khẩu từ terminal.".to_owned())?;
+            if !restored { return Err("Không khôi phục được echo terminal.".into()); }
+            while password.ends_with(['\n', '\r']) { password.pop(); }
+            password
+        }
+    };
+    telegram_gateway_rs::ui_auth::UiAuth::reset_password(std::path::Path::new(data_dir), &password)?;
+    println!("Đã đặt lại mật khẩu đăng nhập web.");
+    Ok(())
 }
 
 async fn run_login(path: &str) -> Result<(), String> {

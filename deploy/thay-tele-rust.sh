@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Thay gateway Telegram Python (container `telegram-gateway`) bằng bản Rust (`telegram-gateway-rs`) trên .200.
+# Thay gateway Telegram Python (container `telegram-gateway`) bằng bản Rust (`telegram-gateway-rs`) trên máy được cấu hình.
 # KHÔNG xoá gì: Python chỉ bị DỪNG (docker stop), có thể quay lại bằng quay-lai-tele-python.sh.
 # Từ chối khi đang có cuộc gọi. Sao lưu phiên TDLib trước. Chờ /health báo tài khoản online; không đạt thì TỰ quay lại Python.
-# Cần: ssh ha200; nhị phân + libtdjson đã đặt ở /opt/telegram-gateway-rs/{tggw,tdjson.libs}.
+# Cần: TGGW_BUILD_HOST là SSH alias; nhị phân + libtdjson ở /opt/telegram-gateway-rs/{tggw,tdjson.libs}.
 set -euo pipefail
-ssh ha200 'bash -s' <<'REMOTE'
+ssh "${TGGW_BUILD_HOST:-builder}" 'bash -s' <<'REMOTE'
 set -euo pipefail
 PY=telegram-gateway; RS=telegram-gateway-rs
 BASE=/opt/telegram-gateway-rs; DATA_PY=/opt/telegram-gateway/data

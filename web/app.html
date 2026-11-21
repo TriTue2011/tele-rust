@@ -42,6 +42,45 @@
   .p { color:var(--mut); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:14px; }
   .badge { background:var(--badge); color:#fff; border-radius:99px; padding:0 7px; font-size:12px; min-width:20px; text-align:center; flex:none; }
   .badge.mute { background:var(--mute); }
+  #contact-tools { border-bottom:1px solid var(--line); padding:8px 12px; }
+  .contact-actions { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
+  #contact-blocked-heading { margin:0; font-size:15px; }
+  #contact-tools .ghost, .contact-retry { min-height:44px; }
+  #contact-tools button, #contact-sort, #t-contacts, #t-chats, #q, .contact-dialog button,
+  .contact-dialog input:not([type=checkbox]) { min-height:44px; }
+  .contact-sort { display:grid; gap:4px; margin-top:8px; color:var(--mut); font-size:13px; }
+  #contact-sort, .contact-dialog input[type=tel] { width:100%; min-width:0; padding:8px 10px; border:1px solid var(--line);
+    border-radius:9px; background:var(--bg); color:var(--fg); font:inherit; }
+  .contact-section { margin:0; padding:4px 12px; background:var(--bg); color:var(--mut); font-size:13px; font-weight:600; }
+  .contact-item { border-bottom:1px solid var(--line); }
+  .contact-row { display:flex; align-items:flex-start; padding:0 4px 0 0; }
+  .contact-main { min-width:0; flex:1; display:flex; align-items:center; gap:10px; padding:8px 12px;
+    text-align:left; background:transparent; color:var(--fg); }
+  .contact-main:hover { background:var(--bg); }
+  .contact-main .t, .contact-status { display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .contact-status { color:var(--mut); font-size:13px; }
+  .contact-status.online { color:#187d4e; }
+  @media (prefers-color-scheme:dark) { .contact-status.online { color:#61d59e; } }
+  .contact-menu { flex:none; position:relative; margin-top:8px; }
+  .contact-menu summary { min-width:44px; min-height:44px; display:grid; place-items:center; list-style:none;
+    cursor:pointer; color:var(--mut); border-radius:9px; }
+  .contact-menu summary::-webkit-details-marker { display:none; }
+  .contact-menu summary:focus-visible, #contact-sort:focus-visible { outline:2px solid var(--acc); }
+  .contact-menu[open] summary, .contact-menu summary:hover { background:var(--bg); }
+  .contact-menu-items { position:absolute; top:100%; right:0; width:144px; z-index:2; display:grid;
+    padding:4px; border:1px solid var(--line); border-radius:9px; background:var(--panel); }
+  .contact-menu-items button { min-height:44px; text-align:left; color:var(--fg); background:transparent; }
+  .contact-menu-items button:hover { background:var(--bg); }
+  .contact-dialog { width:min(420px, calc(100vw - 24px)); max-height:calc(100dvh - 24px); padding:20px;
+    border:1px solid var(--line); border-radius:16px; background:var(--panel); color:var(--fg); }
+  .contact-dialog::backdrop { background:#05080bcc; }
+  .contact-dialog h2 { margin:0 0 10px; font-size:20px; }
+  .contact-dialog p { margin:6px 0; color:var(--mut); overflow-wrap:anywhere; }
+  .contact-dialog label:not(.contact-check) { display:block; margin:8px 0 4px; }
+  .contact-check { min-height:44px; display:flex; align-items:center; gap:8px; cursor:pointer; }
+  .contact-check input { width:18px; height:18px; flex:none; }
+  .contact-dialog .contact-actions { justify-content:flex-end; margin-top:12px; }
+  .contact-dialog #contact-error { color:var(--err); }
   #msgs { flex:1; overflow-y:auto; padding:12px 14px; display:flex; flex-direction:column; gap:4px; }
   .day { align-self:center; color:var(--mut); font-size:12px; background:var(--panel); border-radius:99px; padding:2px 10px; margin:8px 0; }
   .m { max-width:min(78%,560px); padding:6px 10px 4px; border-radius:12px; background:var(--in); word-wrap:break-word; overflow-wrap:anywhere; position:relative; }
@@ -71,7 +110,10 @@
   #reply { display:none; padding:4px 12px; background:var(--panel); border-top:1px solid var(--line); color:var(--mut); font-size:13px; }
   #more { align-self:center; margin:6px 0; }
   .empty { margin:auto; color:var(--mut); text-align:center; padding:24px; }
-  #gate { margin:auto; padding:24px; max-width:420px; width:100%; }
+  #gate { margin:auto; padding:24px; max-width:420px; width:100%; overflow-y:auto; }
+  #gate label { display:block; margin:10px 0 4px; }
+  #gate input:not([type=checkbox]) { width:100%; }
+  #app.locked aside { display:none; }
   .back { display:none; }
   #call-overlay { position:fixed; inset:0; z-index:8; display:grid; place-items:center; padding:20px; background:rgba(7,13,21,.76); color:#fff; }
   #call-window { width:min(920px,96vw); height:min(760px,calc(100dvh - 40px)); display:grid; grid-template-rows:auto minmax(0,1fr) auto; overflow:hidden; border:1px solid #ffffff24; border-radius:20px; background:#101820; box-shadow:0 18px 60px #0009; }
@@ -133,20 +175,52 @@
 <body>
 <div id="app" class="locked">
   <aside>
-    <div class="bar"><h1 id="me">Telegram<small id="mesub"></small></h1><a class="ghost" href="index.html" style="color:var(--acc);font-size:13px">Tài khoản</a></div>
+    <div class="bar"><h1 id="me">Telegram<small id="mesub"></small></h1><a class="ghost" href="/ui/index.html" style="color:var(--acc);font-size:13px">Tài khoản</a></div>
     <div style="padding:8px 12px"><label for="account">Tài khoản đang dùng</label><select id="account" style="width:100%;padding:8px" aria-label="Chọn tài khoản Telegram"></select></div>
     <button id="call-settings-open" class="ghost" type="button">Cài đặt cuộc gọi</button>
     <div style="padding:8px 12px"><input id="q" type="text" placeholder="Tìm hội thoại…" autocomplete="off" aria-label="Tìm hội thoại"></div>
-    <div class="tabs" role="tablist"><button id="t-chats" class="on" role="tab">Hội thoại</button><button id="t-contacts" role="tab">Danh bạ</button></div>
+    <div class="tabs" role="tablist"><button id="t-chats" class="on" role="tab" aria-selected="true">Hội thoại</button><button id="t-contacts" role="tab" aria-selected="false">Danh bạ</button></div>
+    <div id="contact-tools" hidden>
+      <div class="contact-actions">
+        <button id="contact-add" type="button">Thêm liên hệ</button>
+        <button id="contact-blocked" class="ghost" type="button">Đã chặn</button>
+        <h2 id="contact-blocked-heading" hidden>Đã chặn</h2>
+      </div>
+      <label id="contact-sort-field" class="contact-sort" for="contact-sort">Xếp theo
+        <select id="contact-sort"><option value="last_seen">Lần cuối trực tuyến</option><option value="name">Tên</option></select>
+      </label>
+    </div>
     <div id="list" role="list"></div>
   </aside>
   <main>
     <div class="bar" id="head" hidden><button class="icon back" id="back" aria-label="Quay lại">←</button><h1 id="title"></h1><button class="icon" id="call-a" aria-label="Gọi thoại" title="Gọi thoại">📞</button><button class="icon" id="call-v" aria-label="Gọi video" title="Gọi video">🎥</button></div>
     <div id="gate">
       <h1 style="font-size:18px">Telegram Gateway</h1>
-      <p class="d">Dán token của gateway (<code>GATEWAY_TOKEN</code>) để vào. Trình duyệt chỉ nhớ trong phiên đang mở.</p>
-      <input id="token" type="password" autocomplete="off" aria-label="Token">
-      <button id="btn-token" style="margin-top:10px">Kết nối</button>
+      <form id="gate-setup" hidden>
+        <h2>Thiết lập lần đầu</h2>
+        <p class="d">Dán token khởi tạo do người quản trị cung cấp một lần, rồi tạo tài khoản đăng nhập web. Token sẽ không được lưu trong trình duyệt.</p>
+        <label for="setup-token">Token khởi tạo</label>
+        <input id="setup-token" type="password" autocomplete="off">
+        <label for="setup-user">Tên đăng nhập</label>
+        <input id="setup-user" type="text" autocomplete="username">
+        <label for="setup-pass">Mật khẩu (ít nhất 10 ký tự)</label>
+        <input id="setup-pass" type="password" autocomplete="new-password">
+        <button id="btn-setup" style="margin-top:10px">Thiết lập và đăng nhập</button>
+      </form>
+      <form id="gate-login" hidden>
+        <h2>Đăng nhập web</h2>
+        <p class="d">Quên mật khẩu? Đặt lại trên máy chủ bằng lệnh <code>tggw passwd</code>.</p>
+        <label for="auth-user">Tên đăng nhập</label>
+        <input id="auth-user" type="text" autocomplete="username">
+        <label for="auth-pass">Mật khẩu</label>
+        <input id="auth-pass" type="password" autocomplete="current-password">
+        <label><input id="remember" type="checkbox" checked> Ghi nhớ trên trình duyệt này</label>
+        <p class="d">Giữ đăng nhập tối đa 90 ngày, tự gia hạn khi dùng. Bỏ chọn để kết thúc phiên khi đóng trình duyệt.</p>
+        <button id="btn-auth-login" style="margin-top:10px">Đăng nhập</button>
+      </form>
+      <div id="gate-account" hidden>
+        <p class="d"><a href="/ui/index.html">Quản lý tài khoản và mật khẩu web</a></p>
+      </div>
       <p id="gate-msg" class="err" role="status"></p>
     </div>
     <div id="placeholder" class="empty" hidden>Chọn một hội thoại ở bên trái.</div>
@@ -160,6 +234,29 @@
     </div>
   </main>
 </div>
+<dialog id="contact-dialog" class="contact-dialog" aria-labelledby="contact-dialog-title">
+  <form id="contact-form">
+    <h2 id="contact-dialog-title"></h2>
+    <div id="contact-names">
+      <label for="contact-last">Họ</label><input id="contact-last" type="text" maxlength="64" autocomplete="off">
+      <label for="contact-first">Tên</label><input id="contact-first" type="text" maxlength="64" autocomplete="off">
+    </div>
+    <div id="contact-add-fields">
+      <label for="contact-phone">Số điện thoại</label><input id="contact-phone" type="tel" maxlength="40" placeholder="+84 hoặc 0…" autocomplete="off">
+      <label class="contact-check"><input id="contact-share" type="checkbox"> Chia sẻ số của tôi với liên hệ này</label>
+    </div>
+    <div id="contact-block-fields">
+      <p id="contact-block-confirm"></p>
+      <label class="contact-check"><input id="contact-report" type="checkbox"> Báo spam</label>
+      <label class="contact-check"><input id="contact-delete-chat" type="checkbox"> Xoá hội thoại ở phía tôi</label>
+    </div>
+    <p id="contact-error" role="alert" hidden></p>
+    <div class="contact-actions">
+      <button id="contact-cancel" type="button" class="ghost">Huỷ</button>
+      <button id="contact-save" type="submit"></button>
+    </div>
+  </form>
+</dialog>
 <section id="call-overlay" hidden>
   <div id="call-window" role="dialog" aria-modal="true" aria-labelledby="call-name" aria-describedby="call-state" tabindex="-1">
     <header id="call-top"><div id="call-avatar" aria-hidden="true"></div><div id="call-heading"><div id="call-name"></div><div id="call-state" aria-live="polite"></div></div><time id="call-time"></time></header>
@@ -243,13 +340,11 @@
   let myId = null, listTimer = null, typingTimer = null, unreadTotal = 0;
   let account = new URLSearchParams(location.search).get("account") || "";
   function accountPath(path) {
-    if (!account || path.startsWith("/api/accounts") || path.startsWith("/api/feed")) return path;
+    if (!account || path.startsWith("/api/accounts") || path.startsWith("/api/feed") || path.startsWith("/ui/api/auth/")) return path;
     return path + (path.includes("?") ? "&" : "?") + "account=" + encodeURIComponent(account);
   }
 
   // ---- tiện ích -------------------------------------------------------------------------------
-  function tok() { try { return sessionStorage.getItem("gw_token") || ""; } catch (e) { return ""; } }
-  function setTok(v) { try { sessionStorage.setItem("gw_token", v); } catch (e) {} }
   function toast(t) { const el = $("toast"); el.textContent = t; el.style.display = "block"; clearTimeout(toast.h); toast.h = setTimeout(() => { el.style.display = "none"; }, 4000); }
   function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; }
   function hhmm(ts) { const d = new Date(ts * 1000); return d.toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" }); }
@@ -260,19 +355,19 @@
   function initials(s) { const w = (s || "?").trim().split(/\s+/); return ((w[0] || "?")[0] + (w.length > 1 ? w[w.length - 1][0] : "")).toUpperCase(); }
 
   async function api(method, path, body, raw) {
-    const h = { "Authorization": "Bearer " + tok() };
+    const h = { "X-Requested-With": "fetch" };
     if (body !== undefined && !raw) h["Content-Type"] = "application/json";
     let res;
-    try { res = await fetch(accountPath(path), { method: method, headers: h, body: raw ? body : (body === undefined ? undefined : JSON.stringify(body)) }); }
+    try { res = await fetch(accountPath(path), { method: method, credentials: "same-origin", headers: h, body: raw ? body : (body === undefined ? undefined : JSON.stringify(body)) }); }
     catch (e) { throw new Error("Không gọi được gateway (mất mạng?)."); }
     let data = null; try { data = await res.json(); } catch (e) { data = null; }
     if (!res.ok) { const er = data && (data.error || (data.detail && data.detail.error)); const err = new Error(er && er.message ? er.message : "Lỗi HTTP " + res.status); err.status = res.status; err.code = er && er.code; throw err; }
     return data || {};
   }
-  // Tệp (ảnh, âm thanh, video) cần Authorization nên tải bằng fetch rồi dựng blob URL.
+  // Tệp (ảnh, âm thanh, video) tải bằng fetch rồi dựng blob URL.
   async function blobUrl(fileId) {
     if (blobs.has(fileId)) return blobs.get(fileId);
-    const p = fetch(accountPath("/api/file/" + fileId), { headers: { "Authorization": "Bearer " + tok() } })
+    const p = fetch(accountPath("/api/file/" + fileId), { credentials: "same-origin" })
       .then((r) => { if (!r.ok) throw new Error("Tệp chưa tải được"); return r.blob(); }).then((b) => URL.createObjectURL(b));
     blobs.set(fileId, p); p.catch(() => blobs.delete(fileId)); return p;
   }
@@ -289,19 +384,19 @@
   }
 
   // ---- danh sách hội thoại ---------------------------------------------------------------------
-  function renderList(items, isContacts) {
+  function renderList(items) {
     const box = $("list"); box.textContent = "";
-    if (!items.length) { box.appendChild(el("div", "empty", isContacts ? "Chưa có liên hệ." : "Không có hội thoại.")); return; }
+    if (!items.length) { box.appendChild(el("div", "empty", "Không có hội thoại.")); return; }
     items.forEach((c) => {
       const row = el("div", "chat" + (cur === c.id ? " on" : "")); row.tabIndex = 0; row.setAttribute("role", "listitem");
-      row.appendChild(avatar(c.title || c.name, c.id, c.avatar_file));
+      row.appendChild(avatar(c.title, c.id, c.avatar_file));
       const meta = el("div", "meta"), r1 = el("div", "row"), r2 = el("div", "row");
-      r1.appendChild(el("span", "t", (c.pinned ? "📌 " : "") + (c.title || c.name)));
-      if (!isContacts) r1.appendChild(el("span", "d", c.last ? listTime(c.last.date) : ""));
-      r2.appendChild(el("span", "p", isContacts ? (c.username ? "@" + c.username : c.phone || "") : (c.last ? (c.last.outgoing ? "Bạn: " : "") + c.last.text : "")));
-      if (!isContacts && c.unread) r2.appendChild(el("span", "badge" + (c.muted ? " mute" : ""), c.unread > 999 ? "999+" : String(c.unread)));
+      r1.appendChild(el("span", "t", (c.pinned ? "📌 " : "") + c.title));
+      r1.appendChild(el("span", "d", c.last ? listTime(c.last.date) : ""));
+      r2.appendChild(el("span", "p", c.last ? (c.last.outgoing ? "Bạn: " : "") + c.last.text : ""));
+      if (c.unread) r2.appendChild(el("span", "badge" + (c.muted ? " mute" : ""), c.unread > 999 ? "999+" : String(c.unread)));
       meta.appendChild(r1); meta.appendChild(r2); row.appendChild(meta);
-      const go = () => isContacts ? openContact(c) : openChat(c);
+      const go = () => openChat(c);
       row.addEventListener("click", go); row.addEventListener("keydown", (e) => { if (e.key === "Enter") go(); });
       box.appendChild(row);
     });
@@ -309,7 +404,7 @@
   function updateTitleBadge() { unreadTotal = chats.reduce((s, c) => s + (c.muted ? 0 : c.unread || 0), 0); document.title = (unreadTotal ? "(" + unreadTotal + ") " : "") + "Telegram"; }
   async function loadChats() {
     const r = await api("GET", "/api/chats?limit=80"); chats = r.chats || []; updateTitleBadge();
-    if (tab === "chats" && !$("q").value.trim()) renderList(chats, false);
+    if (tab === "chats" && !$("q").value.trim()) renderList(chats);
   }
   function scheduleChats() { if (listTimer) return; listTimer = setTimeout(() => { listTimer = null; loadChats().catch(() => {}); }, 1200); }
 
@@ -464,7 +559,8 @@
   async function openChat(c) {
     cur = c.id; curKind = c.kind; replyTo = 0; $("reply").style.display = "none";
     $("app").classList.add("chatting"); $("gate").hidden = true; $("placeholder").hidden = true; $("head").hidden = false; $("msgs").hidden = false; $("typing").hidden = false; $("composer").hidden = false;
-    $("title").textContent = c.title; $("call-a").hidden = $("call-v").hidden = c.kind !== "private"; renderList(chats.length ? chats : [c], false);
+    $("title").textContent = c.title; $("call-a").hidden = $("call-v").hidden = c.kind !== "private";
+    if (tab === "chats") renderList(chats.length ? chats : [c]);
     const box = $("msgs"); box.textContent = ""; rendered.clear(); msgData.clear(); lastDay = null;
     try {
       const r = await api("GET", "/api/chats/" + c.id + "/messages?limit=40"); const msgs = r.messages || [];
@@ -522,8 +618,8 @@
 
   // ---- cập nhật theo thời gian thực -------------------------------------------------------------
   async function fetchFeed(cursor, wait, signal) {
-    const r = await fetch("/api/feed?since=" + cursor + "&wait=" + wait, {
-      headers: { "Authorization": "Bearer " + tok() }, signal,
+    const r = await fetch(accountPath("/api/feed?since=" + cursor + "&wait=" + wait), {
+      credentials: "same-origin", headers: { "X-Requested-With": "fetch" }, signal,
     });
     if (!r.ok) throw Object.assign(new Error("Lỗi HTTP " + r.status), { status: r.status });
     return r.json();
@@ -561,7 +657,7 @@
           cursor = r.cursor;
           failures = 0;
         } catch (e) {
-          if (e.status === 401) { showGate("Token sai hoặc hết hạn."); return; }
+          if (e.status === 401) { showGate("Phiên đăng nhập đã hết hạn.", true, false); return; }
           if (catchUp) continue;
           catchUp = wait === 0;
           await pause(backoff[Math.min(failures++, backoff.length - 1)]);
@@ -587,23 +683,214 @@
   }
   let reloadH = null; function reloadSoon() { clearTimeout(reloadH); reloadH = setTimeout(reloadCurrent, 600); }
 
-  // ---- tìm kiếm, tab ------------------------------------------------------------------------------
+  // ---- tìm kiếm, tab và danh bạ -------------------------------------------------------------------
+  // ---- danh bạ ------------------------------------------------------------------------------------
+  let contacts = [], blockedContacts = [], blockedView = false, contactLoad = 0, contactLoading = false;
+  let contactLoadError = "", contactAction = null, contactWorking = false;
+  const contactSortCookie = "tggw_contact_sort=";
+
+  function readContactSort() {
+    try { return document.cookie.split(/;\s*/).includes(contactSortCookie + "name") ? "name" : "last_seen"; }
+    catch (_) { return "last_seen"; }
+  }
+  function saveContactSort(sort) {
+    const value = sort === "name" ? "name" : "last_seen";
+    const secure = location.protocol === "https:" ? "; Secure" : "";
+    try { document.cookie = contactSortCookie + value + "; Max-Age=31536000; Path=/; SameSite=Strict" + secure; } catch (_) {}
+  }
+  function contactStatus(status) {
+    if (status?.last_seen) return `${dayLabel(status.last_seen).toLowerCase()} lúc ${hhmm(status.last_seen)}`;
+    return status?.text || "Không rõ lần cuối truy cập";
+  }
+  function renderContactRows(box, items, byName, emptyText = "Chưa có liên hệ. Chọn Thêm liên hệ để bắt đầu.") {
+    box.replaceChildren();
+    if (!items.length) { box.append(el("div", "empty", emptyText)); return; }
+    let section;
+    for (const c of items) {
+      if (byName && section !== (c.section || "#")) {
+        section = c.section || "#";
+        const divider = el("div", "contact-section", section);
+        divider.setAttribute("role", "presentation");
+        box.append(divider);
+      }
+      const item = el("div", "contact-item");
+      item.setAttribute("role", "listitem");
+      const row = el("div", "contact-row"), open = el("button", "contact-main");
+      open.type = "button";
+      open.setAttribute("aria-label", "Nhắn tin cho " + c.name);
+      open.addEventListener("click", () => openContact(c));
+      const meta = el("div", "meta");
+      meta.append(el("span", "t", c.name), el("small", "contact-status" + (c.status?.kind === "online" ? " online" : ""), contactStatus(c.status)));
+      open.append(avatar(c.name, c.id, c.avatar_file), meta);
+
+      const menu = el("details", "contact-menu"), summary = el("summary", "", "⋯");
+      summary.setAttribute("aria-label", "Thao tác với " + c.name);
+      const options = el("div", "contact-menu-items");
+      const actions = [
+        ["Nhắn tin", () => openContact(c)], ["Gọi", () => startCall(false, c.id)],
+        ["Sửa", () => openContactDialog("edit", c)], ["Xoá", () => removeContact(c)],
+        c.blocked ? ["Bỏ chặn", () => updateContact("unblock", { user_id: c.id }, "Đã bỏ chặn.")]
+          : ["Chặn", () => openContactDialog("block", c)],
+      ];
+      for (const [label, run] of actions) {
+        const button = el("button", "", label);
+        button.type = "button";
+        button.addEventListener("click", () => { menu.open = false; summary.focus(); run(); });
+        options.append(button);
+      }
+      menu.append(summary, options);
+      row.append(open, menu);
+      item.append(row);
+      box.append(item);
+    }
+  }
+
+  function contactSearchKey(value) {
+    return value.toLowerCase().normalize("NFD").replace(/\p{M}/gu, "").replaceAll("đ", "d");
+  }
+  function renderContacts() {
+    const list = $("list");
+    if (contactLoading) { list.replaceChildren(el("div", "empty", "Đang tải danh bạ…")); return; }
+    if (contactLoadError) {
+      const message = el("div", "empty", contactLoadError + " ");
+      message.setAttribute("role", "status");
+      const retry = el("button", "ghost contact-retry", "Thử lại");
+      retry.addEventListener("click", loadContacts);
+      message.append(retry);
+      list.replaceChildren(message);
+      return;
+    }
+    const search = contactSearchKey($("q").value.trim());
+    const items = blockedView ? blockedContacts : contacts;
+    const matches = items.filter((c) => contactSearchKey([c.name, c.username || "", c.phone || ""].join(" ")).includes(search));
+    const empty = search ? "Không tìm thấy liên hệ phù hợp." : blockedView ? "Bạn chưa chặn ai." : undefined;
+    renderContactRows(list, matches, blockedView || $("contact-sort").value === "name", empty);
+  }
+
+  async function loadContacts() {
+    if (tab !== "contacts") return;
+    const revision = ++contactLoad;
+    contactLoading = true;
+    contactLoadError = "";
+    renderContacts();
+    try {
+      const path = blockedView ? "/api/contacts/blocked" : "/api/contacts?sort=" + $("contact-sort").value;
+      const data = await api("GET", path);
+      if (revision !== contactLoad) return;
+      if (blockedView) blockedContacts = data.contacts || [];
+      else contacts = data.contacts || [];
+    } catch (e) {
+      if (revision === contactLoad) contactLoadError = "Không tải được danh bạ. " + e.message;
+    } finally {
+      if (revision === contactLoad) { contactLoading = false; renderContacts(); }
+    }
+  }
+
+  function setBlockedView(show) {
+    blockedView = show;
+    $("contact-blocked").textContent = show ? "← Danh bạ" : "Đã chặn";
+    $("contact-blocked-heading").hidden = !show;
+    $("contact-sort-field").hidden = $("contact-add").hidden = show;
+    $("q").value = "";
+    $("q").placeholder = show ? "Tìm trong danh sách đã chặn…" : "Tìm theo tên, username hoặc số…";
+    $("q").setAttribute("aria-label", show ? "Tìm liên hệ đã chặn" : "Tìm trong danh bạ");
+    loadContacts();
+  }
+
+  function openContactDialog(action, c) {
+    const add = action === "add", block = action === "block";
+    contactAction = { action, contact: c };
+    $("contact-form").reset();
+    $("contact-names").hidden = block;
+    $("contact-add-fields").hidden = !add;
+    $("contact-block-fields").hidden = !block;
+    $("contact-first").required = !block;
+    $("contact-phone").required = add;
+    $("contact-first").value = c?.first_name || "";
+    $("contact-last").value = c?.last_name || "";
+    $("contact-dialog-title").textContent = add ? "Thêm liên hệ" : block ? "Chặn liên hệ" : "Sửa liên hệ";
+    $("contact-block-confirm").textContent = block ? `Chặn ${c.name} nhắn tin và gọi cho bạn trên Telegram?` : "";
+    $("contact-error").hidden = true;
+    $("contact-save").textContent = block ? "Chặn" : add ? "Thêm" : "Lưu";
+    $("contact-dialog").showModal();
+    $(block ? "contact-cancel" : "contact-first").focus();
+  }
+
+  async function updateContact(action, body, done, dialog = false) {
+    if (contactWorking) return;
+    contactWorking = true;
+    const save = $("contact-save"), cancel = $("contact-cancel"), error = $("contact-error");
+    save.disabled = cancel.disabled = true;
+    error.hidden = true;
+    try {
+      await api("POST", "/api/contacts/" + action, body);
+      if (dialog) $("contact-dialog").close();
+      toast(done);
+      await loadContacts();
+      if (action === "block" && body.delete_chat) scheduleChats();
+    } catch (e) {
+      if (dialog) { error.textContent = e.message; error.hidden = false; }
+      else toast(e.message);
+      if (action === "add" || action === "block") await loadContacts();
+    } finally {
+      contactWorking = save.disabled = cancel.disabled = false;
+    }
+  }
+
+  function removeContact(c) {
+    if (confirm(`Xoá ${c.name} khỏi danh bạ Telegram?`)) updateContact("remove", { user_ids: [c.id] }, "Đã xoá liên hệ.");
+  }
+
+  $("contact-sort").value = readContactSort();
+  $("contact-sort").addEventListener("change", (e) => { saveContactSort(e.target.value); loadContacts(); });
+  $("contact-add").addEventListener("click", () => openContactDialog("add"));
+  $("contact-blocked").addEventListener("click", () => setBlockedView(!blockedView));
+  $("contact-cancel").addEventListener("click", () => $("contact-dialog").close());
+  $("contact-dialog").addEventListener("cancel", (e) => { if (contactWorking) e.preventDefault(); });
+  $("contact-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const { action, contact } = contactAction;
+    if (action === "block") {
+      updateContact(action, { user_id: contact.id, report_spam: $("contact-report").checked, delete_chat: $("contact-delete-chat").checked }, "Đã chặn liên hệ.", true);
+    } else {
+      const names = { first_name: $("contact-first").value.trim(), last_name: $("contact-last").value.trim() };
+      if (action === "add") updateContact(action, { ...names, phone: $("contact-phone").value, share_my_phone: $("contact-share").checked }, "Đã thêm liên hệ.", true);
+      else updateContact(action, { ...names, user_id: contact.id }, "Đã lưu liên hệ.", true);
+    }
+  });
+  document.addEventListener("click", (e) => {
+    for (const menu of $("list").querySelectorAll(".contact-menu[open]")) {
+      if (!menu.contains(e.target)) menu.open = false;
+    }
+  });
+
+  // ---- bộ lọc và chuyển tab -----------------------------------------------------------------------
   let qh = null;
   $("q").addEventListener("input", () => { clearTimeout(qh); qh = setTimeout(async () => {
     const q = $("q").value.trim().toLowerCase();
-    if (tab === "contacts") { renderList(contacts.filter((c) => (c.name + " " + (c.username || "") + (c.phone || "")).toLowerCase().includes(q)), true); return; }
-    if (!q) { renderList(chats, false); return; }
-    const local = chats.filter((c) => c.title.toLowerCase().includes(q)); renderList(local, false);
-    if (q.length >= 2) { try { const r = await api("GET", "/api/search?q=" + encodeURIComponent(q)); if ($("q").value.trim().toLowerCase() === q) { const seen = new Set(local.map((c) => c.id)); renderList(local.concat((r.chats || []).filter((c) => !seen.has(c.id))), false); } } catch (e) {} }
+    if (tab === "contacts") { renderContacts(); return; }
+    if (!q) { renderList(chats); return; }
+    const local = chats.filter((c) => c.title.toLowerCase().includes(q)); renderList(local);
+    if (q.length >= 2) { try { const r = await api("GET", "/api/search?q=" + encodeURIComponent(q)); if (tab === "chats" && $("q").value.trim().toLowerCase() === q) { const seen = new Set(local.map((c) => c.id)); renderList(local.concat((r.chats || []).filter((c) => !seen.has(c.id)))); } } catch (e) {} }
   }, 250); });
-  let contacts = [];
-  async function showTab(t) {
-    tab = t; $("t-chats").classList.toggle("on", t === "chats"); $("t-contacts").classList.toggle("on", t === "contacts"); $("q").value = "";
-    if (t === "chats") renderList(chats, false);
-    else { $("list").textContent = "Đang tải…"; try { contacts = (await api("GET", "/api/contacts")).contacts || []; renderList(contacts, true); } catch (e) { toast(e.message); } }
+  function showTab(t) {
+    tab = t;
+    contactLoad++;
+    for (const name of ["chats", "contacts"]) {
+      $("t-" + name).classList.toggle("on", t === name);
+      $("t-" + name).setAttribute("aria-selected", String(t === name));
+    }
+    $("contact-tools").hidden = t !== "contacts";
+    if (t === "contacts") setBlockedView(false);
+    else {
+      $("q").value = "";
+      $("q").placeholder = "Tìm hội thoại…";
+      $("q").setAttribute("aria-label", "Tìm hội thoại");
+      renderList(chats);
+    }
   }
   $("t-chats").addEventListener("click", () => showTab("chats")); $("t-contacts").addEventListener("click", () => showTab("contacts"));
-  $("back").addEventListener("click", () => { $("app").classList.remove("chatting"); cur = null; renderList(chats, false); });
+  $("back").addEventListener("click", () => { $("app").classList.remove("chatting"); cur = null; if (tab === "contacts") renderContacts(); else renderList(chats); });
 
   // ---- cuộc gọi thoại / video --------------------------------------------------------------------------
   let callInfo = null, acceptedId = null, missingSnapshotId = null, callFocus = null;
@@ -613,7 +900,7 @@
   let callDeviceManual = false, callDeviceSettings = null, pendingDevicePicker = null, outgoingDevices = null;
   const CALL_TEXT = { dialing: "Đang gọi…", ringing: "Đang đổ chuông…", connecting: "Đang kết nối…", active: "Đang trong cuộc gọi" };
   const incoming = () => callInfo && !callInfo.outgoing && callInfo.state === "ringing" && callInfo.id !== acceptedId;
-  const DEVICE_PREF_KEY = "tele-call-device-choice-v1";
+  let devicePrefs = {};
   const devicePicker = $("call-device-picker");
   const pickerSelects = { mic: $("device-mic"), speaker: $("device-speaker"), camera: $("device-camera") };
   const pickerUrls = { mic: $("device-mic-url"), speaker: $("device-speaker-url"), camera: $("device-camera-url") };
@@ -629,12 +916,6 @@
     return "Trình duyệt chỉ cho dùng micro trên trang HTTPS hoặc localhost. " + reason +
       " Mở trang qua HTTPS (ví dụ qua Home Assistant/ingress) hoặc chọn nguồn khác.";
   }
-  function loadDevicePrefs() {
-    try {
-      const value = JSON.parse(localStorage.getItem(DEVICE_PREF_KEY) || "{}");
-      return value && typeof value === "object" ? value : {};
-    } catch (e) { return {}; }
-  }
   function safeCatalogId(id) {
     return /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(id);
   }
@@ -645,7 +926,7 @@
       safe[kind] = { type: choice.type };
       if (choice.type === "catalog" && safeCatalogId(choice.id)) safe[kind].id = choice.id;
     }
-    try { localStorage.setItem(DEVICE_PREF_KEY, JSON.stringify(safe)); } catch (e) {}
+    devicePrefs = safe;
   }
   function addDeviceOption(select, value, label, disabled = false) {
     const option = el("option", "", label); option.value = value; option.disabled = disabled; select.appendChild(option);
@@ -686,7 +967,7 @@
   }
   function renderDevicePicker(devices, reason) {
     const entries = devices.catalog || {};
-    const prefs = devices.auto ? {} : loadDevicePrefs();
+    const prefs = devices.auto ? {} : devicePrefs;
     for (const kind of deviceKinds) appendPickerOptions(kind, entries[kind] || [], devices.settings[kind], prefs[kind]);
     $("call-device-picker-status").textContent = reason === "incoming" ? "Chọn thiết bị để trả lời cuộc gọi này."
       : reason === "outgoing" ? "Chọn thiết bị để bắt đầu cuộc gọi."
@@ -1002,7 +1283,7 @@
     mic.sending = true;
     try {
       const response = await fetch(accountPath("/api/live/audio/in/" + encodeURIComponent(mic.id)), {
-        method: "POST", headers: { Authorization: "Bearer " + tok(), "Content-Type": "application/octet-stream" },
+        method: "POST", credentials: "same-origin", headers: { "X-Requested-With": "fetch", "Content-Type": "application/octet-stream" },
         body: frame, signal: mic.controller.signal
       });
       // 429: bỏ khung; không thử lại hoặc dồn khung. 409: chờ trạng thái mic/cuộc gọi đổi.
@@ -1087,7 +1368,7 @@
     let interval = 200;
     try {
       const response = await fetch(accountPath("/api/live/snapshot/" + encodeURIComponent(state.id)), {
-        headers: { Authorization: "Bearer " + tok() }, cache: "no-store", signal: state.controller.signal
+        credentials: "same-origin", cache: "no-store", signal: state.controller.signal
       });
       if (snapshot !== state) return;
       if (response.status === 404) {
@@ -1164,7 +1445,7 @@
       const next = live.find((c) => c.id === callInfo?.id) || live[0];
       if (next) renderCall(next); else hideCall();
     } catch (e) {
-      if (e.status === 401) showGate("Token sai hoặc hết hạn.");
+      if (e.status === 401) showGate("Phiên đăng nhập đã hết hạn.", true, false);
     } finally {
       polling = false;
       watchCall(revision !== callRevision ? 0 : callInfo ? 2000 : 5000);
@@ -1213,9 +1494,8 @@
     const kind = callInfo.playback.kind === "push" ? "external" : "push";
     callRequest("playback", { id: callInfo.id, kind }, "Không thể đổi trạng thái loa ngoài");
   });
-  async function startCall(video) {
-    const chat = chats.find((c) => c.id === cur);
-    if (!chat || chat.kind !== "private" || !chat.user_id) { toast("Chỉ gọi được ở hội thoại riêng tư."); return; }
+  async function startCall(video, userId = chats.find((c) => c.id === cur && c.kind === "private")?.user_id) {
+    if (!userId) { toast("Chỉ gọi được ở hội thoại riêng tư."); return; }
     if (callInfo || callDeviceOpening || callBusy) return;
     callDeviceOpening = true;
     try {
@@ -1225,7 +1505,7 @@
       const chosen = devices.auto ? { settings: devices.settings } : await openDevicePicker(devices, "outgoing");
       if (!chosen || callInfo || !callsReady) return;
       outgoingDevices = { settings: chosen.settings, manual: !devices.auto };
-      await callRequest("call", { user_id: chat.user_id, video, ...chosen.overrides }, "Không thể gọi");
+      await callRequest("call", { user_id: userId, video, ...chosen.overrides }, "Không thể gọi");
     } catch (e) { toast("Không tải được thiết bị cuộc gọi: " + e.message); }
     finally { outgoingDevices = null; callDeviceOpening = false; updateCallDeviceLine(); }
   }
@@ -1336,15 +1616,20 @@
   });
 
   // ---- khởi động ------------------------------------------------------------------------------------
-  function showGate(msg) {
+  function showGate(msg, configured, loggedIn) {
     callsReady = false; clearTimeout(pollTimer); hideCall();
     settingsDialog.close();
     $("app").classList.add("locked"); $("placeholder").hidden = true; $("gate").hidden = false;
     $("msgs").hidden = $("composer").hidden = $("head").hidden = $("typing").hidden = true;
+    $("gate-setup").hidden = configured !== false;
+    $("gate-login").hidden = configured === false || loggedIn === true;
+    $("gate-account").hidden = loggedIn !== true;
     $("gate-msg").textContent = msg || "";
   }
   async function start() {
     try {
+      const auth = await api("GET", "/ui/api/auth/status");
+      if (!auth.dang_nhap) { showGate("", auth.da_thiet_lap, false); return; }
       const accounts = (await api("GET", "/api/accounts")).tai_khoan || [];
       if (!account) account = (accounts.find((a) => a.status === "online") || accounts[0] || {}).phone || "";
       const selector = $("account"); selector.textContent = "";
@@ -1357,15 +1642,34 @@
       try { await loadChats(); } catch (e) { $("list").textContent = e.message; }
       pump();
     } catch (e) {
-      if (e.status === 401 || !tok()) showGate(tok() ? "Token sai." : ""); else if (e.code === "ACCOUNT_OFFLINE") showGate("Chưa có tài khoản Telegram đăng nhập. Vào «Tài khoản» để đăng nhập."); else showGate(e.message);
+      if (e.status === 401) {
+        try { const auth = await api("GET", "/ui/api/auth/status"); showGate("Phiên đăng nhập đã hết hạn.", auth.da_thiet_lap, false); }
+        catch (_) { showGate(e.message, true, false); }
+      } else if (e.code === "ACCOUNT_OFFLINE") showGate("Chưa có tài khoản Telegram đăng nhập. Vào «Tài khoản» để đăng nhập.", true, true);
+      else showGate(e.message, true, true);
       $("list").textContent = "";
     }
   }
-  $("btn-token").addEventListener("click", () => { setTok($("token").value.trim()); location.reload(); });
+  async function submitAuth(event, action, values) {
+    event.preventDefault();
+    const button = event.currentTarget.querySelector("button");
+    if (button.disabled) return;
+    button.disabled = true;
+    $("gate-msg").textContent = "Đang xử lý…";
+    try {
+      await api("POST", "/ui/api/auth/" + action, values);
+      $("setup-token").value = ""; $("setup-pass").value = ""; $("auth-pass").value = "";
+      location.reload();
+    } catch (error) { $("gate-msg").textContent = error.message; }
+    finally { button.disabled = false; }
+  }
+  $("gate-setup").addEventListener("submit", (event) => submitAuth(event, "setup", {
+    token: $("setup-token").value, ten: $("setup-user").value, mat_khau: $("setup-pass").value,
+  }));
+  $("gate-login").addEventListener("submit", (event) => submitAuth(event, "login", {
+    ten: $("auth-user").value, mat_khau: $("auth-pass").value, ghi_nho: $("remember").checked,
+  }));
   $("account").addEventListener("change", () => { const url = new URL(location.href); url.searchParams.set("account", $("account").value); location.assign(url); });
-  $("token").addEventListener("keydown", (e) => { if (e.key === "Enter") $("btn-token").click(); });
-  // Mở bằng địa chỉ có #k=<token> (đánh dấu trang): lưu vào phiên rồi xoá khỏi thanh địa chỉ (không gửi lên máy chủ).
-  if (location.hash.indexOf("#k=") === 0) { setTok(decodeURIComponent(location.hash.slice(3))); history.replaceState(null, "", location.pathname + location.search); }
   start();
 })();
 </script>
