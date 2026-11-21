@@ -118,6 +118,40 @@
   .device-url { margin-top:6px; }
   .device-picker-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:16px; }
   #call-device-picker #call-device-error { color:var(--err); }
+  #storage-open { min-height:44px; min-width:44px; }
+  .storage-dialog { width:min(650px, calc(100vw - 24px)); max-height:calc(100dvh - 24px); margin:auto;
+    padding:0; border:1px solid var(--line); border-radius:14px; background:var(--panel); color:var(--fg); }
+  .storage-dialog::backdrop { background:#05080bcc; }
+  .storage-dialog header, .storage-body, .storage-dialog footer { padding:14px 18px; }
+  .storage-dialog header { display:flex; align-items:center; justify-content:space-between; gap:8px;
+    position:sticky; top:0; z-index:1; background:var(--panel); border-bottom:1px solid var(--line); }
+  .storage-dialog footer { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:8px;
+    position:sticky; bottom:0; background:var(--panel); border-top:1px solid var(--line); }
+  .storage-dialog h2, .storage-dialog h3, .storage-dialog p { margin:0; }
+  .storage-dialog p { overflow-wrap:anywhere; }
+  .storage-dialog h2 { font-size:19px; }
+  .storage-dialog h3 { font-size:16px; }
+  .storage-dialog fieldset { min-width:0; border:0; margin:0; padding:0; }
+  .storage-dialog section { padding:14px 0; border-bottom:1px solid var(--line); }
+  .storage-dialog button, .storage-dialog select, .storage-dialog input:not([type=checkbox]) { min-height:44px; max-width:100%; }
+  .storage-dialog button.icon { min-width:44px; }
+  .storage-dialog select, .storage-dialog input:not([type=checkbox]) { width:100%; min-width:0; padding:6px 8px;
+    border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--fg); font:inherit; }
+  .storage-dialog summary { min-height:44px; padding:10px 0; cursor:pointer; }
+  .storage-dialog [role=alert] { color:var(--err); }
+  .storage-dialog small, .storage-note { font-size:13px; color:var(--mut); }
+  .storage-modes, .storage-auto { display:grid; grid-template-columns:1fr; gap:8px; margin-top:8px; }
+  .storage-mode { text-align:left; padding:10px 12px; border:2px solid var(--line); background:var(--panel); color:var(--fg); }
+  .storage-mode[aria-pressed=true] { border-color:var(--acc); background:var(--bg); }
+  .storage-mode span { display:block; margin-top:2px; }
+  .storage-meter { display:flex; height:12px; margin:8px 0; overflow:hidden; border-radius:6px; background:var(--bg); }
+  .storage-legend { display:flex; flex-wrap:wrap; gap:4px 12px; padding:0; margin:0; list-style:none; }
+  .storage-legend i { display:inline-block; width:9px; height:9px; border-radius:2px; margin-right:4px; }
+  .storage-row { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); align-items:center; gap:8px; margin-top:8px; }
+  .storage-auto fieldset { padding:8px; border:1px solid var(--line); border-radius:8px; }
+  .storage-auto label { min-height:44px; display:flex; align-items:center; gap:6px; }
+  .storage-danger { background:#a62935; }
+  @media (min-width:601px) { .storage-modes { grid-template-columns:repeat(2,minmax(0,1fr)); } }
   @media(max-width:600px) { #call-overlay { padding:0; } #call-window { width:100%; height:100dvh; border:0; border-radius:0; grid-template-rows:auto minmax(0,1fr) auto; }
     #call-top { padding:calc(14px + env(safe-area-inset-top)) 14px 14px; } #call-name { font-size:17px; }
     #call-controls { padding:12px 10px calc(12px + env(safe-area-inset-bottom)); gap:8px; } #call-controls button { min-width:calc(50% - 8px); }
@@ -136,7 +170,7 @@
 <body>
 <div id="app" class="locked">
   <aside>
-    <div class="bar"><h1 id="me">Telegram<small id="mesub"></small></h1><a class="ghost" href="/ui/index.html" style="color:var(--acc);font-size:13px">Tài khoản</a></div>
+    <div class="bar"><h1 id="me">Telegram<small id="mesub"></small></h1><a class="ghost" href="/ui/index.html" style="color:var(--acc);font-size:13px">Tài khoản</a><button id="storage-open" class="icon" type="button" aria-label="Cài đặt" title="Cài đặt">⚙</button></div>
     <div style="padding:8px 12px"><label for="account">Tài khoản đang dùng</label><select id="account" style="width:100%;padding:8px" aria-label="Chọn tài khoản Telegram"></select></div>
     <button id="call-settings-open" class="ghost" type="button">Cài đặt cuộc gọi</button>
     <div style="padding:8px 12px"><input id="q" type="text" placeholder="Tìm hội thoại…" autocomplete="off" aria-label="Tìm hội thoại"></div>
@@ -255,6 +289,54 @@
       <button id="call-device-save" type="submit">Dùng thiết bị này</button>
     </div>
   </form>
+</dialog>
+<dialog id="storage-dialog" class="storage-dialog" aria-labelledby="storage-title">
+  <form id="storage-form">
+    <header><div><h2 id="storage-title">Dữ liệu và lưu trữ</h2><p id="storage-account" class="storage-note"></p></div>
+      <button id="storage-close" type="button" class="icon" aria-label="Đóng cài đặt">✕</button></header>
+    <div class="storage-body">
+      <fieldset id="storage-fields" disabled>
+        <section aria-labelledby="storage-mode-title">
+          <h3 id="storage-mode-title">Chế độ lưu trên máy chủ</h3>
+          <div class="storage-modes">
+            <button type="button" id="storage-local" class="storage-mode" aria-pressed="false"><strong>Lưu cục bộ</strong><span>Giữ tệp theo thời hạn và giới hạn dung lượng bên dưới.</span></button>
+            <button type="button" id="storage-stream" class="storage-mode" aria-pressed="false"><strong>Xem trực tuyến — không giữ lại</strong><span>Chỉ tải khi bạn mở tệp. Máy chủ dọn tệp đã hết hạn ở lượt dọn tiếp theo.</span></button>
+          </div>
+          <p class="storage-note">Chế độ có hiệu lực sau khi bấm Lưu cài đặt.</p>
+        </section>
+        <section aria-labelledby="storage-usage-title">
+          <h3 id="storage-usage-title">Dung lượng bộ nhớ đệm</h3>
+          <p id="storage-usage"></p><div id="storage-meter" class="storage-meter" aria-hidden="true"></div>
+          <ul id="storage-legend" class="storage-legend"></ul>
+          <p id="storage-janitor" class="storage-note"></p>
+        </section>
+        <section id="storage-local-settings" aria-labelledby="storage-keep-title">
+          <h3 id="storage-keep-title">Giữ phương tiện</h3>
+          <div id="storage-keep"></div>
+          <details><summary id="storage-exception-count">Ngoại lệ (0)</summary>
+            <div id="storage-exceptions"></div>
+            <label for="storage-exception-chat">Hội thoại</label><select id="storage-exception-chat"></select>
+            <button class="ghost" type="button" id="storage-exception-add">Thêm ngoại lệ</button>
+          </details>
+          <label class="storage-row" for="storage-max">Bộ nhớ đệm tối đa<select id="storage-max"></select></label>
+          <details><summary>Tải tự động</summary><p class="storage-note">Giới hạn kích thước cho mỗi tệp tính bằng MB.</p><div id="storage-auto" class="storage-auto"></div></details>
+        </section>
+        <section aria-labelledby="storage-clear-title">
+          <h3 id="storage-clear-title">Xoá bộ nhớ đệm</h3>
+          <label class="storage-row" for="storage-clear-scope">Phạm vi<select id="storage-clear-scope"></select></label>
+          <button type="button" class="ghost" id="storage-clear-open" disabled>Xem trước khi xoá</button>
+        </section>
+      </fieldset>
+    </div>
+    <footer><div style="flex:1 1 160px"><p id="storage-status" role="status" aria-live="polite"></p><p id="storage-error" role="alert"></p></div>
+      <button type="submit" id="storage-save" disabled>Lưu cài đặt</button></footer>
+  </form>
+</dialog>
+<dialog id="storage-confirm" class="storage-dialog" aria-labelledby="storage-confirm-title">
+  <header><h2 id="storage-confirm-title">Xác nhận xoá bộ nhớ đệm</h2></header>
+  <div class="storage-body"><p id="storage-confirm-summary"></p><p class="storage-note">Tin nhắn vẫn còn trên Telegram. Bạn có thể tải lại tệp bằng cách mở chúng trong hội thoại.</p>
+    <p id="storage-clear-error" role="alert"></p></div>
+  <footer><button id="storage-cancel" class="ghost" type="button" autofocus>Huỷ</button><button id="storage-confirm-clear" class="storage-danger" type="button">Xoá bộ nhớ đệm</button></footer>
 </dialog>
 <div id="toast" role="alert"></div>
 
@@ -1406,6 +1488,165 @@
   $("gate-login").addEventListener("submit", (event) => submitAuth(event, "login", {
     ten: $("auth-user").value, mat_khau: $("auth-pass").value, ghi_nho: $("remember").checked,
   }));
+  // ---- dữ liệu và lưu trữ ----------------------------------------------------------------------
+  const storageChats = [["private", "Riêng tư"], ["groups", "Nhóm"], ["channels", "Kênh"]];
+  const storageMedia = [["photo", "Ảnh"], ["video", "Video"], ["file", "Tệp"], ["voice", "Tin thoại"], ["video_note", "Video tròn"], ["gif", "GIF"]];
+  const storageKinds = [["photo", "Ảnh", "#2a7de1"], ["video", "Video", "#a46ac2"], ["file", "Tệp", "#208650"], ["music", "Nhạc", "#bc710e"], ["other", "Khác", "#748598"]];
+  const storageKeep = [[86400, "1 ngày"], [604800, "7 ngày"], [2678400, "1 tháng"], ["", "Mãi mãi"]];
+  const storageMiB = 1024 * 1024;
+  let storageDraft, storageUsage, storageClear;
+
+  function storageOptions(select, values, current) {
+    select.replaceChildren();
+    for (const [value, label] of values) {
+      const option = el("option", "", label);
+      option.value = String(value); select.append(option);
+    }
+    if (current !== undefined) select.value = current === null ? "" : String(current);
+    return select;
+  }
+
+  function storageBytes(bytes) {
+    const units = [[1024 ** 3, "GB"], [storageMiB, "MB"], [1024, "KB"], [1, "B"]];
+    const [factor, unit] = units.find(([factor]) => bytes >= factor) || units[3];
+    return (bytes / factor).toLocaleString("vi-VN", { maximumFractionDigits: 1 }) + " " + unit;
+  }
+
+  function storageMode(mode) {
+    storageDraft.mode = mode;
+    for (const option of ["local", "stream"]) $("storage-" + option).setAttribute("aria-pressed", String(option === mode));
+    $("storage-local-settings").hidden = mode === "stream";
+  }
+
+  function storageRetention(name, value, change) {
+    const label = el("label", "storage-row", name);
+    const select = storageOptions(el("select"), storageKeep, value);
+    select.addEventListener("change", () => change(select.value === "" ? null : Number(select.value)));
+    label.append(select);
+    return label;
+  }
+
+  function storageExceptionRows() {
+    const rows = $("storage-exceptions"); rows.replaceChildren();
+    for (const item of storageDraft.exceptions) {
+      const name = chats.find((chat) => chat.id === item.chat_id)?.title || "Hội thoại " + item.chat_id;
+      const remove = el("button", "ghost", "Bỏ ngoại lệ"); remove.type = "button";
+      remove.setAttribute("aria-label", "Bỏ ngoại lệ cho " + name);
+      remove.addEventListener("click", () => {
+        storageDraft.exceptions = storageDraft.exceptions.filter((row) => row !== item);
+        storageExceptionRows(); $("storage-exception-chat").focus();
+      });
+      rows.append(storageRetention(name, item.keep, (value) => { item.keep = value; }), remove);
+    }
+    $("storage-exception-count").textContent = "Ngoại lệ (" + storageDraft.exceptions.length + ")";
+    const available = chats.filter((chat) => chat.id && !storageDraft.exceptions.some((row) => row.chat_id === chat.id));
+    storageOptions($("storage-exception-chat"), available.length ? available.map((chat) => [chat.id, chat.title || "Hội thoại " + chat.id]) : [["", "Chưa có hội thoại để thêm"]]);
+    $("storage-exception-add").disabled = !available.length;
+  }
+
+  function storageRender() {
+    storageMode(storageDraft.mode);
+    $("storage-keep").replaceChildren(...storageChats.map(([kind, label]) =>
+      storageRetention(label, storageDraft.keep[kind], (value) => { storageDraft.keep[kind] = value; })));
+    storageExceptionRows();
+    const cacheOptions = [["", "Không giới hạn"], [500 * storageMiB, "500 MB"], ...[1, 2, 5, 10].map((n) => [n * 1024 * storageMiB, n + " GB"])];
+    const current = storageDraft.max_cache_bytes;
+    if (current !== null && !cacheOptions.some(([value]) => value === current)) cacheOptions.push([current, storageBytes(current)]);
+    storageOptions($("storage-max"), cacheOptions, current);
+    const auto = $("storage-auto"); auto.replaceChildren();
+    for (const [chat, label] of storageChats) {
+      const group = el("fieldset"); group.append(el("legend", "", label));
+      for (const [kind, name] of storageMedia) {
+        const rule = storageDraft.auto_download[chat][kind];
+        const line = el("div", "storage-row"), toggle = el("label");
+        const check = el("input"); check.type = "checkbox"; check.checked = rule.on;
+        const size = el("input"); size.type = "number"; size.min = "0"; size.step = "any";
+        size.setAttribute("aria-label", "Giới hạn MB cho " + name + " trong " + label);
+        size.value = String(rule.max_bytes / storageMiB); size.required = true; size.disabled = !rule.on;
+        check.addEventListener("change", () => { rule.on = check.checked; size.disabled = !check.checked; });
+        size.addEventListener("input", () => { rule.max_bytes = Math.round(Number(size.value) * storageMiB); });
+        toggle.append(check, el("span", "", name)); line.append(toggle, size); group.append(line);
+      }
+      auto.append(group);
+    }
+  }
+
+  async function storageRefresh() {
+    const [usage, report] = await Promise.all([api("GET", "/api/storage/usage"), api("GET", "/api/storage/janitor")]);
+    storageUsage = usage;
+    $("storage-usage").textContent = "Đang dùng " + storageBytes(usage.total_bytes);
+    const meter = $("storage-meter"), legend = $("storage-legend"); meter.replaceChildren(); legend.replaceChildren();
+    for (const [kind, name, color] of storageKinds) {
+      const bytes = usage.by_type[kind] || 0, key = el("i"), item = el("li"); key.style.backgroundColor = color;
+      item.append(key, el("span", "", name + " · " + storageBytes(bytes))); legend.append(item);
+      if (bytes && usage.total_bytes) {
+        const segment = el("span"); segment.style.width = (bytes * 100 / usage.total_bytes) + "%";
+        segment.style.backgroundColor = color; meter.append(segment);
+      }
+    }
+    const status = report.last_run ? new Date(report.last_run * 1000).toLocaleString("vi-VN") + " · giải phóng " + storageBytes(report.freed_bytes) : "Chưa chạy";
+    $("storage-janitor").textContent = "Lần dọn cuối: " + status + (report.error ? " · Có lỗi" : (report.limited ? " · Đã chạm giới hạn mỗi lượt" : ""));
+    storageOptions($("storage-clear-scope"), [["all", "Toàn bộ bộ nhớ đệm"], ...storageKinds.map(([kind, name]) => ["type:" + kind, name]),
+      ...usage.top_chats.map(({ chat_id }) => ["chat:" + chat_id, chats.find((chat) => chat.id === chat_id)?.title || "Hội thoại " + chat_id])]);
+    $("storage-clear-open").disabled = !usage.total_bytes;
+  }
+
+  $("storage-open").addEventListener("click", async () => {
+    $("storage-account").textContent = $("account").selectedOptions[0]?.textContent || "Tài khoản đang dùng";
+    $("storage-fields").disabled = true; $("storage-save").disabled = true;
+    $("storage-clear-open").disabled = true;
+    $("storage-error").textContent = ""; $("storage-status").textContent = "Đang tải cài đặt…";
+    $("storage-usage").textContent = "Đang lấy dung lượng…";
+    $("storage-meter").replaceChildren(); $("storage-legend").replaceChildren(); $("storage-janitor").textContent = "";
+    $("storage-dialog").showModal();
+    try {
+      const [settings, usage] = await Promise.allSettled([api("GET", "/api/settings/storage"), storageRefresh()]);
+      if (usage.status === "rejected") $("storage-usage").textContent = "Chưa lấy được dung lượng bộ nhớ đệm.";
+      if (settings.status === "rejected") throw settings.reason;
+      storageDraft = settings.value;
+      storageRender(); $("storage-fields").disabled = false; $("storage-save").disabled = false;
+    } catch (error) { $("storage-error").textContent = error.message; }
+    finally { $("storage-status").textContent = ""; }
+  });
+  $("storage-close").addEventListener("click", () => $("storage-dialog").close());
+  for (const mode of ["local", "stream"]) $("storage-" + mode).addEventListener("click", () => storageMode(mode));
+  $("storage-max").addEventListener("change", (event) => { storageDraft.max_cache_bytes = event.target.value === "" ? null : Number(event.target.value); });
+  $("storage-exception-add").addEventListener("click", () => {
+    const chat_id = Number($("storage-exception-chat").value);
+    if (!chat_id) return;
+    storageDraft.exceptions.push({ chat_id, keep: null }); storageExceptionRows(); $("storage-exception-chat").focus();
+  });
+  $("storage-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    $("storage-error").textContent = ""; $("storage-fields").disabled = true; $("storage-save").disabled = true;
+    try {
+      storageDraft = await api("POST", "/api/settings/storage", storageDraft);
+      $("storage-status").textContent = "Đã lưu cài đặt cho tài khoản này.";
+    } catch (error) { $("storage-error").textContent = error.message; }
+    finally { $("storage-fields").disabled = false; $("storage-save").disabled = false; }
+  });
+  $("storage-clear-open").addEventListener("click", () => {
+    const select = $("storage-clear-scope"), [scope, key] = select.value.split(":");
+    storageClear = { scope, confirm: true };
+    let bytes = storageUsage.total_bytes;
+    if (scope === "type") { storageClear.file_types = [key]; bytes = storageUsage.by_type[key]; }
+    if (scope === "chat") { storageClear.chat_id = Number(key); bytes = storageUsage.top_chats.find((row) => row.chat_id === Number(key)).bytes; }
+    $("storage-clear-error").textContent = "";
+    $("storage-confirm-summary").textContent = "Phạm vi: " + (select.selectedOptions[0]?.textContent || "Bộ nhớ đệm") + ". Ước tính có thể giải phóng tối đa " + storageBytes(bytes) + ".";
+    $("storage-confirm").showModal();
+  });
+  $("storage-cancel").addEventListener("click", () => $("storage-confirm").close());
+  $("storage-confirm-clear").addEventListener("click", async () => {
+    $("storage-confirm-clear").disabled = true; $("storage-cancel").disabled = true;
+    try {
+      const result = await api("POST", "/api/storage/clear", storageClear);
+      $("storage-confirm").close();
+      $("storage-status").textContent = "Đã giải phóng " + storageBytes(result.freed_bytes) + (result.limited ? ". Còn tệp vượt giới hạn mỗi lượt dọn." : ".");
+      try { await storageRefresh(); } catch (error) { $("storage-error").textContent = error.message; }
+    } catch (error) { $("storage-clear-error").textContent = error.message; }
+    finally { $("storage-confirm-clear").disabled = false; $("storage-cancel").disabled = false; }
+  });
+
   $("account").addEventListener("change", () => { const url = new URL(location.href); url.searchParams.set("account", $("account").value); location.assign(url); });
   start();
 })();
