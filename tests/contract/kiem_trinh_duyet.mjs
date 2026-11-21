@@ -6,10 +6,11 @@ import {spawn} from 'node:child_process';
 import {once,EventEmitter} from 'node:events';
 
 const phones=['+84900000001','+84900000002'];
-const requests=[], errors=[], callActions=[], startedCalls=[], mediaActions=[];
+const requests=[], errors=[], callActions=[], startedCalls=[], mediaActions=[], settingsPosts=[];
 const csp=readFileSync('src/web.rs','utf8').match(/header::CONTENT_SECURITY_POLICY,"([^"]+)"/)[1];
 const chatTitle='Hội thoại thử <em>A</em>';
 let feed=[], calls=[], snapshots=0, snapshotStatus=409, rejectMedia=false;
+let settings={camera:'black',mic:'rtsp://viewer:dummy-password@camera.example/sound',mic_format:'auto',speaker:'http://192.0.2.10/api/r1_speaker/intercom/DUMMY?k=dummy-key',playback:'file'};
 const server=http.createServer(async (req,res)=>{
   const url=new URL(req.url,'http://localhost');
   const reply=value=>{res.setHeader('Content-Type','application/json');res.end(JSON.stringify(value));};
@@ -32,6 +33,12 @@ const server=http.createServer(async (req,res)=>{
     reply({items:feed.filter(item=>item.id>since),cursor:feed.length,reset:false});return;
   }
   if (url.pathname==='/api/live/calls') {reply({calls});return;}
+  if (url.pathname==='/api/live/settings') {
+    if (req.method==='GET') {reply(settings);return;}
+    let raw='';for await (const chunk of req) raw+=chunk;
+    const body=JSON.parse(raw);settingsPosts.push({account:url.searchParams.get('account'),body});
+    settings={...settings,...body};reply({ok:true});return;
+  }
   if (url.pathname.startsWith('/api/live/snapshot/')) {
     const call=calls.find(item=>url.pathname===`/api/live/snapshot/${item.id}`);
     snapshots++;
@@ -137,6 +144,7 @@ try {
   assert(firstBlob.startsWith('blob:'));
   await wait(`document.querySelector('#call-image').src!==${JSON.stringify(firstBlob)} && window.__revokedBlobs.includes(${JSON.stringify(firstBlob)})`);
   assert.match(await evaluate("document.querySelector('#call-meta').textContent"),/5 khung · 640x360/);
+  assert.equal(await evaluate("document.querySelector('#call-window').getBoundingClientRect().width===920 && document.querySelector('#call-stage').clientHeight>0"),true);
   for (const [id,path,changes] of [
     ['mic','media',[{mic_muted:true},{mic_muted:false}]],
     ['camera','media',[{camera_off:true},{camera_off:false}]],
@@ -179,6 +187,39 @@ try {
   // Danh sách vẫn có cuộc gọi cũ, mô phỏng một lần đọc chậm hơn snapshot.
   await waitServer(()=>callPollCount()>before404);
   assert.equal(await evaluate("document.querySelector('#call-overlay').hidden"),true);
+  await evaluate("document.querySelector('#call-settings-open').click()");
+  await wait("document.querySelector('#call-settings').open");
+  assert.equal(await evaluate("document.querySelector('#setting-camera').value"),'black');
+  assert.equal(await evaluate("document.querySelector('#setting-mic').value+document.querySelector('#setting-speaker').value"),'');
+  assert.equal(await evaluate("document.querySelector('#call-settings').textContent.includes('dummy-')"),false);
+  assert.equal(await evaluate("document.querySelector('#call-settings').getBoundingClientRect().width<390"),true);
+  await evaluate("document.querySelector('#setting-camera').value='file://camera.example/stream';document.querySelector('#call-settings-form').requestSubmit()");
+  await wait("!document.querySelector('#call-settings-error').hidden");
+  assert.equal(settingsPosts.length,0);
+  await evaluate(`
+    document.querySelector('#setting-camera').value='rtsp://camera.example/stream';
+    document.querySelector('#setting-mic-format').value='s16le16k';
+    document.querySelector('#setting-playback').value='external';
+    document.querySelector('#call-settings-form').requestSubmit();
+  `);
+  await wait("!document.querySelector('#call-settings').open");
+  assert.deepEqual(settingsPosts[0],{account:phones[1],body:{camera:'rtsp://camera.example/stream',mic_format:'s16le16k',playback:'external'}});
+  await evaluate("document.querySelector('#call-settings-open').click()");
+  await wait("document.querySelector('#call-settings').open && document.querySelector('#setting-camera').value==='rtsp://camera.example/stream'");
+  await evaluate(`
+    document.querySelector('#setting-mic').value='http://192.0.2.20/mic';
+    document.querySelector('#setting-speaker-clear').click();
+    document.querySelector('#call-settings-form').requestSubmit();
+  `);
+  await wait("!document.querySelector('#call-settings').open");
+  assert.deepEqual(settingsPosts[1],{account:phones[1],body:{mic:'http://192.0.2.20/mic',speaker:''}});
+  await evaluate("document.querySelector('#call-settings-open').click()");
+  await wait("document.querySelector('#call-settings').open");
+  calls=[{id:'fake-call-unknown',user_id:123456,outgoing:false,video:false,state:'ringing',seconds:0}];
+  await wait("!document.querySelector('#call-overlay').hidden && !document.querySelector('#call-settings').open");
+  assert.equal(await evaluate("document.querySelector('#call-name').textContent"),'📞 Người dùng · •••456');
+  calls[0].state='ended';
+  await wait("document.querySelector('#call-overlay').hidden");
   await evaluate("document.querySelector('#t-contacts').click()");
   await wait("document.querySelector('#list').textContent.includes('Liên hệ thử')");
   calls=[{id:'fake-call-2',user_id:99,outgoing:false,video:false,state:'ringing',seconds:0}];
@@ -210,7 +251,7 @@ try {
   await wait("document.querySelectorAll('.acc').length===2");
   assert.equal(await evaluate("document.querySelector('#login').hidden"),false);
   assert.deepEqual(errors,[]);
-  console.log(`Chrome: gọi đến qua polling ở Hội thoại/Danh bạ, gọi đi, Trả lời/Từ chối/Cúp máy, emoji dạng văn bản, JPEG 409/200/429/404, thu hồi blob, 6 thao tác mic/camera/loa và lỗi 502, 390px và 1280px. ${errors.length} lỗi JavaScript.`);
+  console.log(`Chrome: gọi đến qua polling ở Hội thoại/Danh bạ, gọi đi, Trả lời/Từ chối/Cúp máy, emoji dạng văn bản, JPEG 409/200/429/404, thu hồi blob, 6 thao tác mic/camera/loa và lỗi 502, cài đặt đủ 5 trường và che thông tin xác thực, 390px và 1280px. ${errors.length} lỗi JavaScript.`);
 } finally {
   clearTimeout(timer);if(chrome.exitCode===null&&chrome.signalCode===null){const exited=once(chrome,'exit');try{process.kill(-chrome.pid,'SIGTERM');}catch(e){chrome.kill('SIGTERM');}await exited;}server.closeAllConnections();server.close();rmSync(profile,{recursive:true,force:true});
 }

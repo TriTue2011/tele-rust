@@ -82,6 +82,19 @@
   #call-controls .secondary { background:#334251; }
   #call-controls button[aria-pressed="true"] { background:#235078; }
   #call-error { width:100%; margin:0; color:#ffb4b4; text-align:center; overflow-wrap:anywhere; }
+  #call-settings-open { align-self:flex-start; margin:0 12px 4px; }
+  #app.locked #call-settings-open { display:none; }
+  #call-settings { width:min(540px, calc(100vw - 24px)); max-height:calc(100dvh - 24px); padding:22px;
+    border:1px solid var(--line); border-radius:16px; background:var(--panel); color:var(--fg); }
+  #call-settings::backdrop { background:#05080bcc; }
+  #call-settings h2 { margin:0 0 4px; font-size:20px; }
+  #call-settings p, #call-settings small { margin:4px 0 0; color:var(--mut); font-size:13px; overflow-wrap:anywhere; }
+  #call-settings fieldset { padding:0; margin:0; border:0; min-width:0; }
+  .call-source { display:block; margin:14px 0 4px; font-weight:600; }
+  #call-settings input:not([type=checkbox]), #call-settings select { width:100%; min-height:40px; padding:8px 10px;
+    border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--fg); font:inherit; }
+  .call-settings-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:16px; }
+  #call-settings #call-settings-error { color:var(--err); }
   @media(max-width:600px) { #call-overlay { padding:0; } #call-window { width:100%; height:100dvh; border:0; border-radius:0; grid-template-rows:auto minmax(0,1fr) auto; }
     #call-top { padding:calc(14px + env(safe-area-inset-top)) 14px 14px; } #call-name { font-size:17px; }
     #call-controls { padding:12px 10px calc(12px + env(safe-area-inset-bottom)); gap:8px; } #call-controls button { min-width:calc(50% - 8px); }
@@ -102,6 +115,7 @@
   <aside>
     <div class="bar"><h1 id="me">Telegram<small id="mesub"></small></h1><a class="ghost" href="index.html" style="color:var(--acc);font-size:13px">Tài khoản</a></div>
     <div style="padding:8px 12px"><label for="account">Tài khoản đang dùng</label><select id="account" style="width:100%;padding:8px" aria-label="Chọn tài khoản Telegram"></select></div>
+    <button id="call-settings-open" class="ghost" type="button">Cài đặt cuộc gọi</button>
     <div style="padding:8px 12px"><input id="q" type="text" placeholder="Tìm hội thoại…" autocomplete="off" aria-label="Tìm hội thoại"></div>
     <div class="tabs" role="tablist"><button id="t-chats" class="on" role="tab">Hội thoại</button><button id="t-contacts" role="tab">Danh bạ</button></div>
     <div id="list" role="list"></div>
@@ -141,6 +155,36 @@
     </div>
   </div>
 </section>
+<dialog id="call-settings" aria-labelledby="call-settings-title">
+  <form id="call-settings-form" autocomplete="off">
+    <h2 id="call-settings-title">Cài đặt cuộc gọi</h2>
+    <p>Nguồn thiết bị của gateway cho các cuộc gọi tiếp theo của tài khoản đang dùng.</p>
+    <fieldset id="call-settings-fields">
+      <label class="call-source" for="setting-camera">Camera gửi đi</label>
+      <input id="setting-camera" type="text" spellcheck="false" aria-describedby="camera-help camera-current" autofocus>
+      <small id="camera-help"><code>black</code> gửi khung đen. Để điện thoại thấy hình thật, nhập URL RTSP hoặc HTTP của camera, chẳng hạn luồng go2rtc trong mạng nội bộ.</small>
+      <p id="camera-current" hidden></p>
+      <label class="call-source" for="setting-mic">Mic gửi đi</label>
+      <input id="setting-mic" type="text" spellcheck="false" aria-describedby="mic-help mic-current">
+      <small id="mic-help">Nhập URL nguồn âm thanh, <code>silence</code> để tắt mic hoặc <code>test</code> để phát âm thử.</small>
+      <p id="mic-current" hidden></p>
+      <label class="call-source" for="setting-mic-format">Định dạng mic</label>
+      <select id="setting-mic-format"><option value="auto">Tự nhận</option><option value="s16le16k">PCM thô, mono, 16 kHz</option></select>
+      <label class="call-source" for="setting-speaker">Loa ngoài</label>
+      <input id="setting-speaker" type="text" spellcheck="false" aria-describedby="speaker-help speaker-current">
+      <small id="speaker-help">Nhập URL cửa bộ đàm hoặc địa chỉ Google Cast nội bộ.</small>
+      <p id="speaker-current" hidden></p>
+      <label><input id="setting-speaker-clear" type="checkbox"> Không dùng loa ngoài</label>
+      <label class="call-source" for="setting-playback">Nhận tiếng khi không dùng loa ngoài</label>
+      <select id="setting-playback"><option value="file">Ghi tệp tạm trên gateway</option><option value="external">Đưa tiếng ra chế độ External của gateway</option></select>
+    </fieldset>
+    <p id="call-settings-error" role="alert" hidden></p>
+    <div class="call-settings-actions">
+      <button id="call-settings-close" class="ghost" type="button">Đóng</button>
+      <button id="call-settings-save" type="submit">Lưu cài đặt</button>
+    </div>
+  </form>
+</dialog>
 <div id="toast" role="alert"></div>
 
 <script>
@@ -446,6 +490,7 @@
     $("call-end").textContent = incoming() ? "Từ chối" : "Cúp máy";
     renderCallMedia(info);
     if (opening) {
+      $("call-settings").close();
       callFocus = document.activeElement;
       $("app").inert = true;
       $("call-overlay").hidden = false;
@@ -626,9 +671,104 @@
   window.addEventListener("pageshow", (event) => { if (event.persisted) watchCall(); });
   setInterval(updateCallClock, 1000);
 
+  // ---- nguồn camera / mic / loa -------------------------------------------------------------------
+  const settingsDialog = $("call-settings");
+  const settingsInputs = { camera: $("setting-camera"), mic: $("setting-mic"), mic_format: $("setting-mic-format"), speaker: $("setting-speaker"), playback: $("setting-playback") };
+  const sourceKeys = ["camera", "mic", "speaker"];
+  let shownSettings = {};
+  function sourceURL(value) {
+    if (!/^(?:rtsp|rtsps|http|https|rtmp):\/\/[^/\s]/.test(value) || /\s/.test(value)) return null;
+    try { return new URL(value); } catch (e) { return null; }
+  }
+  function concealedSource(value) {
+    const url = sourceURL(value);
+    if (url?.host && (url.username || url.password || url.search || url.hash)) return url.protocol + "//" + url.host;
+    if (value.includes("://") && /[@?#]/.test(value)) return "Nguồn đã lưu";
+    return "";
+  }
+  $("call-settings-open").addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    try {
+      const settings = await api("GET", "/api/live/settings");
+      if (!callsReady || callInfo) return;
+      for (const key of sourceKeys) {
+        const value = settings[key] || "";
+        const preview = concealedSource(value);
+        const hint = $(key + "-current");
+        hint.textContent = preview ? preview + " · đã ẩn thông tin xác thực. Để trống để giữ nguồn này." : "";
+        hint.hidden = !preview;
+        settingsInputs[key].value = preview ? "" : value;
+      }
+      settingsInputs.mic_format.value = settings.mic_format;
+      settingsInputs.playback.value = settings.playback;
+      shownSettings = Object.fromEntries(Object.entries(settingsInputs).map(([key, input]) => [key, input.value]));
+      $("setting-speaker-clear").checked = false;
+      settingsError("");
+      button.disabled = false;
+      settingsDialog.showModal();
+    } catch (e) { toast("Không tải được cài đặt cuộc gọi: " + e.message); }
+    finally { button.disabled = false; }
+  });
+  function settingsError(message, input) {
+    $("call-settings-error").textContent = message;
+    $("call-settings-error").hidden = !message;
+    input?.focus();
+  }
+  function validCapture(value, special) {
+    if (!value || value === "test" || value === special) return true;
+    if (value.includes("\0") || value.includes("***@") || value.includes("k=***")) return false;
+    return value.startsWith("/") || value.startsWith("./") || Boolean(sourceURL(value)?.hostname);
+  }
+  function validSpeaker(value) {
+    if (!value || /^cast:\/\/id\/[a-f0-9]{32}$/.test(value)) return true;
+    const ip = /^cast:\/\/((?:\d{1,3}\.){3}\d{1,3})$/.exec(value);
+    if (ip) {
+      const parts = ip[1].split(".");
+      if (!parts.every((part) => String(Number(part)) === part && Number(part) <= 255)) return false;
+      const [a, b] = parts.map(Number);
+      return a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168);
+    }
+    return Boolean(sourceURL(value)) && /^https?:\/\/[A-Za-z0-9.\-]+(?::\d{1,5})?\/api\/(?:r1_speaker|dahua_talk)\/(?:intercom|duplex)\/[A-Za-z0-9_\-]+\?k=[A-Za-z0-9_\-%.~]+$/.test(value);
+  }
+  $("setting-speaker-clear").addEventListener("change", (event) => { settingsInputs.speaker.disabled = event.target.checked; });
+  $("call-settings-close").addEventListener("click", () => settingsDialog.close());
+  settingsDialog.addEventListener("close", () => {
+    $("call-settings-form").reset();
+    settingsInputs.speaker.disabled = false;
+  });
+  $("call-settings-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const fields = $("call-settings-fields"), save = $("call-settings-save");
+    if (save.disabled) return;
+    const body = {};
+    for (const [key, input] of Object.entries(settingsInputs)) {
+      const value = input.value.trim();
+      if (value !== shownSettings[key]) body[key] = value;
+    }
+    if ($("setting-speaker-clear").checked) body.speaker = "";
+    if ("camera" in body && !validCapture(body.camera, "black")) { settingsError("Nhập URL camera hợp lệ, đường dẫn tệp, black hoặc test.", settingsInputs.camera); return; }
+    if ("mic" in body && !validCapture(body.mic, "silence")) { settingsError("Nhập URL mic hợp lệ, đường dẫn tệp, silence hoặc test.", settingsInputs.mic); return; }
+    if ("speaker" in body && !validSpeaker(body.speaker)) { settingsError("Nhập URL cửa bộ đàm hoặc địa chỉ Cast nội bộ hợp lệ.", settingsInputs.speaker); return; }
+    if ("mic_format" in body && !["auto", "s16le16k"].includes(body.mic_format)) { settingsError("Chọn định dạng mic trong danh sách.", settingsInputs.mic_format); return; }
+    if ("playback" in body && !["file", "external"].includes(body.playback)) { settingsError("Chọn cách nhận tiếng trong danh sách.", settingsInputs.playback); return; }
+    if (!Object.keys(body).length) { settingsDialog.close(); return; }
+    settingsError("");
+    fields.disabled = save.disabled = true;
+    try {
+      await api("POST", "/api/live/settings", body);
+      settingsDialog.close();
+      toast("Đã lưu nguồn cho các cuộc gọi tiếp theo.");
+    } catch (e) {
+      const message = "Không lưu được cài đặt cuộc gọi: " + e.message;
+      if (settingsDialog.open) settingsError(message); else toast(message);
+    } finally { fields.disabled = save.disabled = false; }
+  });
+
   // ---- khởi động ------------------------------------------------------------------------------------
   function showGate(msg) {
     callsReady = false; clearTimeout(pollTimer); hideCall();
+    settingsDialog.close();
     $("app").classList.add("locked"); $("placeholder").hidden = true; $("gate").hidden = false;
     $("msgs").hidden = $("composer").hidden = $("head").hidden = $("typing").hidden = true;
     $("gate-msg").textContent = msg || "";
