@@ -36,7 +36,7 @@ const server=http.createServer(async (req,res)=>{
     const call=calls.find(item=>url.pathname===`/api/live/snapshot/${item.id}`);
     snapshots++;
     res.statusCode=call?.state==='active'?snapshotStatus:404;
-    if (res.statusCode!==200) {reply({error:{code:res.statusCode===409?'NO_VIDEO':'CALL_ENDED'}});return;}
+    if (res.statusCode!==200) {reply({error:{code:{409:'NO_VIDEO',404:'CALL_ENDED',429:'RATE_LIMITED'}[res.statusCode]}});return;}
     res.setHeader('Content-Type','image/jpeg');res.end(Buffer.from('/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAABAAEDASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwDxyiiiuo5z/9k=','base64'));return;
   }
   if (req.method==='POST' && ['/api/live/accept','/api/live/hangup'].includes(url.pathname)) {
@@ -167,6 +167,11 @@ try {
   assert.equal(snapshots,pausedCount);
   await evaluate("delete document.hidden;document.dispatchEvent(new Event('visibilitychange'))");
   await wait("document.querySelector('#call-image').naturalWidth>0");
+  snapshotStatus=429;
+  await wait("document.querySelector('#call-wait').textContent.includes('giới hạn tải hình')");
+  const throttledCount=snapshots;
+  await new Promise(resolve=>setTimeout(resolve,500));
+  assert.equal(snapshots,throttledCount);
   const callPollCount=()=>requests.filter(url=>url.pathname==='/api/live/calls').length;
   const before404=callPollCount();
   snapshotStatus=404;
@@ -205,7 +210,7 @@ try {
   await wait("document.querySelectorAll('.acc').length===2");
   assert.equal(await evaluate("document.querySelector('#login').hidden"),false);
   assert.deepEqual(errors,[]);
-  console.log(`Chrome: gọi đến qua polling ở Hội thoại/Danh bạ, gọi đi, Trả lời/Từ chối/Cúp máy, emoji dạng văn bản, JPEG 409/200/404, thu hồi blob, 6 thao tác mic/camera/loa và lỗi 502, 390px và 1280px. ${errors.length} lỗi JavaScript.`);
+  console.log(`Chrome: gọi đến qua polling ở Hội thoại/Danh bạ, gọi đi, Trả lời/Từ chối/Cúp máy, emoji dạng văn bản, JPEG 409/200/429/404, thu hồi blob, 6 thao tác mic/camera/loa và lỗi 502, 390px và 1280px. ${errors.length} lỗi JavaScript.`);
 } finally {
   clearTimeout(timer);if(chrome.exitCode===null&&chrome.signalCode===null){const exited=once(chrome,'exit');try{process.kill(-chrome.pid,'SIGTERM');}catch(e){chrome.kill('SIGTERM');}await exited;}server.closeAllConnections();server.close();rmSync(profile,{recursive:true,force:true});
 }

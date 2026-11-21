@@ -5,6 +5,7 @@
 //! - Auth `Authorization: Bearer <GATEWAY_TOKEN>` (phân biệt hoa thường, so sánh thời gian hằng); sai/thiếu → 401 `UNAUTHORIZED`.
 //!   Riêng `GET /health` không cần token.
 //! - 120 yêu cầu/phút cho token (cửa sổ trượt 60 giây, `RATE_LIMIT_PER_MINUTE`), chỉ đếm yêu cầu đã qua auth → 429 `RATE_LIMITED`.
+//!   Snapshot có hạn mức riêng bằng 3 lần giá trị trên để tải ảnh không chiếm lượt điều khiển cuộc gọi.
 //! - Thân JSON: rỗng = `{}`; > 400 000 byte → 400 «vượt 400 KB»; JSON hỏng → 400; không phải object → 400.
 //! - Lỗi nghiệp vụ [`GwError`] → `{"error":{"code","message"}}` với đúng mã HTTP.
 //! - Kiểm tra TRƯỚC auth như FastAPI: đường lạ → 404 `{"detail":"Not Found"}`, sai phương thức → 405
@@ -58,19 +59,20 @@ struct Ctx {
     token: String,
     limit: usize,
     hits: Mutex<VecDeque<Instant>>,
+    snapshot_hits: Mutex<VecDeque<Instant>>,
     version: String,
     started: Instant,
 }
 
 impl Ctx {
     /// `_rate_limited` của routes.py: bỏ mốc cũ hơn 60 giây; đủ hạn mức thì từ chối (không ghi thêm mốc).
-    fn rate_limited(&self) -> bool {
+    fn rate_limited(hits: &Mutex<VecDeque<Instant>>, limit: usize) -> bool {
         let now = Instant::now();
-        let mut dq = self.hits.lock().unwrap_or_else(|p| p.into_inner());
+        let mut dq = hits.lock().unwrap_or_else(|p| p.into_inner());
         while dq.front().is_some_and(|t| now.duration_since(*t) > Duration::from_secs(60)) {
             dq.pop_front();
         }
-        if dq.len() >= self.limit {
+        if dq.len() >= limit {
             return true;
         }
         dq.push_back(now);
@@ -78,13 +80,18 @@ impl Ctx {
     }
 
     /// `_auth` của routes.py.
-    fn auth(&self, headers: &HeaderMap) -> Result<(), GwError> {
+    fn auth(&self, headers: &HeaderMap, kind: Kind) -> Result<(), GwError> {
         let h = headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()).unwrap_or("");
         let token = h.strip_prefix("Bearer ").unwrap_or("");
         if self.token.is_empty() || !ct_eq(token.as_bytes(), self.token.as_bytes()) {
             return Err(GwError::new(401, "UNAUTHORIZED", "Thiếu hoặc sai token."));
         }
-        if self.rate_limited() {
+        if matches!(kind, Kind::Snapshot) {
+            let limit = self.limit.saturating_mul(3);
+            if Self::rate_limited(&self.snapshot_hits, limit) {
+                return Err(GwError::new(429, "RATE_LIMITED", format!("Quá {limit} yêu cầu ảnh/phút cho token này.")));
+            }
+        } else if Self::rate_limited(&self.hits, self.limit) {
             return Err(GwError::new(429, "RATE_LIMITED", "Quá 120 request/phút cho token này."));
         }
         Ok(())
@@ -212,7 +219,7 @@ async fn handle(ctx: Arc<Ctx>, spec: Spec, req: Request) -> Response {
             }
         }
     }
-    if let Err(e) = ctx.auth(&parts.headers) {
+    if let Err(e) = ctx.auth(&parts.headers, spec.kind) {
         return error_resp(&e);
     }
     let out = match spec.kind {
@@ -443,6 +450,7 @@ pub(crate) fn router_with_events(call: Arc<dyn CallControl>, chat: Arc<dyn ChatC
         token: cfg.token,
         limit: cfg.rate_limit_per_minute,
         hits: Mutex::new(VecDeque::new()),
+        snapshot_hits: Mutex::new(VecDeque::new()),
         version: cfg.version,
         started: Instant::now(),
     }))
@@ -451,7 +459,7 @@ pub(crate) fn router_with_events(call: Arc<dyn CallControl>, chat: Arc<dyn ChatC
 pub(crate) fn router_accounts(accounts: Arc<crate::account_router::Accounts>, cfg: RestConfig) -> Router {
     router_with(Arc::new(Ctx {
         call:accounts.clone(),chat:accounts,events:None,accounts:true,token:cfg.token,limit:cfg.rate_limit_per_minute,
-        hits:Mutex::new(VecDeque::new()),version:cfg.version,started:Instant::now(),
+        hits:Mutex::new(VecDeque::new()),snapshot_hits:Mutex::new(VecDeque::new()),version:cfg.version,started:Instant::now(),
     }))
 }
 
@@ -758,13 +766,27 @@ mod tests {
             hits: Mutex::new(VecDeque::from([
                 Instant::now() - Duration::from_secs(61), Instant::now(),
             ])),
+            snapshot_hits: Mutex::new(VecDeque::new()),
             version: "thu".into(), started: Instant::now(),
         };
-        assert!(!ctx.rate_limited());
+        assert!(!Ctx::rate_limited(&ctx.hits, ctx.limit));
         let before = ctx.hits.lock().unwrap().clone();
         assert_eq!(before.len(), 2);
-        assert!(ctx.rate_limited());
+        assert!(Ctx::rate_limited(&ctx.hits, ctx.limit));
         assert_eq!(*ctx.hits.lock().unwrap(), before);
+    }
+
+    #[tokio::test]
+    async fn snapshot_van_can_bearer_va_khong_chiem_han_muc_cup_may() {
+        let (app, _, _) = app();
+        let path = "/api/live/snapshot/c1";
+        assert_eq!(send(&app, req("GET", path, None, Body::empty())).await.0, 401);
+        for _ in 0..360 {
+            let response = app.clone().oneshot(ok("GET", path, Body::empty())).await.unwrap();
+            assert_eq!(response.status(), 200);
+        }
+        assert_eq!(send(&app, ok("GET", path, Body::empty())).await.0, 429);
+        assert_eq!(send(&app, ok("POST", "/api/live/hangup", Body::empty())).await.0, 200);
     }
 
     #[tokio::test]

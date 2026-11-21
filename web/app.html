@@ -509,6 +509,12 @@
         interval = 500;
         return;
       }
+      if (response.status === 429) {
+        clearSnapshotImage(state);
+        $("call-wait").textContent = "Gateway đang giới hạn tải hình. Đang thử lại…";
+        interval = 3000;
+        return;
+      }
       if (!response.ok) throw new Error("HTTP " + response.status);
       const blob = await response.blob();
       if (snapshot !== state) return;
