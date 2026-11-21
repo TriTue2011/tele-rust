@@ -8,7 +8,7 @@ DEST=${TGGW_BUILD_DIR:-/opt/telegram-gateway-rs-build}   # mỗi worktree/agent 
 RUST_IMG=tggw-builder:1.90
 CMD=${1:-build}
 ssh ha200 "docker image inspect $RUST_IMG >/dev/null 2>&1" || ssh ha200 "docker build -q -t $RUST_IMG -" < "$HERE/docker/builder.Dockerfile"
-tar -C "$HERE" --exclude=./target --exclude=./.git -cf - . | ssh ha200 "mkdir -p $DEST && tar -C $DEST -xf -"
+tar -C "$HERE" --exclude=./target --exclude=./.git --exclude='./.h2-*' -cf - . | ssh ha200 "mkdir -p $DEST && tar -C $DEST -xf -"
 case "$CMD" in
   build) ARGS="cargo build --release --locked 2>&1 || cargo build --release 2>&1" ;;
   test)  ARGS="cargo test --release 2>&1" ;;
