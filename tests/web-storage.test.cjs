@@ -16,7 +16,7 @@ test('TC-7: lưu chế độ, sửa thời hạn và ngoại lệ, xác nhận x
   assert.doesNotMatch(html.split('// ---- dữ liệu và lưu trữ')[1], /\binnerHTML\b/);
   const routes = {
     '/ui/api/auth/status': { dang_nhap: true, da_thiet_lap: true },
-    '/api/accounts': { tai_khoan: [{ phone: '+84900000001', status: 'online', display_name: 'Tài khoản thử' }] },
+    '/api/accounts': { tai_khoan: [{ phone: 'test-storage-account', status: 'online', display_name: 'Tài khoản thử' }] },
     '/api/me': { id: 1, name: 'Người dùng thử' },
     '/api/chats': { chats: [{ id: 42, title: '<em>Hội thoại thử</em>' }] },
     '/api/live/calls': { calls: [] }, '/api/feed': { items: [] },
@@ -103,7 +103,7 @@ test('TC-7: lưu chế độ, sửa thời hạn và ngoại lệ, xác nhận x
   await until('document.getElementById("storage-status").textContent.includes("Đã lưu")');
   const [stream] = await writes();
   assert.equal(stream[1].mode, 'stream');
-  assert.deepEqual(stream.slice(2), ['fetch', '+84900000001']);
+  assert.deepEqual(stream.slice(2), ['fetch', 'test-storage-account']);
   await click('storage-local');
   await evaluate(`{
     document.getElementById('storage-exception-count').click();

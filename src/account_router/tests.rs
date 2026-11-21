@@ -104,8 +104,9 @@ async fn storage_settings_validate_before_replacing_the_account_file() {
     use std::os::unix::fs::PermissionsExt;
 
     let f = Fixture::new("storage-settings").await;
-    let first = "+84900000071";
-    let second = "+84900000072";
+    // TDLib giả nhận định danh thử nghiệm, không cần số điện thoại có thể gọi được.
+    let first = "test-storage-first";
+    let second = "test-storage-second";
     f.ready(first).await;
     f.ready(second).await;
     let endpoint = "/api/settings/storage";
@@ -162,7 +163,7 @@ fn storage_upgrade_preserves_all_media_without_a_cache_limit() {
 #[tokio::test]
 async fn storage_usage_aggregates_all_types_and_limits_top_chats_without_leaking_details() {
     let f = Fixture::new("storage-usage").await;
-    f.ready("+84900000073").await;
+    f.ready("test-storage-usage").await;
     let chats = (0..=25).map(|id| json!({
         "chat_id":id, "size":id + 1, "count":1, "title":"private message content",
         "by_file_type":[{"file_type":{"@type":if id % 2 == 0 {"fileTypePhoto"} else {"fileTypeVideo"}},
@@ -182,7 +183,7 @@ async fn storage_usage_aggregates_all_types_and_limits_top_chats_without_leaking
 #[tokio::test]
 async fn storage_clear_requires_confirmation_and_targets_only_the_selected_chat() {
     let f = Fixture::new("storage-clear").await;
-    f.ready("+84900000074").await;
+    f.ready("test-storage-clear").await;
     *f.api.storage_stats.lock().unwrap() = json!({"@type":"storageStatistics","size":26,"count":2,"by_chat":[
         {"chat_id":10,"size":12,"count":1,"by_file_type":[]},
         {"chat_id":11,"size":14,"count":1,"by_file_type":[]}
@@ -199,7 +200,7 @@ async fn storage_clear_requires_confirmation_and_targets_only_the_selected_chat(
     std::fs::create_dir(&other).unwrap();
     let sentinel = other.join("keep.txt");
     std::fs::write(&sentinel, b"outside cache").unwrap();
-    let link = f.hub.store.lock().unwrap().session_dir("+84900000074").join("files/photos");
+    let link = f.hub.store.lock().unwrap().session_dir("test-storage-clear").join("files/photos");
     std::os::unix::fs::symlink(&other, &link).unwrap();
     assert_eq!(f.send("POST", endpoint, json!({"scope":"all","confirm":true})).await.1["error"]["code"], "STORAGE_CACHE_PATH");
     assert_eq!(std::fs::read(sentinel).unwrap(), b"outside cache");
@@ -221,7 +222,7 @@ async fn storage_clear_requires_confirmation_and_targets_only_the_selected_chat(
 #[tokio::test]
 async fn local_janitor_sweeps_timed_chats_and_separate_exceptions_with_a_budget() {
     let f = Fixture::new("storage-janitor").await;
-    let phone = "+84900000075";
+    let phone = "test-storage-janitor";
     f.ready(phone).await;
     let (_, entry) = f.hub.select(phone).unwrap();
     let mut policy = crate::storage_settings::load(&entry.session).unwrap();
