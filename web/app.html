@@ -1234,10 +1234,13 @@
   }
   // Tệp (ảnh, âm thanh, video) tải bằng fetch rồi dựng blob URL.
   async function blobUrl(fileId) {
-    if (blobs.has(fileId)) return blobs.get(fileId);
+    // Số file id của TDLib chỉ có nghĩa TRONG MỘT tài khoản (cùng số, hai tài khoản ⇒ hai ảnh khác nhau): khoá đệm phải gồm cả tài khoản,
+    // nếu không đổi tài khoản sẽ hiện nhầm avatar/ảnh của tài khoản kia.
+    const key = account + "|" + fileId;
+    if (blobs.has(key)) return blobs.get(key);
     const p = fetch(accountPath("/api/file/" + fileId), { credentials: "same-origin" })
       .then((r) => { if (!r.ok) throw new Error("Tệp chưa tải được"); return r.blob(); }).then((b) => URL.createObjectURL(b));
-    blobs.set(fileId, p); p.catch(() => blobs.delete(fileId)); return p;
+    blobs.set(key, p); p.catch(() => blobs.delete(key)); return p;
   }
   const avQueue = []; let avBusy = 0;
   function loadAvatar(box, fileId) {
