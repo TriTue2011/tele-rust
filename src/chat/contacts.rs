@@ -36,7 +36,7 @@ fn contact_name(u: &Value, id: i64) -> String {
     }
     let uname = text(&u["usernames"]["active_usernames"][0]);
     if !uname.is_empty() {
-        return uname;
+        return uname.to_string();
     }
     id.to_string()
 }
