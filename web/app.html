@@ -3398,7 +3398,9 @@
     $("gate-account").hidden = loggedIn !== true;
     $("gate-msg").textContent = msg || "";
   }
+  let startRetryTimer = null, startRetryCount = 0;
   async function start() {
+    clearTimeout(startRetryTimer);
     try {
       const auth = await api("GET", "/ui/api/auth/status");
       if (!auth.dang_nhap) { showGate("", auth.da_thiet_lap, false); return; }
@@ -3411,15 +3413,21 @@
       loadAppearance().catch(() => {});
       $("app").classList.remove("locked"); $("gate").hidden = true; $("gate-msg").textContent = ""; $("placeholder").hidden = false;
       $("list").textContent = "Đang tải…";
-      callsReady = true; watchCall();
+      callsReady = true; watchCall(); startRetryCount = 0;
       try { await loadChats(); } catch (e) { $("list").textContent = e.message; }
       pump();
     } catch (e) {
       if (e.status === 401) {
         try { const auth = await api("GET", "/ui/api/auth/status"); showGate("Phiên đăng nhập đã hết hạn.", auth.da_thiet_lap, false); }
         catch (_) { showGate(e.message, true, false); }
-      } else if (e.code === "ACCOUNT_OFFLINE") showGate("Chưa có tài khoản Telegram đăng nhập. Vào «Tài khoản» để đăng nhập.", true, true);
-      else showGate(e.message, true, true);
+      } else if (e.code === "ACCOUNT_OFFLINE" || e.status === 502 || e.status === 503 || e.status === 504 || !e.status) {
+        // Tình trạng TẠM THỜI (tài khoản chớp offline, gateway vừa khởi động lại, mạng chập chờn): tự thử lại có lùi thời gian
+        // thay vì khoá giao diện và bắt người dùng về «Tài khoản» rồi mở lại bằng tay.
+        startRetryCount++;
+        showGate("Tài khoản Telegram đang kết nối lại… sẽ tự thử lại sau vài giây. Nếu quá lâu, vào «Tài khoản» để kiểm tra.", true, true);
+        clearTimeout(startRetryTimer);
+        startRetryTimer = setTimeout(start, Math.min(15000, 2000 * startRetryCount));
+      } else showGate(e.message, true, true);
       $("list").textContent = "";
     }
   }

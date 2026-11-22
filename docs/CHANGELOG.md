@@ -16,7 +16,13 @@
 ### Đã xoá / Dọn kho
 - Xoá tệp nội bộ `HOAN-TAT.md.SAI-212357` lọt vào kho công khai và bổ sung quy tắc bỏ qua tệp nội bộ vào `.gitignore`.
 
-## [0.7.2] — Phiên bản hiện tại trong cây mã
+## [0.7.3] — Phiên bản hiện tại trong cây mã
+
+- **Sửa avatar nhầm:** bộ nhớ đệm ảnh của giao diện khoá theo (tài khoản, file id); số file id của TDLib chỉ có nghĩa trong một tài khoản.
+- **Không còn khoá giao diện khi tài khoản chớp offline:** `start()` gặp `ACCOUNT_OFFLINE`/502/503/504/lỗi mạng thì hiện «đang kết nối lại» và tự thử lại có lùi thời gian, thay vì bắt người dùng về «Tài khoản» và mở lại bằng tay.
+- Bài kiểm Chrome chọn mục tiêu `type=page` và nạp trang dưới origin HTTP (CI xanh); `deploy/phat-hanh.py` tăng số phiên bản ở cả README và tài liệu.
+
+## [0.7.2]
 
 - **Định dạng chữ tự động khi gửi qua API/automation:** tham số tuỳ chọn `format` (markdown nhẹ), `auto_emphasis` (in đậm số kèm đơn vị), `ai_markup` (đánh dấu do trợ lý đề xuất, máy chủ kiểm chữ gốc không đổi); mặc định tắt nên tin cũ không đổi. Trần đầu vào thô 16384 đơn vị UTF-16 kiểm TRƯỚC khi phân tích để chặn chi phí bậc hai.
 - **Đóng gói:** Dockerfile đa tầng, workflow CI/ảnh/phát hành/add-on, add-on Home Assistant `addon/tele-rs`, README và tài liệu đầy đủ kèm bài kiểm «README khớp mã».

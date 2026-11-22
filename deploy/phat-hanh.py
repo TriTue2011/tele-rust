@@ -161,6 +161,14 @@ def main():
     if amoi == atxt and 'version: "%s"' % ver not in atxt:
         die("không cập nhật được version trong addon/tele-rs/config.yaml")
     open(apath, "w", encoding="utf-8").write(amoi)
+    # Số phiên bản còn xuất hiện ở README và tài liệu (tests/contract/kiem_addon_ci.py và readme-matches-code.test.cjs bắt README nhắc v<phiên bản hiện tại>):
+    # đổi CÙNG LÚC, nếu không bản phát hành dừng giữa chừng (0.7.3 đã dừng đúng chỗ này). CHANGELOG KHÔNG đổi hàng loạt (lịch sử) — mục mới viết tay.
+    old = re.search(r'(?m)^version\s*=\s*"(\d+\.\d+\.\d+)"', txt).group(1)
+    for rel in ("README.md", "docs/BAO-MAT.md", "docs/TRIEN-KHAI.md", "docs/API.md", "docs/TINH-NANG.md", "docs/THAM-CHIEU.md"):
+        dpath = os.path.join(REPO, rel)
+        if os.path.isfile(dpath):
+            dtxt = open(dpath, encoding="utf-8").read()
+            open(dpath, "w", encoding="utf-8").write(dtxt.replace("v" + old, "v" + ver).replace(":" + old, ":" + ver))
     k = subprocess.run([sys.executable, "tests/contract/kiem_addon_ci.py"], cwd=REPO, capture_output=True, text=True)
     if k.returncode:
         die("kiểm add-on không đạt sau khi tăng phiên bản: " + (k.stdout + k.stderr)[-300:])
@@ -169,7 +177,7 @@ def main():
            "Cùng lớp: phiên bản đổi ở Cargo.toml và addon/tele-rs/config.yaml cùng lúc (`grep -n '^version' Cargo.toml addon/tele-rs/config.yaml`), `tggw version` và `/health` đọc từ đó.\n"
            "Nguyên tắc: phiên bản do deploy/phat-hanh.py tăng sau khi `./build.sh test` đạt, không sửa tay.\n"
            % ver) + (("\n" + trailer + "\n") if trailer else "")
-    git("add", "Cargo.toml", "addon/tele-rs/config.yaml")
+    git("add", "Cargo.toml", "addon/tele-rs/config.yaml", "README.md", "docs")
     git("commit", "-q", "-m", msg)
     git("tag", "-a", "v" + ver, "-m", "Tele Rust v" + ver)
     print("== đẩy main + thẻ v" + ver)
