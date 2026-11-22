@@ -92,6 +92,7 @@ test('TC-CHATINFO-FONT: ngăn thông tin hội thoại và popover phông Aa ở
 
   const mock = `
     window.chatInfoTestWrites = [];
+    window.chatInfoFeedQueue = [];
     window.fetch = async (path, options = {}) => {
       const routes = ${JSON.stringify(routes)};
       const url = new URL(path, 'http://localhost');
@@ -106,6 +107,9 @@ test('TC-CHATINFO-FONT: ngăn thông tin hội thoại và popover phông Aa ở
           routes['/api/settings/storage'] = data;
           payload = data;
         } else if (url.pathname.endsWith('/settings')) {
+          if (data.auto_delete && routes['/api/chats/42/info']) {
+            routes['/api/chats/42/info'].auto_delete_seconds = data.auto_delete.seconds;
+          }
           payload = { ok: true, ...data };
         } else if (url.pathname.endsWith('/clear_history')) {
           payload = { ok: true, deleted: true };
@@ -113,7 +117,22 @@ test('TC-CHATINFO-FONT: ngăn thông tin hội thoại và popover phông Aa ở
           payload = { ok: true, left: true };
         }
       }
-      if (url.pathname === '/api/feed') await new Promise((resolve) => setTimeout(resolve, 400));
+      if (url.pathname === '/api/feed') {
+        const since = Number(url.searchParams.get('since') || 0);
+        const wait = Number(url.searchParams.get('wait') || 0);
+        if (window.chatInfoFeedQueue.length) {
+          const items = window.chatInfoFeedQueue.splice(0);
+          payload = { items, cursor: since + items.length, reset: false };
+        } else {
+          if (wait > 0) await new Promise((resolve) => setTimeout(resolve, 150));
+          if (window.chatInfoFeedQueue.length) {
+            const items = window.chatInfoFeedQueue.splice(0);
+            payload = { items, cursor: since + items.length, reset: false };
+          } else {
+            payload = { items: [], cursor: since, reset: false };
+          }
+        }
+      }
       return new Response(JSON.stringify(payload));
     };
   `;
@@ -227,13 +246,47 @@ test('TC-CHATINFO-FONT: ngăn thông tin hội thoại và popover phông Aa ở
   await click('ci-confirm-ok');
   await until('window.chatInfoTestWrites.some((w) => w[0] === "/api/chats/42/settings" && w[1].auto_delete?.confirm === true)');
 
-  // Bật bộ nhớ đệm Mãi mãi cho hội thoại này -> POST /api/settings/storage.
+  // Bật bộ nhớ đệm Mãi mãi cho hội thoại này -> POST /api/settings/storage & cảnh báo vàng tự xoá + Mãi mãi.
   await evaluate(`{
     const f = document.getElementById('ci-cache-forever');
     f.checked = true;
     f.dispatchEvent(new Event('change'));
   }`);
   await until('window.chatInfoTestWrites.some((w) => w[0] === "/api/settings/storage")');
+  await until('!document.getElementById("ci-autodelete-warning").hidden');
+  assert.equal(
+    await evaluate('document.getElementById("ci-autodelete-warning").textContent'),
+    'Tin nhắn vẫn sẽ bị Telegram xoá sau 1 ngày; Mãi mãi chỉ giữ tệp đã tải',
+  );
+  assert.ok(
+    (await evaluate('document.getElementById("ci-autodelete-note").textContent'))
+      .includes('Tự xoá tin nhắn là cài đặt của Telegram, áp cho TIN MỚI GỬI, xoá thật ở cả hai bên; khác với ngoại lệ «Mãi mãi» của bộ nhớ đệm (chỉ giữ tệp đã tải về máy chủ, không giữ tin nhắn)'),
+  );
+
+  // Kiểm tra đồng bộ realtime từ /api/feed (chat_auto_delete) -> đổi cả ngăn Thông tin, tiêu đề và danh sách.
+  await evaluate('window.chatInfoFeedQueue.push({ type: "chat_auto_delete", chat_id: 42, seconds: 90000 })');
+  await until('document.getElementById("ci-autodelete-current").textContent.includes("Tùy chỉnh 1 ngày 1 giờ")');
+  assert.equal(await evaluate('!document.getElementById("head-autodelete").hidden'), true);
+  assert.match(await evaluate('document.querySelector("#list .ad-badge").textContent'), /1ng/);
+  assert.equal(
+    await evaluate('document.getElementById("ci-autodelete-warning").textContent'),
+    'Tin nhắn vẫn sẽ bị Telegram xoá sau 1 ngày 1 giờ; Mãi mãi chỉ giữ tệp đã tải',
+  );
+
+  // Đặt mức tuỳ chỉnh 3 ngày qua hộp xác nhận.
+  await evaluate(`{
+    const sel = document.getElementById('ci-autodelete');
+    sel.value = 'custom';
+    sel.dispatchEvent(new Event('change'));
+  }`);
+  await until('!document.getElementById("ci-autodelete-custom-row").hidden');
+  await evaluate(`{
+    document.getElementById('ci-autodelete-days').value = '3';
+    document.getElementById('ci-autodelete-apply').click();
+  }`);
+  await until('document.getElementById("ci-confirm-dialog").open === true');
+  await click('ci-confirm-ok');
+  await until('window.chatInfoTestWrites.some((w) => w[0] === "/api/chats/42/settings" && w[1].auto_delete?.seconds === 259200)');
 
   // Kiểm ở 700 px: ngăn nằm bên phải màn hình và không tràn ngang.
   await dimension(700);
@@ -243,8 +296,13 @@ test('TC-CHATINFO-FONT: ngăn thông tin hội thoại và popover phông Aa ở
   })()`), 'drawer 700 px');
   assert.ok(await evaluate(`(() => {
     const d = document.getElementById('chat-info-drawer');
-    return [...d.querySelectorAll('button,select,input[type="text"]')].every((n) => !n.getClientRects().length || n.getBoundingClientRect().height >= 44);
+    return [...d.querySelectorAll('button,select,input[type="text"],input[type="number"]')].every((n) => !n.getClientRects().length || n.getBoundingClientRect().height >= 44);
   })()`), 'touch target 700 px');
+
+  // Tắt tự xoá qua sự kiện -> đồng hồ và cảnh báo vàng biến mất.
+  await evaluate('window.chatInfoFeedQueue.push({ type: "chat_auto_delete", chat_id: 42, seconds: 0 })');
+  await until('document.getElementById("head-autodelete").hidden === true');
+  assert.equal(await evaluate('document.getElementById("ci-autodelete-warning").hidden'), true);
 
   await click('chat-info-close');
   await until('document.getElementById("chat-info-drawer").hidden === true');

@@ -271,7 +271,7 @@
   .chat-info-top { display:flex; align-items:center; gap:8px; padding:10px 14px; border-bottom:1px solid var(--line); flex:none; }
   .chat-info-top h2 { margin:0; font-size:16px; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .chat-info-body { flex:1; min-height:0; overflow-y:auto; overflow-x:hidden; padding:14px; display:flex; flex-direction:column; gap:12px; overflow-wrap:anywhere; }
-  .chat-info-drawer button, .chat-info-drawer select, .chat-info-drawer input[type=text] { min-height:44px; max-width:100%; }
+  .chat-info-drawer button, .chat-info-drawer select, .chat-info-drawer input[type=text], .chat-info-drawer input[type=number] { min-height:44px; max-width:100%; }
   .ci-profile { display:flex; flex-direction:column; align-items:center; text-align:center; gap:6px; padding:12px; border-radius:12px; background:var(--bg); border:1px solid var(--line); }
   .ci-profile .av { width:64px; height:64px; font-size:22px; background:var(--btn-bg); }
   .ci-profile h3 { margin:2px 0 0; font-size:17px; overflow-wrap:anywhere; }
@@ -303,6 +303,20 @@
     #head { gap:4px; padding:6px 8px; }
     .chat-info-drawer { width:100%; height:100dvh; border-left:0; box-shadow:none; }
   }
+  .t-wrap { display:flex; align-items:center; gap:6px; min-width:0; flex:1; }
+  .t-wrap .t { flex:0 1 auto; min-width:0; }
+  .ad-badge { display:inline-flex; align-items:center; gap:3px; padding:1px 6px; border-radius:99px; font-size:11px; font-weight:600; flex:none;
+              background:color-mix(in srgb, var(--acc) 14%, transparent); color:var(--acc); border:1px solid color-mix(in srgb, var(--acc) 35%, transparent); line-height:1.35; }
+  .head-ad-badge { cursor:pointer; min-height:28px; padding:2px 8px; }
+  .head-ad-badge:focus-visible { outline:2px solid var(--acc); outline-offset:1px; }
+  .ci-autodelete-current { margin:0; font-size:13px; font-weight:600; color:var(--fg); }
+  .ci-autodelete-custom { display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin-top:4px; }
+  .ci-autodelete-custom input[type=number] { flex:1 1 90px; min-width:80px; min-height:44px; max-width:100%; padding:8px 10px; border:1px solid var(--line); border-radius:9px; background:var(--panel); color:var(--fg); font:inherit; }
+  .ci-warn-banner { margin:0; padding:9px 11px; border-radius:9px; border:1px solid #d49b00; background:#fff6d6; color:#6b4700; font-size:13px; font-weight:600; line-height:1.4; }
+  :root[data-theme="dark"] .ci-warn-banner { border-color:#c99614; background:#3b2d08; color:#ffe08a; }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) .ci-warn-banner { border-color:#c99614; background:#3b2d08; color:#ffe08a; }
+  }
 </style>
 </head>
 <body>
@@ -315,7 +329,7 @@
     <div id="list" role="list"></div>
   </aside>
   <main>
-    <div class="bar" id="head" hidden><button class="icon back head-btn" id="back" aria-label="Quay lại">←</button><h1 id="title" class="chat-head-title" role="button" tabindex="0" aria-label="Thông tin hội thoại" title="Xem thông tin hội thoại"></h1><button class="icon head-btn" id="font-open" type="button" aria-label="Phông chữ khung chat" aria-haspopup="dialog" aria-expanded="false" aria-controls="font-popover" title="Kiểu chữ và cỡ chữ">Aa</button><button class="icon head-btn" id="chat-info-open" type="button" aria-label="Thông tin hội thoại" aria-expanded="false" aria-controls="chat-info-drawer" title="Thông tin hội thoại">ⓘ</button><button class="icon head-btn" id="call-a" aria-label="Gọi thoại" title="Gọi thoại">📞</button><button class="icon head-btn" id="call-v" aria-label="Gọi video" title="Gọi video">🎥</button></div>
+    <div class="bar" id="head" hidden><button class="icon back head-btn" id="back" aria-label="Quay lại">←</button><h1 id="title" class="chat-head-title" role="button" tabindex="0" aria-label="Thông tin hội thoại" title="Xem thông tin hội thoại"></h1><span id="head-autodelete" class="ad-badge head-ad-badge" role="button" tabindex="0" hidden></span><button class="icon head-btn" id="font-open" type="button" aria-label="Phông chữ khung chat" aria-haspopup="dialog" aria-expanded="false" aria-controls="font-popover" title="Kiểu chữ và cỡ chữ">Aa</button><button class="icon head-btn" id="chat-info-open" type="button" aria-label="Thông tin hội thoại" aria-expanded="false" aria-controls="chat-info-drawer" title="Thông tin hội thoại">ⓘ</button><button class="icon head-btn" id="call-a" aria-label="Gọi thoại" title="Gọi thoại">📞</button><button class="icon head-btn" id="call-v" aria-label="Gọi video" title="Gọi video">🎥</button></div>
     <section id="font-popover" class="font-popover" role="dialog" aria-label="Phông chữ khung chat" hidden>
       <div class="font-pop-head">
         <h2>Phông chữ khung chat</h2>
@@ -438,14 +452,22 @@
       </section>
       <section id="chat-info-autodelete" class="ci-card">
         <h4>Tự xoá tin nhắn</h4>
+        <p id="ci-autodelete-current" class="ci-autodelete-current">Hiện tại (Telegram): Tắt</p>
         <label for="ci-autodelete">Thời gian tự xoá</label>
         <select id="ci-autodelete">
           <option value="0">Tắt</option>
           <option value="86400">1 ngày</option>
           <option value="604800">1 tuần</option>
           <option value="2678400">1 tháng</option>
+          <option value="custom">Tùy chỉnh…</option>
         </select>
-        <small class="storage-note">Đổi tự xoá yêu cầu xác nhận vì tin nhắn sẽ bị xoá thật ở cả hai bên.</small>
+        <div id="ci-autodelete-custom-row" class="ci-autodelete-custom" hidden>
+          <input id="ci-autodelete-days" type="number" min="1" max="365" step="1" placeholder="Số ngày (1–365)" aria-label="Số ngày tự xoá tuỳ chỉnh (1 đến 365)">
+          <button type="button" id="ci-autodelete-apply">Áp dụng</button>
+          <button type="button" id="ci-autodelete-custom-cancel" class="ghost">Huỷ</button>
+        </div>
+        <p id="ci-autodelete-warning" class="ci-warn-banner" role="status" hidden></p>
+        <small id="ci-autodelete-note" class="storage-note">Tự xoá tin nhắn là cài đặt của Telegram, áp cho TIN MỚI GỬI, xoá thật ở cả hai bên; khác với ngoại lệ «Mãi mãi» của bộ nhớ đệm (chỉ giữ tệp đã tải về máy chủ, không giữ tin nhắn)</small>
       </section>
       <section id="chat-info-actions" class="ci-card">
         <h4>Tác vụ hội thoại</h4>
@@ -880,7 +902,19 @@
       const row = el("div", "chat" + (cur === c.id ? " on" : "")); row.tabIndex = 0; row.setAttribute("role", "listitem");
       row.appendChild(avatar(c.title || c.name, c.id, c.avatar_file));
       const meta = el("div", "meta"), r1 = el("div", "row"), r2 = el("div", "row");
-      r1.appendChild(el("span", "t", (c.pinned ? "📌 " : "") + (c.title || c.name)));
+      const titleWrap = el("span", "t-wrap");
+      titleWrap.appendChild(el("span", "t", (c.pinned ? "📌 " : "") + (c.title || c.name)));
+      const autoSec = !isContacts ? Number(c.auto_delete_seconds || 0) : 0;
+      if (autoSec > 0 && typeof formatAutoDeleteShort === "function" && typeof formatAutoDeleteDuration === "function") {
+        const badge = el("span", "ad-badge", "⏱ " + formatAutoDeleteShort(autoSec));
+        const desc = "Tự xoá tin nhắn sau " + formatAutoDeleteDuration(autoSec);
+        badge.title = desc;
+        badge.setAttribute("aria-label", desc);
+        badge.dataset.chatId = String(c.id);
+        badge.dataset.seconds = String(autoSec);
+        titleWrap.appendChild(badge);
+      }
+      r1.appendChild(titleWrap);
       if (!isContacts) r1.appendChild(el("span", "d", c.last ? listTime(c.last.date) : ""));
       r2.appendChild(el("span", "p", isContacts ? (c.username ? "@" + c.username : c.phone || "") : (c.last ? (c.last.outgoing ? "Bạn: " : "") + c.last.text : "")));
       if (!isContacts && c.unread) r2.appendChild(el("span", "badge" + (c.muted ? " mute" : ""), c.unread > 999 ? "999+" : String(c.unread)));
@@ -894,6 +928,10 @@
   async function loadChats() {
     const r = await api("GET", "/api/chats?limit=80"); chats = r.chats || []; updateTitleBadge();
     if (tab === "chats" && !$("q").value.trim()) renderList(chats, false);
+    if (cur != null && typeof renderHeadAutoDelete === "function") {
+      const open = chats.find((c) => c.id === cur);
+      if (open) renderHeadAutoDelete(open.auto_delete_seconds || 0);
+    }
   }
   function scheduleChats() { if (listTimer) return; listTimer = setTimeout(() => { listTimer = null; loadChats().catch(() => {}); }, 1200); }
 
@@ -1049,6 +1087,7 @@
     cur = c.id; curKind = c.kind; replyTo = 0; $("reply").style.display = "none";
     $("app").classList.add("chatting"); $("gate").hidden = true; $("placeholder").hidden = true; $("head").hidden = false; $("msgs").hidden = false; $("typing").hidden = false; $("composer").hidden = false;
     $("title").textContent = c.title; $("call-a").hidden = $("call-v").hidden = c.kind !== "private"; renderList(chats.length ? chats : [c], false);
+    if (typeof renderHeadAutoDelete === "function") renderHeadAutoDelete(c.auto_delete_seconds || 0);
     const box = $("msgs"); box.textContent = ""; rendered.clear(); msgData.clear(); lastDay = null;
     try {
       const r = await api("GET", "/api/chats/" + c.id + "/messages?limit=40"); const msgs = r.messages || [];
@@ -1315,6 +1354,7 @@
       else if (it.message && !it.message.outgoing && document.hidden === false) { /* thông báo nhẹ ở danh sách */ }
       scheduleChats();
     } else if (it.type === "chat") scheduleChats();
+    else if (it.type === "chat_auto_delete") { if (typeof applyChatAutoDeleteUpdate === "function") applyChatAutoDeleteUpdate(it.chat_id, it.seconds); }
     else if (it.type === "send_ok") { if (it.chat_id === cur) { removeMsg(it.old_id); if (it.message) appendMessages([it.message], false); } scheduleChats(); }
     else if (it.type === "send_failed") { toast("Gửi không được: " + it.error); const n = rendered.get(it.old_id); if (n) { n.style.opacity = ".5"; n.title = "Gửi không được: " + it.error; } }
     else if (it.type === "call") watchCall();
@@ -1340,7 +1380,7 @@
     else { $("list").textContent = "Đang tải…"; try { contacts = (await api("GET", "/api/contacts")).contacts || []; renderList(contacts, true); } catch (e) { toast(e.message); } }
   }
   $("t-chats").addEventListener("click", () => showTab("chats")); $("t-contacts").addEventListener("click", () => showTab("contacts"));
-  $("back").addEventListener("click", () => { $("app").classList.remove("chatting"); cur = null; if (typeof closeChatOverlays === "function") closeChatOverlays(); renderList(chats, false); });
+  $("back").addEventListener("click", () => { $("app").classList.remove("chatting"); cur = null; if (typeof renderHeadAutoDelete === "function") renderHeadAutoDelete(0); if (typeof closeChatOverlays === "function") closeChatOverlays(); renderList(chats, false); });
 
   // ---- cuộc gọi thoại / video --------------------------------------------------------------------------
   let callInfo = null, acceptedId = null, missingSnapshotId = null, callFocus = null;
@@ -2753,6 +2793,9 @@
   const CHAT_KIND_LABELS = { private: "Cá nhân", secret: "Bí mật", group: "Nhóm", channel: "Kênh", other: "Hội thoại" };
   const USER_STATUS_LABELS = { online: "Đang trực tuyến", recently: "Hoạt động gần đây", lastweek: "Hoạt động tuần trước", lastmonth: "Hoạt động tháng trước", offline: "Ngoại tuyến" };
   const AUTO_DELETE_LABELS = { 0: "Tắt", 86400: "1 ngày", 604800: "1 tuần", 2678400: "1 tháng" };
+  const AUTO_DELETE_DAY = 86400;
+  const AUTO_DELETE_MAX_DAYS = 365;
+  const AUTO_DELETE_MAX_SECONDS = AUTO_DELETE_MAX_DAYS * AUTO_DELETE_DAY;
   const PERM_LABELS = {
     can_send_basic_messages: "Gửi tin nhắn văn bản",
     can_send_photos: "Gửi ảnh",
@@ -2862,9 +2905,122 @@
       const opt = el("option", "", labelBuilder(value));
       opt.value = strVal;
       opt.dataset.dynamic = "1";
-      select.appendChild(opt);
+      const customOpt = Array.from(select.options || []).find((o) => String(o.value) === "custom");
+      if (customOpt && typeof select.insertBefore === "function") select.insertBefore(opt, customOpt);
+      else select.appendChild(opt);
     }
     select.value = strVal;
+  }
+
+  function formatAutoDeleteDuration(seconds) {
+    const sec = Math.max(0, Math.floor(Number(seconds) || 0));
+    if (!sec) return "Tắt";
+    if (sec === AUTO_DELETE_DAY) return "1 ngày";
+    if (sec === 604800) return "1 tuần";
+    if (sec === 2678400) return "1 tháng";
+    const d = Math.floor(sec / AUTO_DELETE_DAY);
+    const h = Math.floor((sec % AUTO_DELETE_DAY) / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    const s = sec % 60;
+    const parts = [];
+    if (d > 0) parts.push(d + " ngày");
+    if (h > 0) parts.push(h + " giờ");
+    if (d === 0 && m > 0) parts.push(m + " phút");
+    if (d === 0 && h === 0 && s > 0) parts.push(s + " giây");
+    return parts.join(" ") || (sec + " giây");
+  }
+
+  function formatAutoDeleteLabel(seconds) {
+    const sec = Math.max(0, Math.floor(Number(seconds) || 0));
+    if (Object.hasOwn(AUTO_DELETE_LABELS, sec)) return AUTO_DELETE_LABELS[sec];
+    return "Tùy chỉnh " + formatAutoDeleteDuration(sec);
+  }
+
+  function formatAutoDeleteShort(seconds) {
+    const sec = Math.max(0, Math.floor(Number(seconds) || 0));
+    if (!sec) return "";
+    if (sec === AUTO_DELETE_DAY) return "1ng";
+    if (sec === 604800) return "1t";
+    if (sec === 2678400) return "1th";
+    const d = Math.floor(sec / AUTO_DELETE_DAY);
+    if (d > 0) return d + "ng";
+    const h = Math.floor(sec / 3600);
+    if (h > 0) return h + "g";
+    const m = Math.floor(sec / 60);
+    if (m > 0) return m + "p";
+    return sec + "s";
+  }
+
+  function renderHeadAutoDelete(seconds) {
+    const badge = $("head-autodelete");
+    if (!badge) return;
+    const sec = Math.max(0, Math.floor(Number(seconds) || 0));
+    if (!sec) {
+      badge.hidden = true;
+      badge.textContent = "";
+      badge.removeAttribute("title");
+      badge.removeAttribute("aria-label");
+      return;
+    }
+    const desc = "Tự xoá tin nhắn sau " + formatAutoDeleteDuration(sec);
+    badge.textContent = "⏱ " + formatAutoDeleteShort(sec);
+    badge.title = desc;
+    badge.setAttribute("aria-label", desc + " · Mở thông tin hội thoại");
+    badge.hidden = false;
+  }
+
+  function isChatCacheForever(chatId) {
+    if (storagePolicyCache && Array.isArray(storagePolicyCache.exceptions)) {
+      return storagePolicyCache.exceptions.some((row) => row.chat_id === chatId && row.keep === null);
+    }
+    return Boolean($("ci-cache-forever")?.checked);
+  }
+
+  function syncAutoDeleteCacheWarning(seconds, chatId = chatInfo?.chat_id) {
+    const warn = $("ci-autodelete-warning");
+    if (!warn) return;
+    const sec = Math.max(0, Math.floor(Number(seconds) || 0));
+    const forever = chatId != null ? isChatCacheForever(chatId) : Boolean($("ci-cache-forever")?.checked);
+    if (sec > 0 && forever) {
+      warn.textContent = "Tin nhắn vẫn sẽ bị Telegram xoá sau " + formatAutoDeleteDuration(sec) + "; Mãi mãi chỉ giữ tệp đã tải";
+      warn.hidden = false;
+    } else {
+      warn.hidden = true;
+      warn.textContent = "";
+    }
+  }
+
+  function renderAutoDeleteSection(seconds) {
+    const sec = Math.max(0, Math.floor(Number(seconds) || 0));
+    if ($("ci-autodelete-current")) {
+      $("ci-autodelete-current").textContent = "Hiện tại (Telegram): " + formatAutoDeleteLabel(sec);
+    }
+    setSelectWithFallback($("ci-autodelete"), sec, (s) => formatAutoDeleteLabel(Number(s)));
+    if ($("ci-autodelete-custom-row")) $("ci-autodelete-custom-row").hidden = true;
+    syncAutoDeleteCacheWarning(sec, chatInfo?.chat_id);
+  }
+
+  function applyChatAutoDeleteUpdate(chatId, seconds) {
+    const id = Number(chatId);
+    const sec = Math.max(0, Math.floor(Number(seconds) || 0));
+    if (!Number.isFinite(id) || !id) return;
+    let changed = false;
+    if (typeof chats !== "undefined" && Array.isArray(chats)) {
+      for (const item of chats) {
+        if (item.id === id) {
+          if (Number(item.auto_delete_seconds || 0) !== sec) changed = true;
+          item.auto_delete_seconds = sec;
+        }
+      }
+    }
+    if (changed && (typeof tab === "undefined" || tab === "chats") && !($("q")?.value || "").trim() && typeof renderList === "function") {
+      renderList(chats, false);
+    }
+    if (typeof cur !== "undefined" && cur === id) renderHeadAutoDelete(sec);
+    if (chatInfo && chatInfo.chat_id === id) {
+      chatInfo.auto_delete_seconds = sec;
+      renderAutoDeleteSection(sec);
+    }
   }
 
   function openCiConfirm({ title, summary, showRevoke, okLabel, onConfirm, onCancel }) {
@@ -2879,20 +3035,19 @@
   }
 
   const ciConfirmAutoDelete = (nextSeconds, prevSeconds) => {
-    const label = AUTO_DELETE_LABELS[nextSeconds] || (nextSeconds + " giây");
+    const label = formatAutoDeleteLabel(nextSeconds);
     openCiConfirm({
       title: "Xác nhận tự xoá tin nhắn",
       summary: "Đặt tự xoá tin nhắn thành «" + label + "»? Lưu ý: tin nhắn sẽ bị xoá thật ở cả hai bên và không lấy lại được sau khi hết hạn.",
       showRevoke: false,
       okLabel: "Áp dụng tự xoá",
       onCancel: () => {
-        if (chatInfo) setSelectWithFallback($("ci-autodelete"), prevSeconds, (s) => s + " giây");
+        if (chatInfo) renderAutoDeleteSection(prevSeconds);
       },
       onConfirm: async () => {
         if (!chatInfo) return;
         await saveChatSettings({ auto_delete: { seconds: nextSeconds, confirm: true } });
-        chatInfo.auto_delete_seconds = nextSeconds;
-        setSelectWithFallback($("ci-autodelete"), nextSeconds, (s) => s + " giây");
+        applyChatAutoDeleteUpdate(chatInfo.chat_id, nextSeconds);
       },
     });
   };
@@ -3009,7 +3164,16 @@
     setSelectWithFallback($("ci-mute"), muteVal, (s) => "Tắt tiếng (" + s + " giây)");
     $("ci-preview").checked = Boolean(notif.show_preview ?? true);
 
-    setSelectWithFallback($("ci-autodelete"), Number(info.auto_delete_seconds || 0), (s) => s + " giây");
+    const autoSec = Math.max(0, Math.floor(Number(info.auto_delete_seconds || 0)));
+    info.auto_delete_seconds = autoSec;
+    renderAutoDeleteSection(autoSec);
+    if (typeof chats !== "undefined" && Array.isArray(chats)) {
+      for (const item of chats) {
+        if (item.id === info.chat_id) item.auto_delete_seconds = autoSec;
+      }
+      if ((typeof tab === "undefined" || tab === "chats") && !($("q")?.value || "").trim() && typeof renderList === "function") renderList(chats, false);
+    }
+    if (typeof cur !== "undefined" && cur === info.chat_id) renderHeadAutoDelete(autoSec);
     renderChatActionButtons(info);
 
     const isPrivate = info.kind === "private" || info.kind === "secret";
@@ -3054,6 +3218,7 @@
       setSelectWithFallback($("ci-cache-keep"), ex.keep, (s) => s + " giây");
     }
     $("ci-cache-forever").disabled = $("ci-cache-keep").disabled = !policy;
+    if (chatInfo && chatInfo.chat_id === chatId) syncAutoDeleteCacheWarning(chatInfo.auto_delete_seconds, chatId);
   }
 
   async function loadChatCache(chatId, seq) {
@@ -3136,6 +3301,13 @@
 
   async function loadChatInfo(chatId) {
     const seq = ++chatInfoSeq;
+    storagePolicyCache = null;
+    if ($("ci-cache-forever")) $("ci-cache-forever").checked = false;
+    if ($("ci-autodelete-warning")) {
+      $("ci-autodelete-warning").hidden = true;
+      $("ci-autodelete-warning").textContent = "";
+    }
+    if ($("ci-autodelete-custom-row")) $("ci-autodelete-custom-row").hidden = true;
     $("chat-info-error").textContent = "";
     $("chat-info-status").textContent = "Đang tải thông tin…";
     $("ci-member-search").value = "";
@@ -3210,6 +3382,10 @@
   $("title").addEventListener("keydown", (e) => {
     if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleChatInfo(); }
   });
+  $("head-autodelete").addEventListener("click", toggleChatInfo);
+  $("head-autodelete").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleChatInfo(); }
+  });
   $("chat-info-open").addEventListener("click", toggleChatInfo);
   $("chat-info-close").addEventListener("click", closeChatInfo);
 
@@ -3230,9 +3406,41 @@
   $("ci-autodelete").addEventListener("change", () => {
     if (!chatInfo) return;
     const prev = Number(chatInfo.auto_delete_seconds || 0);
-    const seconds = Number($("ci-autodelete").value);
+    const raw = $("ci-autodelete").value;
+    if (raw === "custom") {
+      $("chat-info-error").textContent = "";
+      const curDays = prev >= AUTO_DELETE_DAY && prev % AUTO_DELETE_DAY === 0 ? Math.min(AUTO_DELETE_MAX_DAYS, Math.round(prev / AUTO_DELETE_DAY)) : 2;
+      $("ci-autodelete-days").value = String(curDays);
+      $("ci-autodelete-custom-row").hidden = false;
+      $("ci-autodelete-days").focus();
+      return;
+    }
+    $("ci-autodelete-custom-row").hidden = true;
+    const seconds = Number(raw);
     if (seconds === prev) return;
     ciConfirmAutoDelete(seconds, prev);
+  });
+  $("ci-autodelete-apply").addEventListener("click", () => {
+    if (!chatInfo) return;
+    const prev = Number(chatInfo.auto_delete_seconds || 0);
+    const rawDays = String($("ci-autodelete-days").value || "").trim();
+    const days = Number(rawDays);
+    if (!rawDays || !Number.isInteger(days) || days < 1 || days > AUTO_DELETE_MAX_DAYS) {
+      $("chat-info-error").textContent = "Telegram chỉ hỗ trợ tự xoá tuỳ chỉnh tròn ngày từ 1 đến " + AUTO_DELETE_MAX_DAYS + " ngày.";
+      $("ci-autodelete-days").focus();
+      return;
+    }
+    $("chat-info-error").textContent = "";
+    const seconds = days * AUTO_DELETE_DAY;
+    if (seconds === prev) {
+      renderAutoDeleteSection(prev);
+      return;
+    }
+    ciConfirmAutoDelete(seconds, prev);
+  });
+  $("ci-autodelete-custom-cancel").addEventListener("click", () => {
+    $("chat-info-error").textContent = "";
+    if (chatInfo) renderAutoDeleteSection(Number(chatInfo.auto_delete_seconds || 0));
   });
   $("ci-pin").addEventListener("click", () => {
     if (!chatInfo) return;

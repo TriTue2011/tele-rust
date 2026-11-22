@@ -338,3 +338,112 @@ async fn chat_members_supports_supergroup_search_basic_group_filter_limit_cap_an
     let pm = get(&chat, "/api/chats/7/members", "").await.unwrap();
     assert_eq!(pm, json!({"chat_id":7,"total_count":0,"members":[]}));
 }
+
+#[tokio::test]
+async fn auto_delete_update_emits_feed_and_updates_chats_and_info() {
+    let list = json!({"@type":"chatListMain"});
+    let chat_42 = json!({
+        "id": 42,
+        "title": "Đại ca",
+        "type": {"@type":"chatTypePrivate","user_id":77},
+        "positions": [],
+        "message_auto_delete_time": 0,
+        "notification_settings": {"@type":"chatNotificationSettings","use_default_mute_for":true,"mute_for":0,"use_default_show_preview":true,"show_preview":true}
+    });
+    let user_77 = json!({"id":77,"first_name":"Đại","last_name":"ca","phone_number":"84900000001"});
+    let full_77 = json!({"@type":"userFullInfo","bio":{"@type":"formattedText","text":""}});
+    let (chat, td) = setup(vec![
+        ok(json!({"@type":"loadChats","chat_list":list,"limit":60}), json!({"@type":"ok"})),
+        ok(json!({"@type":"getChats","chat_list":list,"limit":60}), json!({"chat_ids":[42]})),
+        ok(json!({"@type":"getChat","chat_id":42}), chat_42.clone()),
+        ok(json!({"@type":"loadChats","chat_list":list,"limit":60}), json!({"@type":"ok"})),
+        ok(json!({"@type":"getChats","chat_list":list,"limit":60}), json!({"chat_ids":[42]})),
+        ok(json!({"@type":"getChat","chat_id":42}), chat_42.clone()),
+        ok(json!({"@type":"getChat","chat_id":42}), chat_42.clone()),
+        ok(json!({"@type":"getUser","user_id":77}), user_77.clone()),
+        ok(json!({"@type":"getUserFullInfo","user_id":77}), full_77.clone()),
+        ok(json!({"@type":"loadChats","chat_list":list,"limit":60}), json!({"@type":"ok"})),
+        ok(json!({"@type":"getChats","chat_list":list,"limit":60}), json!({"chat_ids":[42]})),
+        ok(json!({"@type":"getChat","chat_id":42}), chat_42.clone()),
+        ok(json!({"@type":"getChat","chat_id":42}), chat_42),
+        ok(json!({"@type":"getUser","user_id":77}), user_77),
+        ok(json!({"@type":"getUserFullInfo","user_id":77}), full_77),
+    ]);
+
+    let initial = get(&chat, "/api/chats", "").await.unwrap();
+    assert_eq!(initial["chats"][0]["auto_delete_seconds"], 0);
+
+    let updater = async {
+        tokio::task::yield_now().await;
+        td.updates.send(json!({
+            "@type": "updateChatMessageAutoDeleteTime",
+            "chat_id": 42,
+            "message_auto_delete_time": 86400
+        })).unwrap();
+    };
+    let (feed_res, ()) = tokio::join!(get(&chat, "/api/feed", "since=0&wait=1"), updater);
+    let feed = feed_res.unwrap();
+    assert_eq!(feed["items"][0]["type"], "chat_auto_delete");
+    assert_eq!(feed["items"][0]["chat_id"], 42);
+    assert_eq!(feed["items"][0]["seconds"], 86400);
+
+    let after = get(&chat, "/api/chats", "").await.unwrap();
+    assert_eq!(after["chats"][0]["auto_delete_seconds"], 86400);
+    let info = get(&chat, "/api/chats/42/info", "").await.unwrap();
+    assert_eq!(info["auto_delete_seconds"], 86400);
+
+    let turn_off = async {
+        tokio::task::yield_now().await;
+        td.updates.send(json!({
+            "@type": "updateChatMessageAutoDeleteTime",
+            "chat_id": 42,
+            "message_auto_delete_time": 0
+        })).unwrap();
+    };
+    let (feed_off, ()) = tokio::join!(get(&chat, "/api/feed", "since=1&wait=1"), turn_off);
+    let feed_off = feed_off.unwrap();
+    assert_eq!(feed_off["items"][0]["type"], "chat_auto_delete");
+    assert_eq!(feed_off["items"][0]["seconds"], 0);
+
+    assert_eq!(get(&chat, "/api/chats", "").await.unwrap()["chats"][0]["auto_delete_seconds"], 0);
+    assert_eq!(get(&chat, "/api/chats/42/info", "").await.unwrap()["auto_delete_seconds"], 0);
+}
+
+#[tokio::test]
+async fn auto_delete_validates_telegram_allowed_values_and_requires_confirm() {
+    let (chat, _) = setup(vec![
+        ok(json!({"@type":"setChatMessageAutoDeleteTime","chat_id":5,"message_auto_delete_time":86400}), json!({"@type":"ok"})),
+        ok(json!({"@type":"setChatMessageAutoDeleteTime","chat_id":5,"message_auto_delete_time":604800}), json!({"@type":"ok"})),
+        ok(json!({"@type":"setChatMessageAutoDeleteTime","chat_id":5,"message_auto_delete_time":2678400}), json!({"@type":"ok"})),
+        ok(json!({"@type":"setChatMessageAutoDeleteTime","chat_id":5,"message_auto_delete_time":172800}), json!({"@type":"ok"})),
+        ok(json!({"@type":"setChatMessageAutoDeleteTime","chat_id":5,"message_auto_delete_time":31_536_000}), json!({"@type":"ok"})),
+        ok(json!({"@type":"setChatMessageAutoDeleteTime","chat_id":5,"message_auto_delete_time":0}), json!({"@type":"ok"})),
+    ]);
+
+    for bad in [
+        json!({"auto_delete": {"seconds": 86400}}),
+        json!({"auto_delete": {"seconds": 86400, "confirm": false}}),
+        json!({"auto_delete": {"seconds": 86400, "confirm": "true"}}),
+        json!({"auto_delete": {"seconds": 1, "confirm": true}}),
+        json!({"auto_delete": {"seconds": 60, "confirm": true}}),
+        json!({"auto_delete": {"seconds": 3600, "confirm": true}}),
+        json!({"auto_delete": {"seconds": 90000, "confirm": true}}),
+        json!({"auto_delete": {"seconds": -86400, "confirm": true}}),
+        json!({"auto_delete": {"seconds": 31_622_400, "confirm": true}}),
+        json!({"auto_delete": {"seconds": "86400", "confirm": true}}),
+    ] {
+        let err = post(&chat, "/api/chats/5/settings", "", bad.clone()).await.unwrap_err();
+        assert_eq!((err.status, err.code.as_str()), (400, "BAD_REQUEST"), "{bad}");
+    }
+
+    for seconds in [86400_i64, 604800, 2678400, 172800, 31_536_000, 0] {
+        let res = post(
+            &chat,
+            "/api/chats/5/settings",
+            "",
+            json!({"auto_delete": {"seconds": seconds, "confirm": true}}),
+        ).await.unwrap();
+        assert_eq!(res["ok"], true);
+        assert_eq!(res["auto_delete_seconds"], seconds);
+    }
+}

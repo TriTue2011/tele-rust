@@ -130,5 +130,6 @@ pub(super) fn summarize(chat: &Value) -> Value {
     json!({"id":chat["id"],"title":field(chat,"title",json!("")),"kind":kind,"unread":field(chat,"unread_count",json!(0)),
         "unread_mentions":field(chat,"unread_mention_count",json!(0)),"pinned":truth(&chat["positions"][0]["is_pinned"]),
         "muted":chat["notification_settings"]["mute_for"].as_i64().unwrap_or(0)>0,
+        "auto_delete_seconds":chat["message_auto_delete_time"].as_i64().unwrap_or(0).max(0),
         "last":last,"avatar_file":chat["photo"]["small"]["id"],"user_id":ct["user_id"]})
 }

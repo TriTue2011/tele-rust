@@ -88,7 +88,9 @@ impl ChatService {
             }
             "set_auto_delete" => {
                 let (chat, seconds) = (a.chat()?,a.range("seconds",Some(0),0,Some(YEAR))?);
-                (json!({"@type":"setChatMessageAutoDeleteTime","chat_id":chat,"message_auto_delete_time":seconds}),json!({"chat_id":chat,"seconds":seconds}))
+                self.request(json!({"@type":"setChatMessageAutoDeleteTime","chat_id":chat,"message_auto_delete_time":seconds})).await?;
+                self.state.set_auto_delete(chat, seconds);
+                return Ok(json!({"chat_id":chat,"seconds":seconds}));
             }
             "send_typing" => {
                 let chat = a.chat()?;
@@ -120,9 +122,13 @@ impl ChatService {
             "get_chat_info" => {
                 let id = a.chat()?;
                 let ch = self.request(json!({"@type":"getChat","chat_id":id})).await?;
+                let auto_delete_seconds = self.state.sync_chat_auto_delete(
+                    ch["id"].as_i64().unwrap_or(id),
+                    ch["message_auto_delete_time"].as_i64().unwrap_or(0),
+                );
                 return Ok(json!({"chat_id":field(&ch,"id",json!(id)),"title":field(&ch,"title",json!("")),"kind":chat_type(&ch),
                     "unread":field(&ch,"unread_count",json!(0)),"muted_for":field(&ch["notification_settings"],"mute_for",json!(0)),
-                    "auto_delete_seconds":field(&ch,"message_auto_delete_time",json!(0)),"has_protected_content":truth(&ch["has_protected_content"])}));
+                    "auto_delete_seconds":auto_delete_seconds,"has_protected_content":truth(&ch["has_protected_content"])}));
             }
             "pin_message" | "unpin_message" => {
                 let (chat, id) = (a.chat()?,a.message()?);

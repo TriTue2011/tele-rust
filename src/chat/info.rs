@@ -3,7 +3,8 @@ use serde_json::{json, Map, Value};
 
 use super::{array, field, mask_phone, text, truth, user_name, ChatService, GwError, Reply};
 
-const YEAR: i64 = 366 * 24 * 3600;
+const DAY: i64 = 86_400;
+const MAX_AUTO_DELETE_SECONDS: i64 = 365 * DAY;
 const MAX_MEMBERS: i64 = 50;
 
 fn chat_list(archived: bool) -> Value {
@@ -114,6 +115,19 @@ fn parse_int_range(value: &Value, name: &str, low: i64, high: i64) -> Result<i64
     Ok(n)
 }
 
+fn parse_auto_delete_seconds(value: &Value) -> Result<i64, GwError> {
+    let sec = value
+        .as_i64()
+        .ok_or_else(|| GwError::bad_request("seconds phải là số nguyên."))?;
+    if sec == 0 || ((DAY..=MAX_AUTO_DELETE_SECONDS).contains(&sec) && sec % DAY == 0) {
+        Ok(sec)
+    } else {
+        Err(GwError::bad_request(
+            "Telegram chỉ hỗ trợ tắt (0) hoặc bội số tròn ngày từ 1 đến 365 ngày (86400..31536000 giây).",
+        ))
+    }
+}
+
 struct NotificationUpdate {
     use_default_mute_for: Option<bool>,
     mute_for: Option<i64>,
@@ -178,7 +192,7 @@ fn parse_settings_plan(body: &Value) -> Result<SettingsPlan, GwError> {
             return Err(GwError::bad_request("Đổi thời gian tự xoá tin nhắn cần confirm=true."));
         }
         let raw_sec = amap.get("seconds").ok_or_else(|| GwError::bad_request("Thiếu seconds cho auto_delete."))?;
-        Some(parse_int_range(raw_sec, "seconds", 0, YEAR)?)
+        Some(parse_auto_delete_seconds(raw_sec)?)
     } else {
         None
     };
@@ -224,6 +238,10 @@ impl ChatService {
             "use_default_show_preview": truth(&ns["use_default_show_preview"]),
             "show_preview": ns.get("show_preview").and_then(Value::as_bool).unwrap_or(true),
         });
+        let auto_delete_seconds = self.state.sync_chat_auto_delete(
+            ch["id"].as_i64().unwrap_or(chat_id),
+            ch["message_auto_delete_time"].as_i64().unwrap_or(0),
+        );
         let mut out = json!({
             "chat_id": field(&ch, "id", json!(chat_id)),
             "title": field(&ch, "title", json!("")),
@@ -232,7 +250,7 @@ impl ChatService {
             "marked_unread": truth(&ch["is_marked_as_unread"]),
             "pinned": pinned,
             "archived": archived,
-            "auto_delete_seconds": ch["message_auto_delete_time"].as_i64().unwrap_or(0),
+            "auto_delete_seconds": auto_delete_seconds,
             "has_protected_content": truth(&ch["has_protected_content"]),
             "avatar_file": ch["photo"]["small"]["id"],
             "notification": notification,
@@ -406,6 +424,7 @@ impl ChatService {
                 "chat_id": chat_id,
                 "message_auto_delete_time": seconds,
             })).await?;
+            self.state.set_auto_delete(chat_id, seconds);
             out["auto_delete_seconds"] = json!(seconds);
         }
 

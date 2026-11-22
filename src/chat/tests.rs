@@ -73,7 +73,7 @@ async fn chats_and_search_summarize_and_skip_missing_chats() {
         ok(json!({"@type":"getChat","chat_id":5}),td_chat),
     ]);
     let expected = json!({"chats":[{"id":5,"title":"Nhóm","kind":"channel","unread":2,"unread_mentions":1,"pinned":true,
-        "muted":true,"last":{"date":0,"outgoing":false,"kind":"text","text":"Chào"},"avatar_file":10,"user_id":null}]});
+        "muted":true,"auto_delete_seconds":0,"last":{"date":0,"outgoing":false,"kind":"text","text":"Chào"},"avatar_file":10,"user_id":null}]});
     assert_eq!(get(&chat,"/api/chats","limit=999").await.unwrap(),expected);
     assert_eq!(get(&chat,"/api/search","q=+nh%C3%B3m+a+").await.unwrap(),expected);
     assert_eq!(get(&chat,"/api/search","q=+").await.unwrap(),json!({"chats":[]}));

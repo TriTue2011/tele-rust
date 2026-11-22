@@ -83,6 +83,11 @@ impl TdApi for Fake {
             "createCall"=>json!({"@type":"callId","id":71}),
             "getStorageStatistics"=>self.storage_stats.lock().unwrap().as_object().cloned().map(Value::Object)
                 .unwrap_or_else(||json!({"@type":"storageStatistics","size":0,"count":0,"by_chat":[]})),
+            "getChats" => {
+                let mut ids: Vec<i64> = self.chats.lock().unwrap().keys().copied().collect();
+                ids.sort();
+                json!({"@type":"chats","total_count":ids.len(),"chat_ids":ids})
+            }
             "getChat" if r["chat_id"].as_i64().is_some_and(|cid| self.chats.lock().unwrap().contains_key(&cid)) => {
                 self.chats.lock().unwrap().get(&r["chat_id"].as_i64().unwrap()).cloned().unwrap()
             }

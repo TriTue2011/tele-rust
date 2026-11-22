@@ -12,12 +12,20 @@ pub(super) struct State {
     changed: Notify,
 }
 
+#[derive(Clone, Copy)]
+struct AutoDeleteEntry {
+    current: i64,
+    last_chat_value: Option<i64>,
+}
+
 #[derive(Default)]
 struct Inner {
     items: VecDeque<Value>,
     cursor: i64,
     users: HashMap<i64, Value>,
     user_order: VecDeque<i64>,
+    auto_delete: HashMap<i64, AutoDeleteEntry>,
+    auto_delete_order: VecDeque<i64>,
     sent: VecDeque<(i64, i64)>,
 }
 
@@ -35,6 +43,50 @@ impl Inner {
     fn touch_user(&mut self, id: i64) {
         self.user_order.retain(|old| *old != id);
         self.user_order.push_back(id);
+    }
+
+    fn touch_auto_delete(&mut self, chat_id: i64) {
+        self.auto_delete_order.retain(|old| *old != chat_id);
+        self.auto_delete_order.push_back(chat_id);
+        if self.auto_delete_order.len() > 2000 {
+            if let Some(evicted) = self.auto_delete_order.pop_front() {
+                self.auto_delete.remove(&evicted);
+            }
+        }
+    }
+
+    fn set_auto_delete(&mut self, chat_id: i64, seconds: i64) {
+        if chat_id == 0 { return; }
+        let sec = seconds.max(0);
+        let last_chat_value = self.auto_delete.get(&chat_id).and_then(|e| e.last_chat_value);
+        self.auto_delete.insert(chat_id, AutoDeleteEntry { current: sec, last_chat_value });
+        self.touch_auto_delete(chat_id);
+    }
+
+    fn sync_chat_auto_delete(&mut self, chat_id: i64, chat_seconds: i64) -> i64 {
+        let sec = chat_seconds.max(0);
+        if chat_id == 0 { return sec; }
+        let out = match self.auto_delete.get_mut(&chat_id) {
+            None => {
+                self.auto_delete.insert(chat_id, AutoDeleteEntry { current: sec, last_chat_value: Some(sec) });
+                sec
+            }
+            Some(entry) => {
+                match entry.last_chat_value {
+                    None => {
+                        entry.last_chat_value = Some(sec);
+                    }
+                    Some(prev) if prev != sec => {
+                        entry.last_chat_value = Some(sec);
+                        entry.current = sec;
+                    }
+                    Some(_) => {}
+                }
+                entry.current
+            }
+        };
+        self.touch_auto_delete(chat_id);
+        out
     }
 
     fn normalize(&self, m: &Value) -> Value {
@@ -62,6 +114,14 @@ impl State {
     }
 
     pub(super) fn remember_user(&self, user: &Value) { self.inner.lock().unwrap().remember_user(user); }
+
+    pub(super) fn set_auto_delete(&self, chat_id: i64, seconds: i64) {
+        self.inner.lock().unwrap().set_auto_delete(chat_id, seconds);
+    }
+
+    pub(super) fn sync_chat_auto_delete(&self, chat_id: i64, chat_seconds: i64) -> i64 {
+        self.inner.lock().unwrap().sync_chat_auto_delete(chat_id, chat_seconds)
+    }
 
     pub(super) fn user(&self, id: i64) -> Option<Value> {
         let mut s = self.inner.lock().unwrap();
@@ -119,10 +179,24 @@ impl State {
             "updateMessageContent" | "updateMessageEdited" => json!({"type":"message_changed","chat_id":u["chat_id"],"message_id":u["message_id"]}),
             "updateDeleteMessages" if truth(&u["is_permanent"]) => json!({"type":"deleted","chat_id":u["chat_id"],"ids":array(&u["message_ids"])}),
             "updateChatLastMessage" | "updateChatReadInbox" | "updateChatTitle" | "updateChatPhoto" | "updateChatPosition"
-            | "updateNewChat" | "updateChatNotificationSettings" | "updateChatUnreadMentionCount" => {
+            | "updateChatNotificationSettings" | "updateChatUnreadMentionCount" => {
                 let id = if truth(&u["chat_id"]) { &u["chat_id"] } else { &u["chat"]["id"] };
                 if !truth(id) { return; }
                 json!({"type":"chat","chat_id":id})
+            }
+            "updateNewChat" => {
+                let id = &u["chat"]["id"];
+                if !truth(id) { return; }
+                if let (Some(chat_id), Some(sec)) = (id.as_i64(), u["chat"]["message_auto_delete_time"].as_i64()) {
+                    s.sync_chat_auto_delete(chat_id, sec);
+                }
+                json!({"type":"chat","chat_id":id})
+            }
+            "updateChatMessageAutoDeleteTime" => {
+                let Some(chat_id) = u["chat_id"].as_i64().filter(|id| *id != 0) else { return; };
+                let seconds = u["message_auto_delete_time"].as_i64().unwrap_or(0).max(0);
+                s.set_auto_delete(chat_id, seconds);
+                json!({"type":"chat_auto_delete","chat_id":chat_id,"seconds":seconds})
             }
             "updateUser" => { s.remember_user(&u["user"]); return; }
             "updateChatAction" => json!({"type":"typing","chat_id":u["chat_id"],"action":text(&u["action"]["@type"])}),
@@ -175,6 +249,11 @@ fn bridge_update(events: &EventSink, update: &Value) {
         }
         "updateDeleteMessages" if update["is_permanent"] == true => {
             events.emit("message_deleted", json!({"chat_id":update["chat_id"],"ids":array(&update["message_ids"])}));
+        }
+        "updateChatMessageAutoDeleteTime" => {
+            let Some(chat_id) = update["chat_id"].as_i64().filter(|id| *id != 0) else { return };
+            let seconds = update["message_auto_delete_time"].as_i64().unwrap_or(0).max(0);
+            events.emit("chat_auto_delete", json!({"chat_id":chat_id,"seconds":seconds}));
         }
         _ => (),
     }
@@ -252,5 +331,29 @@ mod tests {
                 "width":800,"height":600,"mime":"image/jpeg"}}));
         let edit = &feed["items"][1];
         assert_eq!((&edit["type"], &edit["chat_id"], &edit["message_id"]), (&json!("message_changed"), &json!(3), &json!(9)));
+    }
+
+    #[tokio::test]
+    async fn auto_delete_update_updates_state_and_emits_feed_event() {
+        let s = State::default();
+        assert_eq!(s.sync_chat_auto_delete(42, 0), 0);
+        s.update(&json!({"@type":"updateChatMessageAutoDeleteTime","chat_id":42,"message_auto_delete_time":86400}));
+        let feed = s.since(0, Duration::ZERO).await;
+        assert_eq!(feed["cursor"], 1);
+        assert_eq!(feed["items"][0]["type"], "chat_auto_delete");
+        assert_eq!(feed["items"][0]["chat_id"], 42);
+        assert_eq!(feed["items"][0]["seconds"], 86400);
+        // Nếu getChat vẫn trả giá trị tĩnh cũ sau khi có sự kiện -> giữ giá trị từ sự kiện.
+        assert_eq!(s.sync_chat_auto_delete(42, 0), 86400);
+        // Nếu TDLib trả giá trị getChat mới khác lần đọc trước -> cập nhật theo TDLib.
+        assert_eq!(s.sync_chat_auto_delete(42, 604800), 604800);
+        // Sự kiện đến trước lần getChat đầu tiên vẫn giữ được giá trị mới.
+        s.update(&json!({"@type":"updateChatMessageAutoDeleteTime","chat_id":99,"message_auto_delete_time":2678400}));
+        assert_eq!(s.sync_chat_auto_delete(99, 0), 2678400);
+        // updateNewChat đồng bộ giá trị khởi tạo.
+        s.update(&json!({"@type":"updateNewChat","chat":{"id":105,"message_auto_delete_time":172800}}));
+        assert_eq!(s.sync_chat_auto_delete(105, 172800), 172800);
+        s.set_auto_delete(99, 0);
+        assert_eq!(s.sync_chat_auto_delete(99, 0), 0);
     }
 }

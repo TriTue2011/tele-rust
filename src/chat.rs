@@ -191,7 +191,12 @@ impl ChatService {
         let mut chats = Vec::new();
         for id in array(ids) {
             if let Ok(chat) = self.request(json!({"@type":"getChat","chat_id":id})).await {
-                chats.push(summarize(&chat));
+                let mut item = summarize(&chat);
+                if let Some(chat_id) = chat["id"].as_i64().or_else(|| id.as_i64()).filter(|cid| *cid != 0) {
+                    let sec = self.state.sync_chat_auto_delete(chat_id, chat["message_auto_delete_time"].as_i64().unwrap_or(0));
+                    item["auto_delete_seconds"] = json!(sec);
+                }
+                chats.push(item);
             }
         }
         json!({"chats":chats})

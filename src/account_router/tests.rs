@@ -1210,3 +1210,132 @@ async fn chat_info_routes_enforce_auth_csrf_multi_account_confirm_and_404() {
     drop(hub);
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[tokio::test]
+async fn auto_delete_sync_emits_feed_updates_chats_enforces_auth_csrf_confirm_and_isolates_accounts() {
+    let dir = std::env::temp_dir().join(format!("tggw-auto-delete-sync-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (api, factory) = crate::td::fake::Fake::factory();
+    let cfg = LoginConfig { data_dir: dir.clone(), api_id: 12345, api_hash: "fake-api-hash".into(), phone: String::new() };
+    let hub = Accounts::with_factory(cfg, "fake".into(), 3399, factory).await.unwrap();
+    let ui_auth = Arc::new(crate::ui_auth::UiAuth::open(&dir, "test-token", None, None, false).unwrap());
+    let router = crate::rest::router_accounts_with_ui_auth(hub.clone(), crate::rest::RestConfig {
+        token: "test-token".into(), rate_limit_per_minute: 1000, version: "test".into(),
+    }, ui_auth);
+
+    let first = "+84900000001";
+    let second = "+84900000002";
+    for phone in [first, second] {
+        let login = send(&router, "POST", "/ui/api/accounts", json!({"phone":phone}), true).await.1;
+        let id = login["login_id"].as_str().unwrap();
+        assert_eq!(send(&router, "POST", &format!("/ui/api/accounts/{id}/code"), json!({"code":"22222"}), true).await.0, 200);
+    }
+
+    let setup_resp = router.clone().oneshot(
+        Request::builder().method("POST").uri("/ui/api/auth/setup")
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .body(Body::from(json!({"token":"test-token","ten":"nguoi-thu","mat_khau":"mat-khau-thu-dai"}).to_string())).unwrap(),
+    ).await.unwrap();
+    assert_eq!(setup_resp.status(), 200);
+    let cookie = setup_resp.headers()[axum::http::header::SET_COOKIE].to_str().unwrap().split(';').next().unwrap().to_owned();
+
+    let send_cookie = |method: &'static str, path: &'static str, body: Value, extra: Vec<(&'static str, &'static str)>| {
+        let router = router.clone();
+        let cookie = cookie.clone();
+        async move {
+            let mut req = Request::builder().method(method).uri(path).header(axum::http::header::COOKIE, cookie);
+            for (k, v) in extra { req = req.header(k, v); }
+            let resp = router.oneshot(req.body(Body::from(serde_json::to_vec(&body).unwrap())).unwrap()).await.unwrap();
+            let status = resp.status().as_u16();
+            let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+            (status, serde_json::from_slice::<Value>(&bytes).unwrap_or(Value::Null))
+        }
+    };
+
+    api.chats.lock().unwrap().insert(42, json!({
+        "@type": "chat",
+        "id": 42,
+        "title": "Đại ca",
+        "type": {"@type": "chatTypePrivate", "user_id": 77},
+        "positions": [],
+        "message_auto_delete_time": 0,
+        "notification_settings": {"@type": "chatNotificationSettings", "use_default_mute_for": true, "mute_for": 0, "use_default_show_preview": true, "show_preview": true}
+    }));
+
+    // 1. Bảo mật & giới hạn Telegram trước khi gọi TDLib: 401, 403 CSRF, 400 thiếu confirm / sai bậc ngày.
+    api.sent.lock().unwrap().clear();
+    assert_eq!(send(&router, "POST", "/api/chats/42/settings?account=%2B84900000001", json!({"auto_delete":{"seconds":86400,"confirm":true}}), false).await.0, 401);
+    assert_eq!(send_cookie("POST", "/api/chats/42/settings?account=%2B84900000001", json!({"auto_delete":{"seconds":86400,"confirm":true}}), vec![]).await.0, 403);
+    assert_eq!(send_cookie("POST", "/api/chats/42/settings?account=%2B84900000001", json!({"auto_delete":{"seconds":86400,"confirm":true}}), vec![("Host", "gateway.example"), ("Origin", "https://evil.example")]).await.0, 403);
+    for bad in [
+        json!({"auto_delete":{"seconds":86400}}),
+        json!({"auto_delete":{"seconds":3600,"confirm":true}}),
+        json!({"auto_delete":{"seconds":31_622_400,"confirm":true}}),
+    ] {
+        assert_eq!(send(&router, "POST", "/api/chats/42/settings?account=%2B84900000001", bad, true).await.0, 400);
+    }
+    assert!(api.sent.lock().unwrap().is_empty());
+
+    // 2. TDLib giả phát updateChatMessageAutoDeleteTime trên tài khoản 1 -> /api/feed, /api/events và /api/chats đổi theo, tài khoản 2 cô lập.
+    api.push(json!({
+        "@type": "updateChatMessageAutoDeleteTime",
+        "chat_id": 42,
+        "message_auto_delete_time": 86400
+    }), 1);
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    let mut feed_cursor = 0;
+    loop {
+        let (_, feed) = send(&router, "GET", &format!("/api/feed?since={feed_cursor}&wait=0.2"), Value::Null, true).await;
+        feed_cursor = feed["cursor"].as_i64().unwrap_or(feed_cursor);
+        if let Some(item) = feed["items"].as_array().and_then(|a| a.iter().find(|it| it["type"] == "chat_auto_delete")) {
+            assert_eq!(item["chat_id"], 42);
+            assert_eq!(item["seconds"], 86400);
+            assert_eq!(item["account"], first);
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "chưa nhận được chat_auto_delete trên /api/feed");
+    }
+
+    loop {
+        let (_, events) = send(&router, "GET", "/api/events", Value::Null, true).await;
+        if let Some(ev) = events["events"].as_array().and_then(|a| a.iter().find(|e| e["type"] == "chat_auto_delete")) {
+            assert_eq!(ev["account"], first);
+            assert_eq!(ev["data"], json!({"chat_id": 42, "seconds": 86400}));
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "chưa nhận được chat_auto_delete trên /api/events");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    let (st1, chats1) = send(&router, "GET", "/api/chats?account=%2B84900000001", Value::Null, true).await;
+    assert_eq!(st1, 200);
+    assert_eq!(chats1["chats"][0]["auto_delete_seconds"], 86400);
+    let (st2, chats2) = send(&router, "GET", "/api/chats?account=%2B84900000002", Value::Null, true).await;
+    assert_eq!(st2, 200);
+    assert_eq!(chats2["chats"][0]["auto_delete_seconds"], 0);
+
+    // 3. Đặt từ app mình cho tài khoản 1 (2 ngày = 172800 giây) qua cookie + CSRF -> gọi TDLib đúng tài khoản và đổi state.
+    api.sent.lock().unwrap().clear();
+    let (st_set, body_set) = send_cookie(
+        "POST",
+        "/api/chats/42/settings?account=%2B84900000001",
+        json!({"auto_delete":{"seconds":172800,"confirm":true}}),
+        vec![("X-Requested-With", "fetch")],
+    ).await;
+    assert_eq!(st_set, 200);
+    assert_eq!(body_set["auto_delete_seconds"], 172800);
+
+    let sent = api.sent.lock().unwrap().clone();
+    assert!(sent.iter().any(|(id, req)| *id == 1 && req["@type"] == "setChatMessageAutoDeleteTime" && req["chat_id"] == 42 && req["message_auto_delete_time"] == 172800));
+    assert!(!sent.iter().any(|(id, _)| *id == 2));
+
+    assert_eq!(send(&router, "GET", "/api/chats?account=%2B84900000001", Value::Null, true).await.1["chats"][0]["auto_delete_seconds"], 172800);
+    assert_eq!(send(&router, "GET", "/api/chats?account=%2B84900000002", Value::Null, true).await.1["chats"][0]["auto_delete_seconds"], 0);
+
+    hub.shutdown().await;
+    drop(router);
+    drop(hub);
+    std::fs::remove_dir_all(dir).unwrap();
+}
