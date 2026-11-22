@@ -621,6 +621,8 @@ fn router_with(ctx: Arc<Ctx>) -> Router {
     }
     r = r
         .route("/api/settings/storage", add(route(get, s(ChatGet)), post, s(ChatPost)))
+        .route("/api/settings/appearance", add(route(get, s(ChatGet)), post, s(ChatPost)))
+        .route("/api/profile", add(route(get, s(ChatGet)), post, s(ChatPost)))
         .route("/api/events", route(get, s(Events)))
         .route("/api/chats/:chat_id/messages", route(get, s_id(ChatGet, "chat_id")))
         .route("/api/file/:file_id", route(get, s_id(ChatBytes, "file_id")))
@@ -1329,6 +1331,21 @@ mod tests {
         assert!(!ct_eq(b"abc", b"abd"));
         assert!(!ct_eq(b"abc", b"ab"));
         assert!(ct_eq(b"", b""));
+    }
+
+    #[tokio::test]
+    async fn appearance_and_profile_routes_enforce_auth_methods_and_forward_to_chat() {
+        let (app, call, chat) = app();
+        for path in ["/api/settings/appearance", "/api/profile"] {
+            assert_eq!(send(&app, req("GET", path, None, Body::empty())).await.0, 401, "{path}");
+            assert_eq!(send(&app, req("POST", path, None, "{}")).await.0, 401, "{path}");
+            assert_eq!(send(&app, ok("DELETE", path, Body::empty())).await.0, 405, "{path}");
+            assert_eq!(send(&app, ok("GET", path, Body::empty())).await.0, 200, "{path}");
+            assert_eq!(chat.last(), ("GET".into(), path.into(), "".into(), Value::Null));
+            assert_eq!(send(&app, ok("POST", path, r#"{"k":1}"#)).await.0, 200, "{path}");
+            assert_eq!(chat.last(), ("POST".into(), path.into(), "".into(), json!({"k": 1})));
+        }
+        assert_eq!(call.count(), 0);
     }
 
     #[test]

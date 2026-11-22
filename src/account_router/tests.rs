@@ -898,3 +898,120 @@ async fn multi_account_storage_routes_require_explicit_account_parameter() {
     assert_eq!(f.send("GET", "/api/storage/usage?account=test-storage-unknown", Value::Null).await.0, 404);
     f.finish().await;
 }
+
+#[tokio::test]
+async fn appearance_and_profile_enforce_auth_csrf_account_isolation_and_0600_storage() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = std::env::temp_dir().join(format!("tggw-settings-auth-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (api, factory) = crate::td::fake::Fake::factory();
+    let cfg = LoginConfig { data_dir: dir.clone(), api_id: 12345, api_hash: "fake-api-hash".into(), phone: String::new() };
+    let hub = Accounts::with_factory(cfg, "fake".into(), 3399, factory).await.unwrap();
+    let ui_auth = Arc::new(crate::ui_auth::UiAuth::open(&dir, "test-token", None, None, false).unwrap());
+    let router = crate::rest::router_accounts_with_ui_auth(hub.clone(), crate::rest::RestConfig {
+        token: "test-token".into(), rate_limit_per_minute: 1000, version: "test".into(),
+    }, ui_auth);
+
+    let first = "+84900000001";
+    let second = "+84900000002";
+    for phone in [first, second] {
+        let login = send(&router, "POST", "/ui/api/accounts", json!({"phone":phone}), true).await.1;
+        let id = login["login_id"].as_str().unwrap();
+        assert_eq!(send(&router, "POST", &format!("/ui/api/accounts/{id}/code"), json!({"code":"22222"}), true).await.0, 200);
+    }
+
+    let setup_resp = router.clone().oneshot(
+        Request::builder().method("POST").uri("/ui/api/auth/setup")
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .body(Body::from(json!({"token":"test-token","ten":"nguoi-thu","mat_khau":"mat-khau-thu-dai"}).to_string())).unwrap(),
+    ).await.unwrap();
+    assert_eq!(setup_resp.status(), 200);
+    let cookie = setup_resp.headers()[axum::http::header::SET_COOKIE].to_str().unwrap().split(';').next().unwrap().to_owned();
+
+    for (method, path) in [
+        ("GET", "/api/settings/appearance?account=%2B84900000001"),
+        ("POST", "/api/settings/appearance?account=%2B84900000001"),
+        ("GET", "/api/profile?account=%2B84900000001"),
+        ("POST", "/api/profile?account=%2B84900000001"),
+    ] {
+        assert_eq!(send(&router, method, path, json!({}), false).await.0, 401, "{method} {path}");
+    }
+
+    let send_cookie = |method: &'static str, path: &'static str, body: Value, extra: Vec<(&'static str, &'static str)>| {
+        let router = router.clone();
+        let cookie = cookie.clone();
+        async move {
+            let mut req = Request::builder().method(method).uri(path).header(axum::http::header::COOKIE, cookie);
+            for (k, v) in extra { req = req.header(k, v); }
+            let resp = router.oneshot(req.body(Body::from(serde_json::to_vec(&body).unwrap())).unwrap()).await.unwrap();
+            resp.status().as_u16()
+        }
+    };
+    let custom = json!({"font_family":"mono","font_size":18,"theme":"dark","bubble_style":"rounded","accent":"green"});
+    for (path, body) in [
+        ("/api/settings/appearance?account=%2B84900000001", custom.clone()),
+        ("/api/profile?account=%2B84900000001", json!({"confirm":true,"bio":"Mới"})),
+    ] {
+        assert_eq!(send_cookie("POST", path, body.clone(), vec![]).await, 403);
+        assert_eq!(send_cookie("POST", path, body, vec![("Host", "gateway.example"), ("Origin", "https://evil.example")]).await, 403);
+    }
+
+    // Nhiều tài khoản phải chỉ định account rõ ràng; account lạ -> 404; offline -> 503.
+    for (method, path, body) in [
+        ("GET", "/api/settings/appearance", Value::Null),
+        ("POST", "/api/settings/appearance", custom.clone()),
+        ("GET", "/api/profile", Value::Null),
+        ("POST", "/api/profile", json!({"confirm":true,"bio":"Mới"})),
+    ] {
+        assert_eq!(send(&router, method, path, body.clone(), true).await.0, 400, "{method} {path}");
+        assert_eq!(send(&router, method, &format!("{path}?account=unknown"), body, true).await.0, 404, "{method} {path}");
+    }
+
+    assert_eq!(send(&router, "GET", "/api/settings/appearance?account=%2B84900000001", Value::Null, true).await,
+        (200, crate::appearance_settings::defaults()));
+    assert_eq!(send(&router, "POST", "/api/settings/appearance?account=%2B84900000001",
+        json!({"font_family":"mono","font_size":25,"theme":"dark","bubble_style":"rounded","accent":"green"}), true).await.0, 422);
+    assert_eq!(send_cookie("POST", "/api/settings/appearance?account=%2B84900000001",
+        custom.clone(), vec![("X-Requested-With", "fetch")]).await, 200);
+    let first_file = hub.store.lock().unwrap().session_dir(first).join(crate::appearance_settings::FILE);
+    let second_file = hub.store.lock().unwrap().session_dir(second).join(crate::appearance_settings::FILE);
+    assert_eq!(std::fs::metadata(&first_file).unwrap().permissions().mode() & 0o777, 0o600);
+    assert!(!second_file.exists());
+    assert_eq!(send(&router, "GET", "/api/settings/appearance?account=%2B84900000001", Value::Null, true).await, (200, custom));
+    assert_eq!(send(&router, "GET", "/api/settings/appearance?account=%2B84900000002", Value::Null, true).await,
+        (200, crate::appearance_settings::defaults()));
+
+    api.profiles.lock().unwrap().insert(1, json!({
+        "@type":"user","id":1,"first_name":"Hải","last_name":"Nam","phone_number":"84900000001",
+        "usernames":{"editable_username":"hai_nam","active_usernames":["hai_nam"]}
+    }));
+    api.user_full_info.lock().unwrap().insert(1, json!({"@type":"userFullInfo","bio":{"text":"Hồ sơ 1"}}));
+    let (status, profile) = send(&router, "GET", "/api/profile?account=%2B84900000001", Value::Null, true).await;
+    assert_eq!(status, 200);
+    assert_eq!(profile["phone_masked"], "+849•••••001");
+    assert_eq!(profile["bio"], "Hồ sơ 1");
+    assert!(!profile.to_string().contains("84900000001"));
+
+    assert_eq!(send(&router, "POST", "/api/profile?account=%2B84900000001", json!({"first_name":"Mới"}), true).await.0, 400);
+    api.sent.lock().unwrap().clear();
+    api.profiles.lock().unwrap().insert(1, json!({
+        "@type":"user","id":1,"first_name":"Minh","last_name":"An","phone_number":"84900000001",
+        "usernames":{"editable_username":"minh_an","active_usernames":["minh_an"]}
+    }));
+    assert_eq!(send_cookie("POST", "/api/profile?account=%2B84900000001",
+        json!({"confirm":true,"first_name":"Minh","last_name":"An","bio":"Mới","username":"@minh_an"}),
+        vec![("X-Requested-With", "fetch")]).await, 200);
+    let sent = api.sent.lock().unwrap().clone();
+    assert!(sent.iter().any(|(id, req)| *id == 1 && req["@type"] == "setName" && req["first_name"] == "Minh" && req["last_name"] == "An"));
+    assert!(sent.iter().any(|(id, req)| *id == 1 && req["@type"] == "setBio" && req["bio"] == "Mới"));
+    assert!(sent.iter().any(|(id, req)| *id == 1 && req["@type"] == "setUsername" && req["username"] == "minh_an"));
+    assert!(!sent.iter().any(|(id, _)| *id == 2));
+    assert_eq!(hub.store.lock().unwrap().rows()[0].display_name, "Minh An");
+
+    hub.shutdown().await;
+    drop(router);
+    drop(hub);
+    std::fs::remove_dir_all(dir).unwrap();
+}

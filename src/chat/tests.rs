@@ -337,3 +337,87 @@ fn media_and_reactions_have_python_message_shapes() {
     assert_eq!(doc["file"],json!({"id":31,"size":10,"path":"","name":"a.pdf","mime":"application/pdf","duration":0,"width":0,"height":0}));
     assert_eq!(doc["summary"],"📎 a.pdf");
 }
+
+#[test]
+fn phone_masking_hides_middle_digits() {
+    assert_eq!(mask_phone(""), "");
+    assert_eq!(mask_phone("1234"), "+••••");
+    assert_eq!(mask_phone("12345"), "+12•45");
+    assert_eq!(mask_phone("+84900000000"), "+849•••••000");
+    assert_eq!(mask_phone("+84 912 345 678"), "+849•••••678");
+}
+
+#[tokio::test]
+async fn profile_get_and_update_require_confirmation_and_validate_before_tdlib() {
+    let me_before = json!({
+        "id":7, "first_name":"Bình", "last_name":"Lê", "phone_number":"84900000000",
+        "usernames":{"editable_username":"binh_le","active_usernames":["binh_le"]},
+        "profile_photo":{"small":{"id":91}}
+    });
+    let full_before = json!({"@type":"userFullInfo","bio":{"text":"Xin chào"}});
+    let me_after = json!({
+        "id":7, "first_name":"An", "last_name":"Trần", "phone_number":"84900000000",
+        "usernames":{"editable_username":"an_tran","active_usernames":["an_tran"]},
+        "profile_photo":{"small":{"id":91}}
+    });
+    let full_after = json!({"@type":"userFullInfo","bio":{"text":"Tiểu sử mới"}});
+    let (chat, _) = setup(vec![
+        ok(json!({"@type":"getMe"}), me_before.clone()),
+        ok(json!({"@type":"getUserFullInfo","user_id":7}), full_before.clone()),
+        ok(json!({"@type":"setName","first_name":"An","last_name":"Trần"}), json!({"@type":"ok"})),
+        ok(json!({"@type":"setBio","bio":"Tiểu sử mới"}), json!({"@type":"ok"})),
+        ok(json!({"@type":"setUsername","username":"an_tran"}), json!({"@type":"ok"})),
+        ok(json!({"@type":"getMe"}), me_after.clone()),
+        ok(json!({"@type":"getUserFullInfo","user_id":7}), full_after),
+        ok(json!({"@type":"getMe"}), me_after.clone()),
+        ok(json!({"@type":"setName","first_name":"An Nhi","last_name":"Trần"}), json!({"@type":"ok"})),
+        ok(json!({"@type":"setUsername","username":""}), json!({"@type":"ok"})),
+        ok(json!({"@type":"getMe"}), json!({"id":7,"first_name":"An Nhi","last_name":"Trần","phone_number":"84900000000"})),
+        ok(json!({"@type":"getUserFullInfo","user_id":7}), json!({"@type":"userFullInfo","bio":{"text":""}})),
+    ]);
+
+    let profile = get(&chat, "/api/profile", "").await.unwrap();
+    assert_eq!(profile, json!({
+        "id":7, "name":"Bình Lê", "first_name":"Bình", "last_name":"Lê",
+        "bio":"Xin chào", "username":"binh_le", "phone_masked":"+849•••••000", "avatar_file":91
+    }));
+    assert!(!profile.to_string().contains("84900000000"));
+
+    let updated = post(&chat, "/api/profile", "", json!({
+        "confirm":true, "first_name":" An ", "last_name":" Trần ", "bio":" Tiểu sử mới ", "username":"@an_tran"
+    })).await.unwrap();
+    assert_eq!(updated["name"], "An Trần");
+    assert_eq!(updated["bio"], "Tiểu sử mới");
+    assert_eq!(updated["username"], "an_tran");
+
+    let partial = post(&chat, "/api/profile", "", json!({
+        "confirm":true, "first_name":"An Nhi", "username":""
+    })).await.unwrap();
+    assert_eq!(partial["first_name"], "An Nhi");
+    assert_eq!(partial["last_name"], "Trần");
+    assert_eq!(partial["username"], "");
+}
+
+#[tokio::test]
+async fn invalid_profile_updates_fail_without_calling_tdlib() {
+    let (chat, _) = setup(vec![]);
+    for bad in [
+        json!({"first_name":"An"}),
+        json!({"confirm":false,"first_name":"An"}),
+        json!({"confirm":"true","first_name":"An"}),
+        json!({"confirm":true}),
+        json!({"confirm":true,"extra":"x","first_name":"An"}),
+        json!({"confirm":true,"first_name":"   "}),
+        json!({"confirm":true,"first_name":"a".repeat(65)}),
+        json!({"confirm":true,"last_name":"b".repeat(65)}),
+        json!({"confirm":true,"bio":"c".repeat(71)}),
+        json!({"confirm":true,"username":"ab"}),
+        json!({"confirm":true,"username":"1abcde"}),
+        json!({"confirm":true,"username":"abcde_"}),
+        json!({"confirm":true,"username":"ab__cd"}),
+        json!({"confirm":true,"username":"bad-name"}),
+    ] {
+        let err = post(&chat, "/api/profile", "", bad.clone()).await.unwrap_err();
+        assert_eq!((err.status, err.code.as_str()), (400, "BAD_REQUEST"), "{bad}");
+    }
+}

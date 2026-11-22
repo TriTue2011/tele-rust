@@ -12,6 +12,7 @@ pub(crate) struct Fake {
     pub restored:AtomicBool,
     pub downloads:Mutex<HashMap<i32,String>>,
     pub profiles:Mutex<HashMap<i32,Value>>,
+    pub user_full_info:Mutex<HashMap<i64,Value>>,
     pub storage_stats:Mutex<Value>,
     pub storage_chats:Mutex<HashMap<i64, Value>>,
     pub optimize_reply:Mutex<Option<Box<dyn Fn(&Value)->Value+Send+Sync>>>,
@@ -68,6 +69,8 @@ impl TdApi for Fake {
             "checkAuthenticationCode"|"checkAuthenticationPassword"=>json!({"@type":"error","code":400,"message":format!("invalid {:?}",r)}),
             "getMe"=>self.profiles.lock().unwrap().get(&id).cloned()
                 .unwrap_or_else(||json!({"@type":"user","id":id,"first_name":format!("Account {id}"),"phone_number":""})),
+            "getUserFullInfo"=>self.user_full_info.lock().unwrap().get(&r["user_id"].as_i64().unwrap_or_default()).cloned()
+                .unwrap_or_else(||json!({"@type":"userFullInfo","bio":{"@type":"formattedText","text":"","entities":[]}})),
             "close"=>{next=Some("authorizationStateClosed");json!({"@type":"ok"})}
             "createCall"=>json!({"@type":"callId","id":71}),
             "getStorageStatistics"=>self.storage_stats.lock().unwrap().as_object().cloned().map(Value::Object)

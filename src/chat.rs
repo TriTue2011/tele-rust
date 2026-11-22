@@ -65,6 +65,112 @@ impl ChatService {
         Ok(json!({"id":me["id"],"name":user_name(&me),"phone":field(&me,"phone_number",json!(""))}))
     }
 
+    async fn profile(&self) -> Reply {
+        let me = self.request(json!({"@type":"getMe"})).await?;
+        self.state.remember_user(&me);
+        let uid = me["id"].as_i64().unwrap_or_default();
+        let full = if uid != 0 {
+            self.request(json!({"@type":"getUserFullInfo","user_id":uid})).await.ok()
+        } else {
+            None
+        };
+        let username = me["usernames"]["editable_username"].as_str()
+            .filter(|s| !s.is_empty())
+            .or_else(|| me["usernames"]["active_usernames"][0].as_str())
+            .unwrap_or_default();
+        let bio = full.as_ref().and_then(|f| f["bio"]["text"].as_str()).unwrap_or_default();
+        Ok(json!({
+            "id": me["id"],
+            "name": user_name(&me),
+            "first_name": text(&me["first_name"]),
+            "last_name": text(&me["last_name"]),
+            "bio": bio,
+            "username": username,
+            "phone_masked": mask_phone(text(&me["phone_number"])),
+            "avatar_file": me["profile_photo"]["small"]["id"],
+        }))
+    }
+
+    async fn update_profile(&self, body: &Value) -> Reply {
+        let Some(map) = body.as_object() else {
+            return Err(GwError::bad_request("Thân POST phải là JSON object."));
+        };
+        if map.get("confirm").and_then(Value::as_bool) != Some(true) {
+            return Err(GwError::bad_request("Cần xác nhận trước khi lưu hồ sơ."));
+        }
+        let allowed = ["confirm", "first_name", "last_name", "bio", "username"];
+        if let Some(bad) = map.keys().find(|k| !allowed.contains(&k.as_str())) {
+            return Err(GwError::bad_request(format!("Trường hồ sơ không hợp lệ: {bad}")));
+        }
+        let first_name = match map.get("first_name") {
+            Some(v) => {
+                let s = v.as_str().ok_or_else(|| GwError::bad_request("first_name phải là chuỗi."))?.trim().to_owned();
+                if !(1..=64).contains(&s.chars().count()) {
+                    return Err(GwError::bad_request("Tên phải từ 1 đến 64 ký tự."));
+                }
+                Some(s)
+            }
+            None => None,
+        };
+        let last_name = match map.get("last_name") {
+            Some(v) => {
+                let s = v.as_str().ok_or_else(|| GwError::bad_request("last_name phải là chuỗi."))?.trim().to_owned();
+                if s.chars().count() > 64 {
+                    return Err(GwError::bad_request("Họ tối đa 64 ký tự."));
+                }
+                Some(s)
+            }
+            None => None,
+        };
+        let bio = match map.get("bio") {
+            Some(v) => {
+                let s = v.as_str().ok_or_else(|| GwError::bad_request("bio phải là chuỗi."))?.trim().to_owned();
+                if s.chars().count() > 70 {
+                    return Err(GwError::bad_request("Tiểu sử tối đa 70 ký tự."));
+                }
+                Some(s)
+            }
+            None => None,
+        };
+        let username = match map.get("username") {
+            Some(v) => {
+                let s = v.as_str().ok_or_else(|| GwError::bad_request("username phải là chuỗi."))?
+                    .trim().trim_start_matches('@').to_owned();
+                if !valid_username(&s) {
+                    return Err(GwError::bad_request("Username phải dài 5–32 ký tự (a-z, 0-9, _), bắt đầu bằng chữ cái, không kết thúc bằng _ hoặc có __, hoặc để trống để xoá."));
+                }
+                Some(s)
+            }
+            None => None,
+        };
+        if first_name.is_none() && last_name.is_none() && bio.is_none() && username.is_none() {
+            return Err(GwError::bad_request("Không có thay đổi hồ sơ nào để lưu."));
+        }
+        if first_name.is_some() || last_name.is_some() {
+            let (first, last) = match (first_name, last_name) {
+                (Some(f), Some(l)) => (f, l),
+                (f_opt, l_opt) => {
+                    let me = self.request(json!({"@type":"getMe"})).await?;
+                    self.state.remember_user(&me);
+                    let f = f_opt.unwrap_or_else(|| text(&me["first_name"]).trim().to_owned());
+                    let l = l_opt.unwrap_or_else(|| text(&me["last_name"]).trim().to_owned());
+                    if !(1..=64).contains(&f.chars().count()) {
+                        return Err(GwError::bad_request("Tên phải từ 1 đến 64 ký tự."));
+                    }
+                    (f, l)
+                }
+            };
+            self.request(json!({"@type":"setName","first_name":first,"last_name":last})).await?;
+        }
+        if let Some(bio) = bio {
+            self.request(json!({"@type":"setBio","bio":bio})).await?;
+        }
+        if let Some(username) = username {
+            self.request(json!({"@type":"setUsername","username":username})).await?;
+        }
+        self.profile().await
+    }
+
     pub(crate) async fn account_name(&self) -> Result<String, GwError> {
         let me = self.request(json!({"@type":"getMe"})).await?;
         self.state.remember_user(&me);
@@ -158,6 +264,8 @@ impl ChatService {
                 Ok(json!({"tai_khoan":[{"phone":self.account,"display_name":name,"status":status}]}))
             }
             ("GET", ["", "api", "me"]) => self.me().await,
+            ("GET", ["", "api", "profile"]) => self.profile().await,
+            ("POST", ["", "api", "profile"]) => self.update_profile(&body).await,
             ("GET", ["", "api", "chats"]) => self.chats(q.int("limit", 60)?.clamp(1, 200)).await,
             ("GET", ["", "api", "chats", id, "messages"]) => self.history(
                 path_id(id)?, q.int("before", 0)?, q.int("limit", 30)?.clamp(1, 100) as usize).await,
@@ -254,6 +362,33 @@ fn truth(v: &Value) -> bool {
         Value::Array(a) => !a.is_empty(),
         Value::Object(o) => !o.is_empty(),
     }
+}
+
+pub(crate) fn mask_phone(raw: &str) -> String {
+    let digits: String = raw.chars().filter(|c| c.is_ascii_digit()).collect();
+    let len = digits.len();
+    if len == 0 {
+        return String::new();
+    }
+    if len <= 4 {
+        return format!("+{}", "•".repeat(len));
+    }
+    if len <= 6 {
+        return format!("+{}{}{}", &digits[..2], "•".repeat(len - 4), &digits[len - 2..]);
+    }
+    format!("+{}{}{}", &digits[..3], "•".repeat(len - 6), &digits[len - 3..])
+}
+
+fn valid_username(u: &str) -> bool {
+    if u.is_empty() {
+        return true;
+    }
+    let bytes = u.as_bytes();
+    (5..=32).contains(&bytes.len())
+        && bytes[0].is_ascii_alphabetic()
+        && bytes.iter().all(|b| b.is_ascii_alphanumeric() || *b == b'_')
+        && !u.ends_with('_')
+        && !u.contains("__")
 }
 
 fn telegram_error(error: crate::contract::TdError) -> GwError {

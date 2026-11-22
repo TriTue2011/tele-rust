@@ -128,3 +128,65 @@ async fn invalid_writes_do_not_send_any_tdlib_request() {
         assert_eq!((err.status,err.code.as_str()),(400,"BAD_REQUEST"),"{path}");
     }
 }
+
+#[tokio::test]
+async fn send_and_edit_support_structured_entities_with_utf16_offsets() {
+    let real = 1_i64 << 20;
+    let text = "🌙 Chào code pre";
+    let ft = json!({
+        "@type":"formattedText",
+        "text":text,
+        "entities":[
+            {"@type":"textEntity","offset":3,"length":4,"type":{"@type":"textEntityTypeBold"}},
+            {"@type":"textEntity","offset":3,"length":4,"type":{"@type":"textEntityTypeItalic"}},
+            {"@type":"textEntity","offset":8,"length":4,"type":{"@type":"textEntityTypeCode"}},
+            {"@type":"textEntity","offset":13,"length":3,"type":{"@type":"textEntityTypePreCode","language":"sh"}}
+        ]
+    });
+    let edit_ft = json!({
+        "@type":"formattedText",
+        "text":"Mới",
+        "entities":[{"@type":"textEntity","offset":0,"length":3,"type":{"@type":"textEntityTypeSpoiler"}}]
+    });
+    let (chat, _) = setup(vec![
+        ok(json!({"@type":"sendMessage","chat_id":5,"input_message_content":{"@type":"inputMessageText","text":ft,
+            "link_preview_options":{"@type":"linkPreviewOptions","is_disabled":false}}}), td_message(20)),
+        ok(json!({"@type":"editMessageText","chat_id":5,"message_id":real,
+            "input_message_content":{"@type":"inputMessageText","text":edit_ft}}), td_message(real)),
+    ]);
+    let sent = post(&chat, "/api/chats/5/send", "", json!({
+        "text": text,
+        "entities": [
+            {"type":"bold","offset":3,"length":4},
+            {"type":"italic","offset":3,"length":4},
+            {"type":"code","offset":8,"length":4},
+            {"type":"pre","offset":13,"length":3,"language":"sh"}
+        ]
+    })).await.unwrap();
+    assert_eq!(sent["id"], 20);
+    let edited = post(&chat, "/api/messages/edit", "", json!({
+        "chat_id":5, "message_id":real, "text":"Mới",
+        "entities":[{"type":"spoiler","offset":0,"length":3}]
+    })).await.unwrap();
+    assert_eq!(edited["id"], real);
+}
+
+#[tokio::test]
+async fn invalid_entities_and_parse_mode_conflict_fail_without_calling_tdlib() {
+    let (chat, _) = setup(vec![]);
+    let msg_id = 1_i64 << 20;
+    for (path, body) in [
+        ("/api/chats/5/send", json!({"text":"🌙 a","entities":[{"type":"bold","offset":1,"length":1}]})),
+        ("/api/chats/5/send", json!({"text":"🌙 a","entities":[{"type":"bold","offset":0,"length":1}]})),
+        ("/api/chats/5/send", json!({"text":"abc","entities":[{"type":"bold","offset":2,"length":2}]})),
+        ("/api/chats/5/send", json!({"text":"abc","entities":[{"type":"bold","offset":0,"length":0}]})),
+        ("/api/chats/5/send", json!({"text":"abc","entities":[{"type":"script","offset":0,"length":1}]})),
+        ("/api/chats/5/send", json!({"text":"abc","entities":"bad"})),
+        ("/api/chats/5/send", json!({"text":"abc","parse_mode":"markdown","entities":[{"type":"bold","offset":0,"length":1}]})),
+        ("/api/chats/5/send", json!({"text":"abc","entities":[{"type":"pre","offset":0,"length":3,"language":"a\nb"}]})),
+        ("/api/messages/edit", json!({"chat_id":5,"message_id":msg_id,"text":"abc","entities":[{"type":"bold","offset":99,"length":1}]})),
+    ] {
+        let err = post(&chat, path, "", body).await.unwrap_err();
+        assert_eq!((err.status, err.code.as_str()), (400, "BAD_REQUEST"), "{path}");
+    }
+}

@@ -11,6 +11,7 @@ pub(crate) struct Entry {
     storage_lock: tokio::sync::RwLock<()>,
     sweep_lock: tokio::sync::Mutex<()>,
     settings_lock: tokio::sync::Mutex<()>,
+    appearance_lock: tokio::sync::Mutex<()>,
     storage_changed: Arc<tokio::sync::Notify>,
     storage_report: Mutex<crate::storage::Report>,
     chat: Arc<ChatService>,
@@ -201,7 +202,8 @@ impl Accounts {
         let entry = Arc::new(Entry { client, session, chat: Arc::new(ChatService::with_events(td, phone, service_dir, Some(events.sink.clone())).follow_calls(calls.events())),
             calls, ready: AtomicBool::new(ready), events: tokio::sync::Mutex::new(Some(events)), call_events,
             storage_lock: tokio::sync::RwLock::new(()), sweep_lock: tokio::sync::Mutex::new(()),
-            settings_lock: tokio::sync::Mutex::new(()), storage_changed: Arc::new(tokio::sync::Notify::new()),
+            settings_lock: tokio::sync::Mutex::new(()), appearance_lock: tokio::sync::Mutex::new(()),
+            storage_changed: Arc::new(tokio::sync::Notify::new()),
             storage_report: Mutex::new(crate::storage::Report::new()), storage_task: std::sync::OnceLock::new() });
         let task_entry = Arc::downgrade(&entry);
         let mut updates = entry.client.updates();
@@ -315,6 +317,13 @@ impl Accounts {
     }
 
     fn select_storage(&self, phone: &str) -> Result<(String, Arc<Entry>), GwError> {
+        if phone.is_empty() && (self.all().len() > 1 || self.store.lock().unwrap().rows().len() > 1) {
+            return Err(GwError::bad_request("Có nhiều tài khoản; cần chỉ định tham số account."));
+        }
+        self.select(phone)
+    }
+
+    fn select_account_scoped(&self, phone: &str) -> Result<(String, Arc<Entry>), GwError> {
         if phone.is_empty() && (self.all().len() > 1 || self.store.lock().unwrap().rows().len() > 1) {
             return Err(GwError::bad_request("Có nhiều tài khoản; cần chỉ định tham số account."));
         }
@@ -452,6 +461,44 @@ impl Accounts {
                 }).await.map_err(|_| crate::storage::settings_error())?;
             }
             return Ok(crate::storage::settings_read_only(&e.session).await);
+        }
+        if path == "/api/settings/appearance" {
+            let (_, e) = self.select_account_scoped(&selected)?;
+            if method == "POST" {
+                crate::appearance_settings::validate(&body)?;
+                let entry = e.clone();
+                return tokio::spawn(async move {
+                    let _access = entry.storage_lock.read().await;
+                    let _write = entry.appearance_lock.lock().await;
+                    if !entry.ready.load(Ordering::Acquire) { return Err(offline()); }
+                    let dir = entry.session.clone();
+                    let clean = body;
+                    tokio::task::spawn_blocking(move || {
+                        crate::appearance_settings::save(&dir, &clean)
+                            .map_err(|_| crate::appearance_settings::io_error())?;
+                        Ok(clean)
+                    }).await.map_err(|_| crate::appearance_settings::io_error())?
+                }).await.map_err(|_| crate::appearance_settings::io_error())?;
+            }
+            let dir = e.session.clone();
+            return tokio::task::spawn_blocking(move || crate::appearance_settings::load_or_default(&dir))
+                .await.map_err(|_| crate::appearance_settings::io_error());
+        }
+        if path == "/api/profile" {
+            let (phone, e) = self.select_account_scoped(&selected)?;
+            let _access = e.storage_lock.read().await;
+            let result = e.chat.handle(method, path, query, body).await?;
+            if method == "POST" {
+                let full_name = format!(
+                    "{} {}",
+                    result["first_name"].as_str().unwrap_or_default(),
+                    result["last_name"].as_str().unwrap_or_default(),
+                ).trim().to_owned();
+                if !full_name.is_empty() && self.store.lock().unwrap().refresh_name(&phone, &full_name).is_err() {
+                    log::warn!("Không cập nhật được tên hồ sơ trong sổ tài khoản.");
+                }
+            }
+            return Ok(result);
         }
         let (phone,e) = self.select(&selected)?;
         if path == "/api/live/settings" { return e.calls.settings(Value::Null).await; }

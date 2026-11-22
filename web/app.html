@@ -5,10 +5,34 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Telegram</title>
 <style>
-  :root { color-scheme: light dark; --bg:#eef1f5; --panel:#fff; --fg:#17212b; --mut:#6b7a8a; --line:#e1e6ec;
-          --acc:#2a7de1; --in:#fff; --out:#d6eafd; --badge:#2a7de1; --mute:#9aa7b4; --err:#c62828; --ok:#1e8e4e; }
-  @media (prefers-color-scheme: dark) { :root { --bg:#0e1621; --panel:#17212b; --fg:#e8eef4; --mut:#8a9bab;
-          --line:#26323f; --acc:#5aa2ff; --in:#1f2c3a; --out:#2b5278; --badge:#3b82d9; --mute:#5f7080; --err:#ef6c6c; --ok:#4cc27f; } }
+  :root { color-scheme: light dark; --bg:#eef1f5; --panel:#fff; --fg:#17212b; --mut:#5a6877; --line:#e1e6ec;
+          --acc:#1d68c4; --btn-bg:#1d68c4; --in:#fff; --out:#d6eafd; --badge:#1d68c4; --mute:#9aa7b4; --err:#c62828; --ok:#1e8e4e;
+          --chat-font:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; --chat-font-size:15px;
+          --bubble-radius:12px; --bubble-pad:6px 10px 4px; --msg-gap:4px; }
+  :root[data-theme="light"] { color-scheme: light; }
+  :root[data-theme="dark"] { color-scheme: dark; --bg:#0e1621; --panel:#17212b; --fg:#e8eef4; --mut:#95a6b8;
+          --line:#26323f; --acc:#6bb0ff; --btn-bg:#1d68c4; --in:#1f2c3a; --out:#2b5278; --badge:#1d68c4; --mute:#5f7080; --err:#ef6c6c; --ok:#4cc27f; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#0e1621; --panel:#17212b; --fg:#e8eef4; --mut:#95a6b8;
+          --line:#26323f; --acc:#6bb0ff; --btn-bg:#1d68c4; --in:#1f2c3a; --out:#2b5278; --badge:#1d68c4; --mute:#5f7080; --err:#ef6c6c; --ok:#4cc27f; } }
+  :root[data-accent="green"] { --acc:#167a42; --btn-bg:#167a42; --badge:#167a42; --out:#d5f2df; }
+  :root[data-accent="purple"] { --acc:#6f3ec2; --btn-bg:#6f3ec2; --badge:#6f3ec2; --out:#e9dffc; }
+  :root[data-accent="orange"] { --acc:#b84c00; --btn-bg:#b84c00; --badge:#b84c00; --out:#fde6d2; }
+  :root[data-accent="pink"] { --acc:#b32568; --btn-bg:#b32568; --badge:#b32568; --out:#fcdceb; }
+  :root[data-accent="teal"] { --acc:#0d6e75; --btn-bg:#0d6e75; --badge:#0d6e75; --out:#d3f1f3; }
+  :root[data-theme="dark"][data-accent="green"] { --acc:#56cf87; --btn-bg:#167a42; --badge:#167a42; --out:#1d4a35; }
+  :root[data-theme="dark"][data-accent="purple"] { --acc:#b392ff; --btn-bg:#6f3ec2; --badge:#6f3ec2; --out:#3a2c5e; }
+  :root[data-theme="dark"][data-accent="orange"] { --acc:#f59e42; --btn-bg:#b84c00; --badge:#b84c00; --out:#573419; }
+  :root[data-theme="dark"][data-accent="pink"] { --acc:#f47bb3; --btn-bg:#b32568; --badge:#b32568; --out:#57233f; }
+  :root[data-theme="dark"][data-accent="teal"] { --acc:#4ac7cf; --btn-bg:#0d6e75; --badge:#0d6e75; --out:#18474d; }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"])[data-accent="green"] { --acc:#56cf87; --btn-bg:#167a42; --badge:#167a42; --out:#1d4a35; }
+    :root:not([data-theme="light"])[data-accent="purple"] { --acc:#b392ff; --btn-bg:#6f3ec2; --badge:#6f3ec2; --out:#3a2c5e; }
+    :root:not([data-theme="light"])[data-accent="orange"] { --acc:#f59e42; --btn-bg:#b84c00; --badge:#b84c00; --out:#573419; }
+    :root:not([data-theme="light"])[data-accent="pink"] { --acc:#f47bb3; --btn-bg:#b32568; --badge:#b32568; --out:#57233f; }
+    :root:not([data-theme="light"])[data-accent="teal"] { --acc:#4ac7cf; --btn-bg:#0d6e75; --badge:#0d6e75; --out:#18474d; }
+  }
+  :root[data-bubble="rounded"] { --bubble-radius:18px; --bubble-pad:8px 14px 6px; --msg-gap:6px; }
+  :root[data-bubble="compact"] { --bubble-radius:7px; --bubble-pad:4px 8px 3px; --msg-gap:2px; }
   * { box-sizing:border-box; }
   [hidden] { display:none !important; }
   html, body { height:100%; margin:0; }
@@ -19,11 +43,11 @@
   .bar { display:flex; align-items:center; gap:8px; padding:10px 12px; border-bottom:1px solid var(--line); background:var(--panel); }
   .bar h1 { font-size:16px; margin:0; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .bar small { color:var(--mut); display:block; font-weight:400; font-size:12px; }
-  input[type=text], input[type=password], textarea { width:100%; padding:9px 11px; border:1px solid var(--line); border-radius:9px;
+  input[type=text], input[type=password], textarea, select { width:100%; padding:9px 11px; border:1px solid var(--line); border-radius:9px;
           background:var(--bg); color:var(--fg); font:inherit; }
   textarea { resize:none; max-height:140px; }
-  input:focus-visible, textarea:focus-visible, button:focus-visible, .chat:focus-visible { outline:2px solid var(--acc); outline-offset:1px; }
-  button { padding:8px 12px; border:0; border-radius:9px; background:var(--acc); color:#fff; font:inherit; cursor:pointer; }
+  input:focus-visible, textarea:focus-visible, select:focus-visible, button:focus-visible, .chat:focus-visible { outline:2px solid var(--acc); outline-offset:1px; }
+  button { padding:8px 12px; border:0; border-radius:9px; background:var(--btn-bg); color:#fff; font:inherit; cursor:pointer; }
   button.ghost { background:transparent; color:var(--acc); padding:6px 9px; }
   button.icon { background:transparent; color:var(--mut); padding:6px 9px; font-size:18px; line-height:1; }
   button:disabled { opacity:.5; cursor:default; }
@@ -32,24 +56,28 @@
   .tabs button.on { color:var(--acc); border-bottom-color:var(--acc); }
   #list { flex:1; overflow-y:auto; }
   .chat { display:flex; gap:10px; padding:9px 12px; cursor:pointer; align-items:center; }
+  :root[data-bubble="compact"] .chat { padding:6px 10px; }
   .chat:hover, .chat.on { background:var(--bg); }
   .av { width:44px; height:44px; border-radius:50%; flex:none; display:grid; place-items:center; color:#fff; font-weight:600; overflow:hidden; position:relative; }
   .av img { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; }
   .meta { flex:1; min-width:0; }
   .row { display:flex; justify-content:space-between; gap:8px; align-items:baseline; }
-  .t { font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .t { font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family:var(--chat-font); font-size:var(--chat-font-size); }
   .d { color:var(--mut); font-size:12px; flex:none; }
-  .p { color:var(--mut); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:14px; }
+  .p { color:var(--mut); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family:var(--chat-font); font-size:calc(var(--chat-font-size) - 1px); }
   .badge { background:var(--badge); color:#fff; border-radius:99px; padding:0 7px; font-size:12px; min-width:20px; text-align:center; flex:none; }
   .badge.mute { background:var(--mute); }
-  #msgs { flex:1; overflow-y:auto; padding:12px 14px; display:flex; flex-direction:column; gap:4px; }
+  #msgs { flex:1; overflow-y:auto; padding:12px 14px; display:flex; flex-direction:column; gap:var(--msg-gap); font-family:var(--chat-font); font-size:var(--chat-font-size); }
   .day { align-self:center; color:var(--mut); font-size:12px; background:var(--panel); border-radius:99px; padding:2px 10px; margin:8px 0; }
-  .m { max-width:min(78%,560px); padding:6px 10px 4px; border-radius:12px; background:var(--in); word-wrap:break-word; overflow-wrap:anywhere; position:relative; }
+  .m { max-width:min(78%,560px); padding:var(--bubble-pad); border-radius:var(--bubble-radius); background:var(--in); word-wrap:break-word; overflow-wrap:anywhere; position:relative; font-family:var(--chat-font); font-size:var(--chat-font-size); }
   .m.out { align-self:flex-end; background:var(--out); }
+  :root[data-bubble="rounded"] .m:not(.out) { border-bottom-left-radius:5px; }
+  :root[data-bubble="rounded"] .m.out { border-bottom-right-radius:5px; }
   .m .who { font-size:13px; font-weight:600; color:var(--acc); }
   .m .txt { white-space:pre-wrap; }
-  .m .txt code { font-family:ui-monospace,monospace; }
+  .m .txt code { font-family:ui-monospace,monospace; background:color-mix(in srgb, var(--fg) 8%, transparent); padding:1px 4px; border-radius:4px; }
   .m .txt pre { margin:4px 0; padding:6px 8px; background:var(--bg); border-radius:6px; overflow-x:auto; white-space:pre; overflow-wrap:normal; }
+  .m .txt pre code { background:transparent; padding:0; border-radius:0; }
   .m .txt blockquote { margin:4px 0; padding:2px 8px; border-left:3px solid var(--acc); }
   .m .txt .mention { color:var(--acc); }
   .m .txt .spoiler:not(.revealed) { background:var(--mut); border-radius:3px; cursor:pointer; }
@@ -67,7 +95,17 @@
   .m:hover .acts, .m:focus-within .acts { display:flex; }
   .acts button { background:transparent; color:var(--mut); padding:2px 6px; font-size:13px; }
   #typing { height:18px; padding:0 14px; color:var(--mut); font-size:12px; }
-  #composer { display:flex; gap:8px; padding:8px 10px; border-top:1px solid var(--line); background:var(--panel); align-items:flex-end; }
+  #composer { display:flex; flex-direction:column; gap:6px; padding:8px 10px; border-top:1px solid var(--line); background:var(--panel); }
+  .compose-tools { display:flex; align-items:center; gap:4px; flex-wrap:wrap; }
+  .compose-tools button { background:transparent; color:var(--mut); border:1px solid var(--line); padding:2px 9px; min-height:28px; font-size:13px; border-radius:7px; }
+  .compose-tools button:hover { color:var(--acc); border-color:var(--acc); }
+  .compose-tools small { margin-left:auto; color:var(--mut); font-size:12px; }
+  .compose-row { display:flex; gap:8px; align-items:flex-end; }
+  .compose-row textarea { font-family:var(--chat-font); font-size:var(--chat-font-size); }
+  #compose-preview { padding:6px 10px; border-radius:8px; background:var(--bg); border:1px solid var(--line); font-family:var(--chat-font); font-size:var(--chat-font-size); white-space:pre-wrap; overflow-wrap:anywhere; max-height:110px; overflow-y:auto; }
+  #compose-preview code { font-family:ui-monospace,monospace; background:color-mix(in srgb, var(--fg) 8%, transparent); padding:1px 4px; border-radius:4px; }
+  #compose-preview pre { margin:4px 0; padding:6px 8px; background:var(--panel); border-radius:6px; overflow-x:auto; white-space:pre; }
+  #compose-preview pre code { background:transparent; padding:0; }
   #reply { display:none; padding:4px 12px; background:var(--panel); border-top:1px solid var(--line); color:var(--mut); font-size:13px; }
   #more { align-self:center; margin:6px 0; }
   .empty { margin:auto; color:var(--mut); text-align:center; padding:24px; }
@@ -94,8 +132,61 @@
   #call-error { width:100%; margin:0; color:#ffb4b4; text-align:center; overflow-wrap:anywhere; }
   #call-device-line { width:100%; margin:0; text-align:center; color:#dce7f1; }
   #call-audio { width:min(360px,100%); height:36px; }
-  #call-settings-open { align-self:flex-start; margin:0 12px 4px; }
-  #app.locked #call-settings-open { display:none; }
+  #settings-open { min-height:44px; min-width:44px; }
+  #app.locked #settings-open { display:none; }
+  .settings-dialog { width:min(780px, calc(100vw - 16px)); height:min(660px, calc(100dvh - 16px)); max-width:calc(100vw - 16px); max-height:calc(100dvh - 16px); margin:auto;
+    padding:0; border:1px solid var(--line); border-radius:16px; background:var(--panel); color:var(--fg); overflow:hidden; }
+  .settings-dialog::backdrop { background:#05080bcc; }
+  .settings-dialog[open] { display:flex; flex-direction:column; }
+  .settings-top { display:flex; align-items:center; gap:8px; padding:12px 16px; border-bottom:1px solid var(--line); background:var(--panel); flex:none; }
+  .settings-top h2 { margin:0; font-size:18px; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .settings-shell { flex:1; min-height:0; display:flex; overflow:hidden; }
+  .settings-nav { width:236px; flex:none; border-right:1px solid var(--line); overflow-y:auto; padding:10px; display:flex; flex-direction:column; gap:4px; background:var(--bg); }
+  .settings-profile-card { display:flex; align-items:center; gap:10px; width:100%; text-align:left; padding:10px; border-radius:11px; background:var(--panel); color:var(--fg); border:1px solid var(--line); margin-bottom:6px; min-height:58px; }
+  .settings-profile-card .av { width:40px; height:40px; font-size:14px; background:var(--btn-bg); }
+  .settings-profile-card strong { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .settings-profile-card small { display:block; color:var(--mut); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; }
+  .settings-sep { margin:8px 8px 4px; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; color:var(--mut); }
+  .settings-item { display:flex; align-items:center; justify-content:space-between; gap:8px; width:100%; text-align:left; padding:10px 12px; min-height:44px; border-radius:10px; background:transparent; color:var(--fg); font-weight:500; }
+  .settings-item:hover { background:var(--panel); }
+  .settings-item[aria-current="page"] { background:var(--btn-bg); color:#fff; }
+  .settings-item[aria-current="page"] .soon-badge { background:#ffffff33; color:#fff; border-color:transparent; }
+  .soon-badge { display:inline-block; padding:2px 8px; border-radius:99px; font-size:11px; font-weight:600; background:var(--panel); color:var(--mut); border:1px solid var(--line); flex:none; }
+  .settings-detail { flex:1; min-width:0; overflow-y:auto; padding:16px 20px 24px; display:flex; flex-direction:column; gap:14px; }
+  .settings-panel { display:flex; flex-direction:column; gap:14px; max-width:100%; }
+  .settings-panel h3 { margin:0; font-size:17px; }
+  .settings-panel p { margin:0; overflow-wrap:anywhere; }
+  .settings-card { padding:14px; border:1px solid var(--line); border-radius:12px; background:var(--bg); display:flex; flex-direction:column; gap:10px; }
+  .settings-card label { display:block; font-weight:600; font-size:13px; margin:6px 0 4px; }
+  .settings-card input, .settings-card select, .settings-card textarea { background:var(--panel); }
+  .settings-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:8px; align-items:center; }
+  .settings-actions a { min-height:44px; display:inline-flex; align-items:center; color:var(--acc); }
+  .settings-dialog button, .settings-dialog select, .settings-dialog input:not([type=range]):not([type=checkbox]) { min-height:44px; max-width:100%; }
+  .settings-dialog input[type=range] { min-height:44px; flex:1; min-width:0; accent-color:var(--acc); }
+  .settings-status { color:var(--ok); font-size:13px; min-height:1.2em; }
+  .settings-error { color:var(--err); font-size:13px; min-height:1.2em; }
+  .choice-row { display:flex; flex-wrap:wrap; gap:8px; }
+  .choice-btn { flex:1 1 92px; min-height:44px; padding:8px 10px; border-radius:10px; border:2px solid var(--line); background:var(--panel); color:var(--fg); display:inline-flex; align-items:center; justify-content:center; gap:6px; font-weight:500; }
+  .choice-btn[aria-pressed="true"] { border-color:var(--acc); background:color-mix(in srgb, var(--acc) 12%, var(--panel)); color:var(--fg); }
+  .accent-dot { width:14px; height:14px; border-radius:50%; flex:none; display:inline-block; }
+  .range-row { display:flex; align-items:center; gap:8px; }
+  .range-row button { min-width:44px; min-height:44px; padding:0 12px; background:var(--panel); color:var(--fg); border:1px solid var(--line); }
+  .range-row output { min-width:46px; text-align:right; font-weight:600; font-variant-numeric:tabular-nums; }
+  #appearance-preview { padding:12px; border-radius:12px; border:1px solid var(--line); background:var(--bg); display:flex; flex-direction:column; gap:8px; font-family:var(--chat-font); font-size:var(--chat-font-size); }
+  #appearance-preview .preview-chat { display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:10px; background:var(--panel); border:1px solid var(--line); }
+  #appearance-preview .preview-chat .av { width:36px; height:36px; font-size:13px; background:var(--btn-bg); }
+  #appearance-preview .preview-msgs { display:flex; flex-direction:column; gap:var(--msg-gap); }
+  #appearance-preview .m { max-width:92%; }
+  .profile-phone-box { display:flex; justify-content:space-between; align-items:center; gap:10px; padding:10px 12px; border-radius:10px; background:var(--panel); border:1px solid var(--line); }
+  .profile-counter { display:flex; justify-content:space-between; align-items:center; font-size:12px; color:var(--mut); }
+  #settings-back { display:none; min-height:44px; }
+  @media (max-width:699px) {
+    .settings-nav { width:100%; border-right:0; background:var(--panel); }
+    .settings-shell:not(.in-detail) .settings-detail { display:none; }
+    .settings-shell.in-detail .settings-nav { display:none; }
+    .settings-dialog.in-detail #settings-back { display:inline-flex; align-items:center; }
+    .settings-detail { padding:14px 14px 20px; }
+  }
   #call-settings { width:min(540px, calc(100vw - 24px)); max-height:calc(100dvh - 24px); padding:22px;
     border:1px solid var(--line); border-radius:16px; background:var(--panel); color:var(--fg); }
   #call-settings::backdrop { background:#05080bcc; }
@@ -170,9 +261,8 @@
 <body>
 <div id="app" class="locked">
   <aside>
-    <div class="bar"><h1 id="me">Telegram<small id="mesub"></small></h1><a class="ghost" href="/ui/index.html" style="color:var(--acc);font-size:13px">Tài khoản</a><button id="storage-open" class="icon" type="button" aria-label="Cài đặt" title="Cài đặt">⚙</button></div>
+    <div class="bar"><h1 id="me">Telegram<small id="mesub"></small></h1><a class="ghost" href="/ui/index.html" style="color:var(--acc);font-size:13px">Tài khoản</a><button id="settings-open" class="icon" type="button" aria-label="Cài đặt" title="Cài đặt">⚙</button></div>
     <div style="padding:8px 12px"><label for="account">Tài khoản đang dùng</label><select id="account" style="width:100%;padding:8px" aria-label="Chọn tài khoản Telegram"></select></div>
-    <button id="call-settings-open" class="ghost" type="button">Cài đặt cuộc gọi</button>
     <div style="padding:8px 12px"><input id="q" type="text" placeholder="Tìm hội thoại…" autocomplete="off" aria-label="Tìm hội thoại"></div>
     <div class="tabs" role="tablist"><button id="t-chats" class="on" role="tab">Hội thoại</button><button id="t-contacts" role="tab">Danh bạ</button></div>
     <div id="list" role="list"></div>
@@ -213,9 +303,18 @@
     <div id="typing" hidden></div>
     <div id="reply"><span id="reply-txt"></span> <button class="ghost" id="reply-x" aria-label="Bỏ trả lời">✕</button></div>
     <div id="composer" hidden>
-      <button class="icon" id="attach" aria-label="Đính kèm tệp">📎</button><input id="file" type="file" hidden>
-      <textarea id="text" rows="1" placeholder="Nhập tin nhắn…" aria-label="Tin nhắn"></textarea>
-      <button id="send">Gửi</button>
+      <div id="compose-preview" hidden aria-live="polite"></div>
+      <div class="compose-tools">
+        <button type="button" id="fmt-bold" title="Chữ đậm (Ctrl/Cmd+B)" aria-label="Định dạng chữ đậm"><strong>B</strong></button>
+        <button type="button" id="fmt-italic" title="Chữ nghiêng (Ctrl/Cmd+I)" aria-label="Định dạng chữ nghiêng"><em>I</em></button>
+        <button type="button" id="fmt-code" title="Mã nguồn (Ctrl/Cmd+E)" aria-label="Định dạng mã nguồn">&lt;/&gt;</button>
+        <small>Hỗ trợ **đậm**, __nghiêng__, `mã`</small>
+      </div>
+      <div class="compose-row">
+        <button class="icon" id="attach" aria-label="Đính kèm tệp">📎</button><input id="file" type="file" hidden>
+        <textarea id="text" rows="1" placeholder="Nhập tin nhắn…" aria-label="Tin nhắn"></textarea>
+        <button id="send">Gửi</button>
+      </div>
     </div>
   </main>
 </div>
@@ -289,6 +388,167 @@
       <button id="call-device-save" type="submit">Dùng thiết bị này</button>
     </div>
   </form>
+</dialog>
+<dialog id="settings-dialog" class="settings-dialog" aria-labelledby="settings-title">
+  <header class="settings-top">
+    <button id="settings-back" class="ghost" type="button" aria-label="Quay lại danh sách cài đặt">← Cài đặt</button>
+    <h2 id="settings-title">Cài đặt</h2>
+    <button id="settings-close" type="button" class="icon" aria-label="Đóng cài đặt">✕</button>
+  </header>
+  <div id="settings-shell" class="settings-shell">
+    <nav class="settings-nav" aria-label="Mục cài đặt">
+      <button type="button" id="settings-nav-profile-card" class="settings-profile-card" data-section="profile">
+        <div id="settings-nav-avatar" class="av" aria-hidden="true">?</div>
+        <div class="meta">
+          <strong id="settings-nav-name">Tài khoản Telegram</strong>
+          <small id="settings-nav-sub">Chỉnh sửa hồ sơ</small>
+        </div>
+      </button>
+      <button type="button" class="settings-item" data-section="profile" aria-current="page"><span>Hồ sơ</span></button>
+      <button type="button" class="settings-item" data-section="appearance"><span>Giao diện</span></button>
+      <button type="button" class="settings-item" data-section="storage"><span>Dữ liệu và lưu trữ</span></button>
+      <button type="button" class="settings-item" data-section="calls"><span>Cuộc gọi</span></button>
+      <button type="button" class="settings-item" data-section="accounts"><span>Tài khoản</span></button>
+      <p class="settings-sep">Sắp ra mắt</p>
+      <button type="button" class="settings-item" data-section="notifications"><span>Thông báo và âm thanh</span><span class="soon-badge">Sắp có</span></button>
+      <button type="button" class="settings-item" data-section="privacy"><span>Quyền riêng tư và bảo mật</span><span class="soon-badge">Sắp có</span></button>
+      <button type="button" class="settings-item" data-section="folders"><span>Thư mục hội thoại</span><span class="soon-badge">Sắp có</span></button>
+      <button type="button" class="settings-item" data-section="devices"><span>Thiết bị</span><span class="soon-badge">Sắp có</span></button>
+    </nav>
+    <div id="settings-detail" class="settings-detail">
+      <section id="settings-panel-profile" class="settings-panel" aria-labelledby="profile-heading">
+        <h3 id="profile-heading">Hồ sơ cá nhân</h3>
+        <div class="settings-card">
+          <div class="profile-phone-box">
+            <span>Số điện thoại</span>
+            <strong id="profile-phone-masked">—</strong>
+          </div>
+          <form id="profile-form" autocomplete="off">
+            <label for="profile-first-name">Tên</label>
+            <input id="profile-first-name" type="text" maxlength="64" required>
+            <label for="profile-last-name">Họ</label>
+            <input id="profile-last-name" type="text" maxlength="64">
+            <label for="profile-bio">Tiểu sử</label>
+            <textarea id="profile-bio" rows="2" maxlength="70" placeholder="Giới thiệu ngắn…"></textarea>
+            <div class="profile-counter"><small>Hiển thị trên hồ sơ Telegram của bạn.</small><span id="profile-bio-count">0/70</span></div>
+            <label for="profile-username">Tên người dùng (username)</label>
+            <input id="profile-username" type="text" maxlength="33" spellcheck="false" placeholder="vd: ten_nguoi_dung">
+            <p class="storage-note">Mọi thay đổi được yêu cầu xác nhận trước khi gửi lên Telegram.</p>
+            <p id="profile-status" class="settings-status" role="status" aria-live="polite"></p>
+            <p id="profile-error" class="settings-error" role="alert"></p>
+            <div class="settings-actions">
+              <button type="button" id="profile-revert" class="ghost">Hoàn tác</button>
+              <button type="submit" id="profile-save">Lưu thay đổi</button>
+            </div>
+          </form>
+        </div>
+      </section>
+      <section id="settings-panel-appearance" class="settings-panel" aria-labelledby="appearance-heading" hidden>
+        <h3 id="appearance-heading">Giao diện khung chat</h3>
+        <div id="appearance-preview" aria-label="Xem trước giao diện"></div>
+        <form id="appearance-form" class="settings-card">
+          <div>
+            <label>Chủ đề</label>
+            <div class="choice-row">
+              <button type="button" id="theme-system" class="choice-btn" data-theme="system" aria-pressed="true">Theo hệ thống</button>
+              <button type="button" id="theme-light" class="choice-btn" data-theme="light" aria-pressed="false">Sáng</button>
+              <button type="button" id="theme-dark" class="choice-btn" data-theme="dark" aria-pressed="false">Tối</button>
+            </div>
+          </div>
+          <div>
+            <label for="appearance-font">Kiểu chữ</label>
+            <select id="appearance-font">
+              <option value="system">Mặc định hệ thống</option>
+              <option value="sans">Không chân (Sans)</option>
+              <option value="serif">Có chân (Serif)</option>
+              <option value="mono">Đơn cách (Monospace)</option>
+            </select>
+          </div>
+          <div>
+            <label for="appearance-size">Cỡ chữ khung chat (12–20 px)</label>
+            <div class="range-row">
+              <button type="button" id="appearance-size-dec" aria-label="Giảm cỡ chữ">−</button>
+              <input id="appearance-size" type="range" min="12" max="20" step="1" value="15">
+              <button type="button" id="appearance-size-inc" aria-label="Tăng cỡ chữ">+</button>
+              <output id="appearance-size-value" for="appearance-size">15 px</output>
+            </div>
+          </div>
+          <div>
+            <label>Kiểu bong bóng</label>
+            <div class="choice-row">
+              <button type="button" id="bubble-classic" class="choice-btn" data-bubble="classic" aria-pressed="true">Cổ điển</button>
+              <button type="button" id="bubble-rounded" class="choice-btn" data-bubble="rounded" aria-pressed="false">Bo tròn</button>
+              <button type="button" id="bubble-compact" class="choice-btn" data-bubble="compact" aria-pressed="false">Gọn</button>
+            </div>
+          </div>
+          <div>
+            <label>Màu nhấn</label>
+            <div class="choice-row">
+              <button type="button" id="accent-blue" class="choice-btn" data-accent="blue" aria-pressed="true"><i class="accent-dot" style="background:#1d68c4"></i>Xanh dương</button>
+              <button type="button" id="accent-green" class="choice-btn" data-accent="green" aria-pressed="false"><i class="accent-dot" style="background:#167a42"></i>Xanh lá</button>
+              <button type="button" id="accent-purple" class="choice-btn" data-accent="purple" aria-pressed="false"><i class="accent-dot" style="background:#6f3ec2"></i>Tím</button>
+              <button type="button" id="accent-orange" class="choice-btn" data-accent="orange" aria-pressed="false"><i class="accent-dot" style="background:#b84c00"></i>Cam</button>
+              <button type="button" id="accent-pink" class="choice-btn" data-accent="pink" aria-pressed="false"><i class="accent-dot" style="background:#b32568"></i>Hồng</button>
+              <button type="button" id="accent-teal" class="choice-btn" data-accent="teal" aria-pressed="false"><i class="accent-dot" style="background:#0d6e75"></i>Ngọc lam</button>
+            </div>
+          </div>
+          <p class="storage-note">Lưu trên máy chủ (quyền 0600, theo từng tài khoản Telegram) để giữ đồng bộ và không lưu tuỳ chọn trong bộ nhớ trình duyệt.</p>
+          <p id="appearance-status" class="settings-status" role="status" aria-live="polite"></p>
+          <p id="appearance-error" class="settings-error" role="alert"></p>
+          <div class="settings-actions">
+            <button type="button" id="appearance-reset" class="ghost">Mặc định</button>
+            <button type="submit" id="appearance-save">Lưu giao diện</button>
+          </div>
+        </form>
+      </section>
+      <section id="settings-panel-storage" class="settings-panel" aria-labelledby="storage-section-heading" hidden>
+        <h3 id="storage-section-heading">Dữ liệu và lưu trữ</h3>
+        <div class="settings-card">
+          <p id="settings-storage-summary">Quản lý chế độ lưu tệp, thời hạn giữ phương tiện, ngoại lệ hội thoại và dọn bộ nhớ đệm.</p>
+          <div class="settings-actions">
+            <button id="storage-open" type="button">Mở cài đặt dữ liệu và lưu trữ</button>
+          </div>
+        </div>
+      </section>
+      <section id="settings-panel-calls" class="settings-panel" aria-labelledby="calls-section-heading" hidden>
+        <h3 id="calls-section-heading">Cuộc gọi</h3>
+        <div class="settings-card">
+          <p id="settings-calls-summary">Cấu hình nguồn camera, micro và loa ngoài cho các cuộc gọi của tài khoản đang dùng.</p>
+          <div class="settings-actions">
+            <button id="call-settings-open" type="button">Mở cài đặt cuộc gọi</button>
+          </div>
+        </div>
+      </section>
+      <section id="settings-panel-accounts" class="settings-panel" aria-labelledby="accounts-section-heading" hidden>
+        <h3 id="accounts-section-heading">Tài khoản</h3>
+        <div class="settings-card">
+          <p id="settings-accounts-current"></p>
+          <div id="settings-accounts-list"></div>
+          <div class="settings-actions">
+            <a href="/ui/index.html">Quản lý đăng nhập web &amp; thêm tài khoản →</a>
+          </div>
+        </div>
+      </section>
+      <section id="settings-panel-soon" class="settings-panel" aria-labelledby="soon-heading" hidden>
+        <div class="row" style="align-items:center"><h3 id="soon-heading"></h3><span class="soon-badge">Sắp có</span></div>
+        <div class="settings-card">
+          <p id="soon-description"></p>
+        </div>
+      </section>
+    </div>
+  </div>
+</dialog>
+<dialog id="profile-confirm" class="storage-dialog" aria-labelledby="profile-confirm-title">
+  <header><h2 id="profile-confirm-title">Xác nhận lưu hồ sơ</h2></header>
+  <div class="storage-body">
+    <p>Các thay đổi sau sẽ được cập nhật lên tài khoản Telegram đang chọn:</p>
+    <ul id="profile-confirm-summary"></ul>
+    <p id="profile-confirm-error" role="alert"></p>
+  </div>
+  <footer>
+    <button id="profile-confirm-cancel" class="ghost" type="button" autofocus>Huỷ</button>
+    <button id="profile-confirm-ok" type="button">Xác nhận lưu</button>
+  </footer>
 </dialog>
 <dialog id="storage-dialog" class="storage-dialog" aria-labelledby="storage-title">
   <form id="storage-form">
@@ -590,6 +850,7 @@
       appendMessages(msgs, false); box.scrollTop = box.scrollHeight;
       markRead(c.id, msgs);
     } catch (e) { toast(e.message); }
+    updateComposePreview();
     $("text").focus();
   }
   async function loadOlder() {
@@ -608,18 +869,169 @@
     catch (e) { toast(e.message); }
   }
 
+  // ---- định dạng soạn tin -----------------------------------------------------------------------
+  function parseInlineFormats(src, from, to, baseOffset, stopMarker, active) {
+    const parts = [];
+    const entities = [];
+    let outLen = 0;
+    let i = from;
+    const emit = (chunk) => { if (chunk) { parts.push(chunk); outLen += chunk.length; } };
+    while (i < to) {
+      if (stopMarker && src.startsWith(stopMarker, i) && i > from && !/\s/.test(src[i - 1])
+          && (stopMarker !== "__" || !/[A-Za-z0-9_]/.test(src[i + 2] || ""))) {
+        return { matched: true, next: i + stopMarker.length, parts, textLen: outLen, entities };
+      }
+      if (src.startsWith("```", i)) {
+        const close = src.indexOf("```", i + 3);
+        if (close > i + 3 && close < to) {
+          const raw = src.slice(i + 3, close);
+          const langMatch = /^([A-Za-z0-9_+-]{1,32})\r?\n([\s\S]+)$/.exec(raw);
+          let lang = "";
+          let body = raw;
+          if (langMatch) {
+            lang = langMatch[1];
+            body = langMatch[2].replace(/\r?\n$/, "");
+          } else if (raw.startsWith("\n") || raw.startsWith("\r\n")) {
+            body = raw.replace(/^\r?\n/, "").replace(/\r?\n$/, "");
+          }
+          if (body.length > 0) {
+            const entity = { type: "pre", offset: baseOffset + outLen, length: body.length };
+            if (lang) entity.language = lang;
+            entities.push(entity);
+            emit(body);
+            i = close + 3;
+            continue;
+          }
+        }
+      }
+      if (src[i] === "`" && !src.startsWith("```", i)) {
+        const close = src.indexOf("`", i + 1);
+        if (close > i + 1 && close < to) {
+          const body = src.slice(i + 1, close);
+          if (body && !body.includes("\n") && !body.includes("\r")) {
+            entities.push({ type: "code", offset: baseOffset + outLen, length: body.length });
+            emit(body);
+            i = close + 1;
+            continue;
+          }
+        }
+      }
+      if ((i === 0 || !/[A-Za-z0-9]/.test(src[i - 1])) && (src.startsWith("https://", i) || src.startsWith("http://", i))) {
+        const match = /^https?:\/\/[^\s<>"']+/.exec(src.slice(i, to));
+        if (match) {
+          let url = match[0];
+          if (stopMarker && url.endsWith(stopMarker)) url = url.slice(0, -stopMarker.length);
+          if (url.length > 7) {
+            emit(url);
+            i += url.length;
+            continue;
+          }
+        }
+      }
+      const marker = src.startsWith("**", i) ? "**" : src.startsWith("__", i) ? "__" : "";
+      if (marker && !active.has(marker) && i + 2 < to && !/\s/.test(src[i + 2])
+          && (marker !== "__" || i === 0 || !/[A-Za-z0-9_]/.test(src[i - 1]))) {
+        const nextActive = new Set(active);
+        nextActive.add(marker);
+        const res = parseInlineFormats(src, i + 2, to, baseOffset + outLen, marker, nextActive);
+        if (res.matched && res.textLen > 0) {
+          entities.push({ type: marker === "**" ? "bold" : "italic", offset: baseOffset + outLen, length: res.textLen });
+          for (const nested of res.entities) entities.push(nested);
+          for (const chunk of res.parts) emit(chunk);
+          i = res.next;
+          continue;
+        }
+      }
+      emit(src[i]);
+      i += 1;
+    }
+    return { matched: false, next: to, parts, textLen: outLen, entities };
+  }
+  function parseComposerFormats(input) {
+    const src = typeof input === "string" ? input : "";
+    if (!src) return { text: "", entities: [] };
+    const res = parseInlineFormats(src, 0, src.length, 0, null, new Set());
+    return { text: res.parts.join(""), entities: res.entities };
+  }
+  function applyComposerFormat(kind, target) {
+    const t = target || $("text");
+    if (!t) return;
+    const markers = { bold: ["**", "chữ đậm"], italic: ["__", "chữ nghiêng"], code: ["`", "mã"] };
+    const spec = markers[kind];
+    if (!spec) return;
+    const [marker, placeholder] = spec;
+    const value = t.value || "";
+    const start = typeof t.selectionStart === "number" ? t.selectionStart : value.length;
+    const end = typeof t.selectionEnd === "number" ? t.selectionEnd : start;
+    const selected = value.slice(start, end);
+    let nextValue = value;
+    let selStart = start;
+    let selEnd = end;
+    if (!selected) {
+      nextValue = value.slice(0, start) + marker + placeholder + marker + value.slice(end);
+      selStart = start + marker.length;
+      selEnd = selStart + placeholder.length;
+    } else if (selected.startsWith(marker) && selected.endsWith(marker) && selected.length > marker.length * 2) {
+      const inner = selected.slice(marker.length, -marker.length);
+      nextValue = value.slice(0, start) + inner + value.slice(end);
+      selStart = start;
+      selEnd = start + inner.length;
+    } else if (start >= marker.length && value.slice(start - marker.length, start) === marker && value.slice(end, end + marker.length) === marker) {
+      nextValue = value.slice(0, start - marker.length) + selected + value.slice(end + marker.length);
+      selStart = start - marker.length;
+      selEnd = selStart + selected.length;
+    } else {
+      nextValue = value.slice(0, start) + marker + selected + marker + value.slice(end);
+      selStart = start + marker.length;
+      selEnd = selStart + selected.length;
+    }
+    t.value = nextValue;
+    if (typeof t.setSelectionRange === "function") t.setSelectionRange(selStart, selEnd);
+    if (t.style) { t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight || 40, 140) + "px"; }
+    updateComposePreview();
+    if (typeof t.focus === "function") t.focus();
+  }
+  function updateComposePreview() {
+    const preview = $("compose-preview"), t = $("text");
+    if (!preview || !t) return;
+    const raw = t.value || "";
+    if (!raw.trim()) { preview.hidden = true; preview.textContent = ""; return; }
+    const parsed = parseComposerFormats(raw);
+    if (!parsed.entities.length) { preview.hidden = true; preview.textContent = ""; return; }
+    preview.textContent = "";
+    renderText(preview, parsed.text, parsed.entities);
+    preview.hidden = false;
+  }
+
   // ---- gửi / sửa / xoá --------------------------------------------------------------------------
   function setReply(m) { replyTo = m.id; $("reply").style.display = "block"; $("reply-txt").textContent = "↩ " + ((m.text || m.summary).slice(0, 60)); $("text").focus(); }
   $("reply-x").addEventListener("click", () => { replyTo = 0; $("reply").style.display = "none"; });
   async function send() {
-    const t = $("text"), text = t.value; if (!text.trim() || !cur) return; $("send").disabled = true;
-    try { const m = await api("POST", "/api/chats/" + cur + "/send", { text: text, reply_to: replyTo }); t.value = ""; t.style.height = "auto";
+    const t = $("text"), raw = t.value; if (!raw.trim() || !cur) return;
+    const parsed = parseComposerFormats(raw);
+    const body = parsed.text.trim()
+      ? (parsed.entities.length ? { text: parsed.text, entities: parsed.entities, reply_to: replyTo } : { text: parsed.text, reply_to: replyTo })
+      : { text: raw, reply_to: replyTo };
+    $("send").disabled = true;
+    try { const m = await api("POST", "/api/chats/" + cur + "/send", body); t.value = ""; t.style.height = "auto"; updateComposePreview();
       replyTo = 0; $("reply").style.display = "none"; if (m && m.id) appendMessages([Object.assign({}, m, { outgoing: true, date: m.date || Date.now() / 1000 })], false); scheduleChats(); }
     catch (e) { toast(e.message); } finally { $("send").disabled = false; t.focus(); }
   }
   $("send").addEventListener("click", send);
-  $("text").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } });
-  $("text").addEventListener("input", (e) => { e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 140) + "px"; });
+  for (const [id, kind] of [["fmt-bold", "bold"], ["fmt-italic", "italic"], ["fmt-code", "code"]]) {
+    $(id).addEventListener("mousedown", (e) => e.preventDefault());
+    $(id).addEventListener("click", () => applyComposerFormat(kind));
+  }
+  $("text").addEventListener("keydown", (e) => {
+    if ((e.ctrlKey || e.metaKey) && !e.altKey) {
+      const key = (e.key || "").toLowerCase();
+      if (key === "b") { e.preventDefault(); applyComposerFormat("bold"); return; }
+      if (key === "i") { e.preventDefault(); applyComposerFormat("italic"); return; }
+      if (key === "e") { e.preventDefault(); applyComposerFormat("code"); return; }
+    }
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+  });
+  $("text").addEventListener("input", (e) => { e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 140) + "px"; updateComposePreview(); });
   $("attach").addEventListener("click", () => $("file").click());
   $("file").addEventListener("change", async (e) => {
     const f = e.target.files[0]; e.target.value = ""; if (!f || !cur) return;
@@ -1003,6 +1415,8 @@
     syncBrowserAudio(info);
     if (opening) {
       $("call-settings").close();
+      if ($("settings-dialog").open) $("settings-dialog").close();
+      if ($("profile-confirm").open) $("profile-confirm").close();
       callFocus = document.activeElement;
       $("app").inert = true;
       $("call-overlay").hidden = false;
@@ -1450,6 +1864,8 @@
   function showGate(msg, configured, loggedIn) {
     callsReady = false; clearTimeout(pollTimer); hideCall();
     settingsDialog.close();
+    if ($("settings-dialog").open) $("settings-dialog").close();
+    if ($("profile-confirm").open) $("profile-confirm").close();
     $("app").classList.add("locked"); $("placeholder").hidden = true; $("gate").hidden = false;
     $("msgs").hidden = $("composer").hidden = $("head").hidden = $("typing").hidden = true;
     $("gate-setup").hidden = configured !== false;
@@ -1466,7 +1882,8 @@
       const selector = $("account"); selector.textContent = "";
       accounts.forEach((a) => { const option = el("option", "", (a.display_name || a.phone) + " · " + a.status); option.value = a.phone; selector.appendChild(option); });
       selector.value = account;
-      const me = await api("GET", "/api/me"); myId = me.id; $("me").firstChild.textContent = me.name; $("mesub").textContent = me.phone ? "+" + me.phone.replace(/^\+/, "") : "";
+      const me = await api("GET", "/api/me"); myId = me.id; $("me").firstChild.textContent = me.name; $("mesub").textContent = me.phone ? maskPhone(me.phone) : "";
+      loadAppearance().catch(() => {});
       $("app").classList.remove("locked"); $("gate").hidden = true; $("gate-msg").textContent = ""; $("placeholder").hidden = false;
       $("list").textContent = "Đang tải…";
       callsReady = true; watchCall();
@@ -1500,6 +1917,411 @@
   $("gate-login").addEventListener("submit", (event) => submitAuth(event, "login", {
     ten: $("auth-user").value, mat_khau: $("auth-pass").value, ghi_nho: $("remember").checked,
   }));
+  // ---- cài đặt chung, giao diện và hồ sơ --------------------------------------------------------
+  const APPEARANCE_DEFAULTS = { font_family: "system", font_size: 15, theme: "system", bubble_style: "classic", accent: "blue" };
+  const FONT_STACKS = {
+    system: 'system-ui,-apple-system,"Segoe UI",Roboto,sans-serif',
+    sans: '"Noto Sans","Liberation Sans","DejaVu Sans","Segoe UI",Arial,sans-serif',
+    serif: 'Georgia,"Liberation Serif","Times New Roman",serif',
+    mono: 'ui-monospace,"SFMono-Regular","Liberation Mono",Consolas,monospace',
+  };
+  const SETTINGS_LABELS = {
+    profile: "Hồ sơ", appearance: "Giao diện", storage: "Dữ liệu và lưu trữ", calls: "Cuộc gọi", accounts: "Tài khoản",
+    notifications: "Thông báo và âm thanh", privacy: "Quyền riêng tư và bảo mật", folders: "Thư mục hội thoại", devices: "Thiết bị",
+  };
+  const SOON_SECTIONS = {
+    notifications: "Cấu hình âm báo, thông báo nền và ngoại lệ tắt tiếng cho từng hội thoại. Tính năng đang hoàn thiện cho bản cập nhật tới.",
+    privacy: "Quản lý trạng thái hoạt động, quyền gọi/thêm vào nhóm và bảo mật phiên. Tính năng đang hoàn thiện cho bản cập nhật tới.",
+    folders: "Phân loại hội thoại thành các thư mục riêng theo công việc hoặc cá nhân. Tính năng đang hoàn thiện cho bản cập nhật tới.",
+    devices: "Theo dõi và quản lý các phiên đăng nhập Telegram đang hoạt động. Tính năng đang hoàn thiện cho bản cập nhật tới.",
+  };
+  let savedAppearance = { ...APPEARANCE_DEFAULTS };
+  let appearanceDraft = { ...APPEARANCE_DEFAULTS };
+  let appearanceDirty = false;
+  let savedProfile = null;
+  let pendingProfileChanges = null;
+  let settingsSection = "profile";
+  let accountRows = [];
+
+  function maskPhone(raw) {
+    const digits = String(raw || "").replace(/\D/g, "");
+    if (!digits) return "";
+    if (digits.length <= 4) return "+" + "•".repeat(digits.length);
+    if (digits.length <= 6) return "+" + digits.slice(0, 2) + "•".repeat(digits.length - 4) + digits.slice(-2);
+    return "+" + digits.slice(0, 3) + "•".repeat(digits.length - 6) + digits.slice(-3);
+  }
+
+  function normalizeAppearance(raw) {
+    const src = raw && typeof raw === "object" ? raw : {};
+    const size = Number(src.font_size);
+    return {
+      font_family: Object.hasOwn(FONT_STACKS, src.font_family) ? src.font_family : APPEARANCE_DEFAULTS.font_family,
+      font_size: Number.isFinite(size) ? Math.min(20, Math.max(12, Math.round(size))) : APPEARANCE_DEFAULTS.font_size,
+      theme: ["system", "light", "dark"].includes(src.theme) ? src.theme : APPEARANCE_DEFAULTS.theme,
+      bubble_style: ["classic", "rounded", "compact"].includes(src.bubble_style) ? src.bubble_style : APPEARANCE_DEFAULTS.bubble_style,
+      accent: ["blue", "green", "purple", "orange", "pink", "teal"].includes(src.accent) ? src.accent : APPEARANCE_DEFAULTS.accent,
+    };
+  }
+
+  function applyAppearance(raw) {
+    const cfg = normalizeAppearance(raw);
+    const root = document.documentElement;
+    if (root) {
+      if (root.dataset) {
+        root.dataset.theme = cfg.theme;
+        root.dataset.bubble = cfg.bubble_style;
+        root.dataset.accent = cfg.accent;
+      }
+      if (root.style && typeof root.style.setProperty === "function") {
+        root.style.setProperty("--chat-font", FONT_STACKS[cfg.font_family]);
+        root.style.setProperty("--chat-font-size", cfg.font_size + "px");
+      }
+    }
+    return cfg;
+  }
+
+  function renderAppearancePreview() {
+    const box = $("appearance-preview");
+    if (!box) return;
+    box.replaceChildren();
+    const row = el("div", "preview-chat");
+    row.append(el("div", "av", "TG"));
+    const meta = el("div", "meta");
+    const r1 = el("div", "row");
+    r1.append(el("span", "t", "Hội thoại xem trước"), el("span", "d", "12:00"));
+    const r2 = el("div", "row");
+    r2.append(el("span", "p", "Kiểu chữ và cỡ chữ áp dụng cho danh sách"));
+    meta.append(r1, r2);
+    row.append(meta);
+    const msgs = el("div", "preview-msgs");
+    const m1 = el("div", "m");
+    const t1 = el("div", "txt");
+    if (typeof renderText === "function") {
+      renderText(t1, "Xem trước chữ đậm, nghiêng và mã nguồn.", [
+        { type: "bold", offset: 14, length: 3 },
+        { type: "italic", offset: 19, length: 7 },
+        { type: "code", offset: 30, length: 8 },
+      ]);
+    } else {
+      t1.textContent = "Xem trước khung chat.";
+    }
+    m1.append(t1);
+    const m2 = el("div", "m out");
+    m2.append(el("div", "txt", "Bong bóng và màu nhấn cập nhật tức thì."));
+    msgs.append(m1, m2);
+    box.append(row, msgs);
+  }
+
+  function syncAppearanceControls() {
+    $("appearance-font").value = appearanceDraft.font_family;
+    $("appearance-size").value = String(appearanceDraft.font_size);
+    $("appearance-size-value").textContent = appearanceDraft.font_size + " px";
+    $("appearance-size-dec").disabled = appearanceDraft.font_size <= 12;
+    $("appearance-size-inc").disabled = appearanceDraft.font_size >= 20;
+    for (const theme of ["system", "light", "dark"]) {
+      $("theme-" + theme).setAttribute("aria-pressed", String(appearanceDraft.theme === theme));
+    }
+    for (const bubble of ["classic", "rounded", "compact"]) {
+      $("bubble-" + bubble).setAttribute("aria-pressed", String(appearanceDraft.bubble_style === bubble));
+    }
+    for (const accent of ["blue", "green", "purple", "orange", "pink", "teal"]) {
+      $("accent-" + accent).setAttribute("aria-pressed", String(appearanceDraft.accent === accent));
+    }
+  }
+
+  function previewAppearance(patch) {
+    appearanceDraft = applyAppearance({ ...appearanceDraft, ...patch });
+    appearanceDirty = true;
+    $("appearance-status").textContent = "";
+    $("appearance-error").textContent = "";
+    syncAppearanceControls();
+  }
+
+  async function loadAppearance() {
+    try {
+      const data = await api("GET", "/api/settings/appearance");
+      savedAppearance = normalizeAppearance(data);
+    } catch (_) {
+      savedAppearance = normalizeAppearance(APPEARANCE_DEFAULTS);
+    }
+    appearanceDraft = normalizeAppearance(savedAppearance);
+    appearanceDirty = false;
+    applyAppearance(savedAppearance);
+    syncAppearanceControls();
+  }
+
+  function updateBioCounter() {
+    const bio = $("profile-bio").value || "";
+    $("profile-bio-count").textContent = bio.length + "/70";
+  }
+
+  function fillProfileForm(p) {
+    const name = p.name || [p.first_name, p.last_name].filter(Boolean).join(" ").trim() || "Tài khoản Telegram";
+    $("profile-phone-masked").textContent = p.phone_masked || maskPhone(p.phone || "") || "—";
+    $("profile-first-name").value = p.first_name || "";
+    $("profile-last-name").value = p.last_name || "";
+    $("profile-bio").value = p.bio || "";
+    $("profile-username").value = p.username || "";
+    updateBioCounter();
+    $("settings-nav-avatar").textContent = typeof initials === "function" ? initials(name) : name.slice(0, 1).toUpperCase();
+    $("settings-nav-name").textContent = name;
+    const subParts = [];
+    if (p.username) subParts.push("@" + p.username.replace(/^@+/, ""));
+    if (p.phone_masked) subParts.push(p.phone_masked);
+    $("settings-nav-sub").textContent = subParts.join(" · ") || "Chỉnh sửa hồ sơ";
+  }
+
+  async function loadProfile() {
+    $("profile-error").textContent = "";
+    $("profile-status").textContent = "Đang tải hồ sơ…";
+    $("profile-save").disabled = true;
+    try {
+      const data = await api("GET", "/api/profile");
+      savedProfile = {
+        first_name: data.first_name || "",
+        last_name: data.last_name || "",
+        bio: data.bio || "",
+        username: (data.username || "").replace(/^@+/, ""),
+        phone_masked: data.phone_masked || "",
+        name: data.name || "",
+      };
+      fillProfileForm(savedProfile);
+      $("profile-status").textContent = "";
+    } catch (e) {
+      $("profile-status").textContent = "";
+      $("profile-error").textContent = e.message;
+    } finally {
+      $("profile-save").disabled = false;
+    }
+  }
+
+  function validateProfileDraft() {
+    const first = $("profile-first-name").value.trim();
+    const last = $("profile-last-name").value.trim();
+    const bio = $("profile-bio").value.trim();
+    const username = $("profile-username").value.trim().replace(/^@+/, "");
+    if (!first || first.length > 64) {
+      $("profile-error").textContent = "Tên phải từ 1 đến 64 ký tự.";
+      $("profile-first-name").focus();
+      return null;
+    }
+    if (last.length > 64) {
+      $("profile-error").textContent = "Họ tối đa 64 ký tự.";
+      $("profile-last-name").focus();
+      return null;
+    }
+    if (bio.length > 70) {
+      $("profile-error").textContent = "Tiểu sử tối đa 70 ký tự.";
+      $("profile-bio").focus();
+      return null;
+    }
+    if (username && (!/^[A-Za-z][A-Za-z0-9_]{4,31}$/.test(username) || username.endsWith("_") || username.includes("__"))) {
+      $("profile-error").textContent = "Tên người dùng dài 5–32 ký tự (a-z, 0-9, _), bắt đầu bằng chữ cái, không kết thúc bằng _ hoặc chứa __.";
+      $("profile-username").focus();
+      return null;
+    }
+    const base = savedProfile || { first_name: "", last_name: "", bio: "", username: "" };
+    const changes = {};
+    const labels = [];
+    if (first !== base.first_name) { changes.first_name = first; labels.push("Tên: " + first); }
+    if (last !== base.last_name) { changes.last_name = last; labels.push("Họ: " + (last || "(trống)")); }
+    if (bio !== base.bio) { changes.bio = bio; labels.push("Tiểu sử: " + (bio || "(trống)")); }
+    if (username !== base.username) { changes.username = username; labels.push("Tên người dùng: " + (username ? "@" + username : "(xoá)")); }
+    if (!labels.length) {
+      $("profile-status").textContent = "Chưa có thay đổi nào để lưu.";
+      return null;
+    }
+    return { changes, labels };
+  }
+
+  function renderSettingsAccounts() {
+    const selectedLabel = $("account")?.selectedOptions?.[0]?.textContent || account || "Chưa chọn tài khoản";
+    $("settings-accounts-current").textContent = "Tài khoản đang dùng: " + selectedLabel;
+    const box = $("settings-accounts-list");
+    if (!box) return;
+    box.replaceChildren();
+    const options = accountRows.length ? accountRows
+      : Array.from($("account")?.options || $("account")?.children || []).map((o) => ({ phone: o.value, label: o.textContent }));
+    for (const item of options) {
+      const row = el("div", "profile-phone-box");
+      row.append(el("span", "", item.label || item.display_name || item.phone));
+      if (item.phone === account) {
+        row.append(el("span", "soon-badge", "Đang dùng"));
+      } else if (item.phone) {
+        const btn = el("button", "ghost", "Chuyển");
+        btn.type = "button";
+        btn.addEventListener("click", () => {
+          $("account").value = item.phone;
+          $("account").dispatchEvent(new Event("change"));
+        });
+        row.append(btn);
+      }
+      box.append(row);
+    }
+  }
+
+  function setDetailMode(inDetail) {
+    const dialog = $("settings-dialog"), shell = $("settings-shell");
+    if (dialog.classList) dialog.classList.toggle("in-detail", Boolean(inDetail));
+    if (shell.classList) shell.classList.toggle("in-detail", Boolean(inDetail));
+    $("settings-title").textContent = inDetail ? (SETTINGS_LABELS[settingsSection] || "Cài đặt") : "Cài đặt";
+  }
+
+  async function refreshCallsSummary() {
+    const elSummary = $("settings-calls-summary");
+    if (!elSummary) return;
+    try {
+      const s = await api("GET", "/api/live/settings");
+      const showVal = (v) => (typeof concealedSource === "function" ? concealedSource(v || "") : "") || v || "mặc định";
+      elSummary.textContent = "Camera: " + showVal(s.camera) + " · Mic: " + showVal(s.mic) + " · Loa ngoài: " + showVal(s.speaker || "không dùng") + ".";
+    } catch (_) {
+      elSummary.textContent = "Cấu hình nguồn camera, micro và loa ngoài cho các cuộc gọi của tài khoản đang dùng.";
+    }
+  }
+
+  async function refreshStorageSummary() {
+    const elSummary = $("settings-storage-summary");
+    if (!elSummary) return;
+    try {
+      const s = await api("GET", "/api/settings/storage");
+      const modeText = s.mode === "stream" ? "Xem trực tuyến — không giữ lại" : "Lưu cục bộ";
+      elSummary.textContent = "Chế độ hiện tại: " + modeText + ". Quản lý thời hạn giữ phương tiện, ngoại lệ hội thoại và dọn bộ nhớ đệm.";
+    } catch (_) {
+      elSummary.textContent = "Quản lý chế độ lưu tệp, thời hạn giữ phương tiện, ngoại lệ hội thoại và dọn bộ nhớ đệm.";
+    }
+  }
+
+  function selectSettingsSection(section, enterDetail = false) {
+    settingsSection = section;
+    const isSoon = Object.hasOwn(SOON_SECTIONS, section);
+    const activePanel = isSoon ? "soon" : section;
+    for (const name of ["profile", "appearance", "storage", "calls", "accounts", "soon"]) {
+      $("settings-panel-" + name).hidden = name !== activePanel;
+    }
+    if (isSoon) {
+      $("soon-heading").textContent = SETTINGS_LABELS[section] || section;
+      $("soon-description").textContent = SOON_SECTIONS[section];
+    }
+    const navButtons = typeof document.querySelectorAll === "function"
+      ? document.querySelectorAll("#settings-dialog .settings-item")
+      : [];
+    for (const btn of navButtons) {
+      btn.setAttribute("aria-current", btn.dataset.section === section ? "page" : "false");
+    }
+    setDetailMode(enterDetail);
+    if (section === "profile") loadProfile();
+    else if (section === "appearance") syncAppearanceControls();
+    else if (section === "storage") refreshStorageSummary();
+    else if (section === "calls") refreshCallsSummary();
+    else if (section === "accounts") renderSettingsAccounts();
+  }
+
+  $("settings-open").addEventListener("click", () => {
+    renderAppearancePreview();
+    selectSettingsSection("profile", false);
+    $("settings-dialog").showModal();
+  });
+  $("settings-close").addEventListener("click", () => $("settings-dialog").close());
+  $("settings-back").addEventListener("click", () => setDetailMode(false));
+  $("settings-dialog").addEventListener("close", () => {
+    if (appearanceDirty) {
+      appearanceDraft = normalizeAppearance(savedAppearance);
+      appearanceDirty = false;
+      applyAppearance(savedAppearance);
+      syncAppearanceControls();
+    }
+  });
+  $("settings-nav-profile-card").addEventListener("click", () => selectSettingsSection("profile", true));
+  if (typeof document.querySelectorAll === "function") {
+    for (const btn of document.querySelectorAll("#settings-dialog .settings-item")) {
+      btn.addEventListener("click", () => selectSettingsSection(btn.dataset.section, true));
+    }
+  }
+
+  for (const theme of ["system", "light", "dark"]) {
+    $("theme-" + theme).addEventListener("click", () => previewAppearance({ theme }));
+  }
+  for (const bubble of ["classic", "rounded", "compact"]) {
+    $("bubble-" + bubble).addEventListener("click", () => previewAppearance({ bubble_style: bubble }));
+  }
+  for (const accent of ["blue", "green", "purple", "orange", "pink", "teal"]) {
+    $("accent-" + accent).addEventListener("click", () => previewAppearance({ accent }));
+  }
+  $("appearance-font").addEventListener("change", (e) => previewAppearance({ font_family: e.target.value }));
+  $("appearance-size").addEventListener("input", (e) => previewAppearance({ font_size: Number(e.target.value) }));
+  $("appearance-size-dec").addEventListener("click", () => previewAppearance({ font_size: Math.max(12, appearanceDraft.font_size - 1) }));
+  $("appearance-size-inc").addEventListener("click", () => previewAppearance({ font_size: Math.min(20, appearanceDraft.font_size + 1) }));
+  $("appearance-reset").addEventListener("click", () => previewAppearance(APPEARANCE_DEFAULTS));
+  $("appearance-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    $("appearance-error").textContent = "";
+    $("appearance-status").textContent = "Đang lưu…";
+    $("appearance-save").disabled = true;
+    try {
+      const saved = await api("POST", "/api/settings/appearance", appearanceDraft);
+      savedAppearance = normalizeAppearance(saved);
+      appearanceDraft = normalizeAppearance(savedAppearance);
+      appearanceDirty = false;
+      applyAppearance(savedAppearance);
+      syncAppearanceControls();
+      $("appearance-status").textContent = "Đã lưu giao diện cho tài khoản này.";
+    } catch (err) {
+      $("appearance-status").textContent = "";
+      $("appearance-error").textContent = err.message;
+    } finally {
+      $("appearance-save").disabled = false;
+    }
+  });
+
+  $("profile-bio").addEventListener("input", updateBioCounter);
+  $("profile-revert").addEventListener("click", () => {
+    $("profile-error").textContent = "";
+    $("profile-status").textContent = "";
+    if (savedProfile) fillProfileForm(savedProfile);
+  });
+  $("profile-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    $("profile-error").textContent = "";
+    $("profile-status").textContent = "";
+    const validated = validateProfileDraft();
+    if (!validated) return;
+    pendingProfileChanges = validated.changes;
+    const summary = $("profile-confirm-summary");
+    summary.replaceChildren(...validated.labels.map((line) => el("li", "", line)));
+    $("profile-confirm-error").textContent = "";
+    $("profile-confirm").showModal();
+  });
+  $("profile-confirm-cancel").addEventListener("click", () => {
+    pendingProfileChanges = null;
+    $("profile-confirm").close();
+  });
+  $("profile-confirm-ok").addEventListener("click", async () => {
+    if (!pendingProfileChanges) return;
+    const okBtn = $("profile-confirm-ok"), cancelBtn = $("profile-confirm-cancel");
+    okBtn.disabled = cancelBtn.disabled = true;
+    $("profile-confirm-error").textContent = "";
+    try {
+      const updated = await api("POST", "/api/profile", { confirm: true, ...pendingProfileChanges });
+      pendingProfileChanges = null;
+      savedProfile = {
+        first_name: updated.first_name || "",
+        last_name: updated.last_name || "",
+        bio: updated.bio || "",
+        username: (updated.username || "").replace(/^@+/, ""),
+        phone_masked: updated.phone_masked || "",
+        name: updated.name || "",
+      };
+      fillProfileForm(savedProfile);
+      if ($("me")?.firstChild) $("me").firstChild.textContent = savedProfile.name || savedProfile.first_name || "Telegram";
+      $("profile-confirm").close();
+      $("profile-status").textContent = "Đã cập nhật hồ sơ Telegram.";
+    } catch (err) {
+      $("profile-confirm-error").textContent = err.message;
+    } finally {
+      okBtn.disabled = cancelBtn.disabled = false;
+    }
+  });
+  renderAppearancePreview();
   // ---- dữ liệu và lưu trữ ----------------------------------------------------------------------
   const storageChats = [["private", "Riêng tư"], ["groups", "Nhóm"], ["channels", "Kênh"]];
   const storageMedia = [["photo", "Ảnh"], ["video", "Video"], ["file", "Tệp"], ["voice", "Tin thoại"], ["video_note", "Video tròn"], ["gif", "GIF"]];

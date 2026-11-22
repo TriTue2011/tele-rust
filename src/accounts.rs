@@ -138,7 +138,7 @@ impl AccountStore {
         let mut moved=Vec::new();
         if legacy {
             DirBuilder::new().mode(0o700).create(&archive)?;
-            for name in ["files","khoa","tai_khoan.json",crate::storage_settings::FILE] {
+            for name in ["files","khoa","tai_khoan.json",crate::storage_settings::FILE,crate::appearance_settings::FILE] {
                 if source.join(name).exists() {
                     if let Err(error)=fs::rename(source.join(name),archive.join(name)) {
                         for previous in moved.iter().rev() {fs::rename(archive.join(previous),source.join(previous))?;}

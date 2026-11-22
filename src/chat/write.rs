@@ -8,8 +8,67 @@ use crate::contract::TdError;
 use std::time::Duration;
 use uploads::{decode, voice_ogg, Upload, MAX_UPLOAD};
 
+const MAX_ENTITIES: usize = 100;
+
 pub(super) fn formatted_text(text: &str) -> Value {
     json!({"@type":"formattedText","text":text,"entities":[]})
+}
+
+fn is_utf16_boundary(units: &[u16], pos: usize) -> bool {
+    pos == units.len() || !(0xDC00..=0xDFFF).contains(&units[pos])
+}
+
+fn build_entities(text: &str, raw: &[Value]) -> Result<Vec<Value>, GwError> {
+    if raw.len() > MAX_ENTITIES {
+        return Err(GwError::bad_request("Tối đa 100 entity định dạng mỗi tin nhắn."));
+    }
+    let units: Vec<u16> = text.encode_utf16().collect();
+    let mut out = Vec::with_capacity(raw.len());
+    for item in raw {
+        let Some(obj) = item.as_object() else {
+            return Err(GwError::bad_request("Mỗi entity phải là đối tượng JSON."));
+        };
+        let offset = obj.get("offset").and_then(Value::as_u64)
+            .ok_or_else(|| GwError::bad_request("offset của entity phải là số nguyên không âm."))?;
+        let length = obj.get("length").and_then(Value::as_u64).filter(|&n| n >= 1)
+            .ok_or_else(|| GwError::bad_request("length của entity phải là số nguyên dương."))?;
+        let end = offset.checked_add(length)
+            .ok_or_else(|| GwError::bad_request("Phạm vi entity vượt giới hạn."))?;
+        let start_idx = usize::try_from(offset)
+            .map_err(|_| GwError::bad_request("Phạm vi entity vượt giới hạn."))?;
+        let end_idx = usize::try_from(end)
+            .map_err(|_| GwError::bad_request("Phạm vi entity vượt giới hạn."))?;
+        if end_idx > units.len() || !is_utf16_boundary(&units, start_idx) || !is_utf16_boundary(&units, end_idx) {
+            return Err(GwError::bad_request("Phạm vi entity vượt quá độ dài tin hoặc cắt đôi ký tự UTF-16."));
+        }
+        let kind = obj.get("type").and_then(Value::as_str).unwrap_or_default();
+        let td_type = match kind {
+            "bold" => json!({"@type":"textEntityTypeBold"}),
+            "italic" => json!({"@type":"textEntityTypeItalic"}),
+            "underline" => json!({"@type":"textEntityTypeUnderline"}),
+            "strikethrough" => json!({"@type":"textEntityTypeStrikethrough"}),
+            "code" => json!({"@type":"textEntityTypeCode"}),
+            "pre" => match obj.get("language") {
+                None | Some(Value::Null) => json!({"@type":"textEntityTypePre"}),
+                Some(Value::String(lang)) => {
+                    let lang = lang.trim();
+                    if lang.is_empty() {
+                        json!({"@type":"textEntityTypePre"})
+                    } else if lang.chars().count() > 64 || lang.chars().any(char::is_control) {
+                        return Err(GwError::bad_request("language trong entity pre không hợp lệ."));
+                    } else {
+                        json!({"@type":"textEntityTypePreCode","language":lang})
+                    }
+                }
+                Some(_) => return Err(GwError::bad_request("language trong entity pre phải là chuỗi.")),
+            },
+            "spoiler" => json!({"@type":"textEntityTypeSpoiler"}),
+            "blockquote" => json!({"@type":"textEntityTypeBlockQuote"}),
+            _ => return Err(GwError::bad_request("Loại entity không được hỗ trợ.")),
+        };
+        out.push(json!({"@type":"textEntity","offset":offset,"length":length,"type":td_type}));
+    }
+    Ok(out)
 }
 
 fn opt_id(value: &Value, name: &str) -> Result<i64, GwError> {
@@ -47,6 +106,24 @@ impl ChatService {
         self.request(json!({"@type":"parseTextEntities","text":text,"parse_mode":parser})).await
     }
 
+    async fn formatted_input(&self, text: &str, body: &Value) -> Reply {
+        match body.get("entities") {
+            Some(raw) if !raw.is_null() => {
+                let list = raw.as_array().ok_or_else(|| GwError::bad_request("entities phải là danh sách."))?;
+                if list.is_empty() {
+                    return self.formatted(text, &string(&body["parse_mode"])).await;
+                }
+                let mode = string(&body["parse_mode"]);
+                if !mode.trim().is_empty() && !mode.trim().eq_ignore_ascii_case("plain") {
+                    return Err(GwError::bad_request("Không dùng đồng thời parse_mode và entities."));
+                }
+                let entities = build_entities(text, list)?;
+                Ok(json!({"@type":"formattedText","text":text,"entities":entities}))
+            }
+            _ => self.formatted(text, &string(&body["parse_mode"])).await,
+        }
+    }
+
     async fn final_id(&self, id: i64) -> i64 { self.state.final_id(id, Duration::from_secs(8)).await }
 
     async fn reply_to(&self, req: &mut Value, reply: i64) {
@@ -68,7 +145,7 @@ impl ChatService {
                 if text.trim().is_empty() { return Err(GwError::bad_request("Thiếu nội dung tin.")); }
                 if text.chars().count() > 4096 { return Err(GwError::bad_request("Tin quá dài (tối đa 4096 ký tự).")); }
                 let reply = opt_id(&b["reply_to"], "reply_to")?;
-                let ft = self.formatted(&text, &string(&b["parse_mode"])).await?;
+                let ft = self.formatted_input(&text, b).await?;
                 let result = self.send(chat, json!({"@type":"inputMessageText","text":ft,
                     "link_preview_options":{"@type":"linkPreviewOptions","is_disabled":false}}), reply).await?;
                 Ok(message(&result, ""))
@@ -152,7 +229,7 @@ impl ChatService {
                 if text.trim().is_empty() { return Err(GwError::bad_request("Thiếu nội dung mới.")); }
                 let chat = int(&b["chat_id"], "chat_id")?;
                 let id = self.final_id(int(&b["message_id"], "message_id")?).await;
-                let ft = self.formatted(&text, &string(&b["parse_mode"])).await?;
+                let ft = self.formatted_input(&text, b).await?;
                 let m = self.request(json!({"@type":"editMessageText","chat_id":chat,"message_id":id,
                     "input_message_content":{"@type":"inputMessageText","text":ft}})).await?;
                 return Ok(message(&m, ""));

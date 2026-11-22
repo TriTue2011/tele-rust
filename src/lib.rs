@@ -3,6 +3,7 @@
 mod accounts;
 mod account_files;
 mod account_router;
+mod appearance_settings;
 mod login_http;
 mod multi_feed;
 mod storage;
