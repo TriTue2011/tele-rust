@@ -86,3 +86,17 @@ test('TC-B2: nested and crossing formats keep their text, including blocks, ment
   spoiler.dispatchEvent(new Event('click', { cancelable: true }));
   assert.equal(spoiler.className, 'spoiler revealed');
 });
+
+test('TC-B3: service messages render centered .m-service label safely without XSS', () => {
+  const plain = renderMessage({ id: 90, kind: 'service', summary: 'ℹ️ Tin nhắn hệ thống' });
+  assert.equal(plain.tag, 'div');
+  assert.equal(plain.className, 'm-service');
+  assert.equal(plain.dataset.id, 90);
+  assert.equal(plain.textContent, 'ℹ️ Tin nhắn hệ thống');
+  assert.equal(plain.find('button').length, 0);
+
+  const xss = renderMessage({ id: 91, kind: 'service', summary: 'ℹ️ <script>alert(1)</script>' });
+  assert.equal(xss.className, 'm-service');
+  assert.equal(xss.textContent, 'ℹ️ <script>alert(1)</script>');
+  assert.equal(xss.find('script').length, 0);
+});

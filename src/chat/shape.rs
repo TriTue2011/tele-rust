@@ -208,6 +208,81 @@ impl<'a> MessageContext<'a> {
     }
 }
 
+pub(super) const DEFAULT_SERVICE_LABEL: &str = "ℹ️ Tin nhắn hệ thống";
+
+fn with_name(prefix: &str, name: &str, fallback: &str) -> String {
+    let trimmed = name.trim();
+    if trimmed.is_empty() { fallback.into() } else { format!("{prefix} «{trimmed}»") }
+}
+
+fn service_label(ty: &str) -> Option<&'static str> {
+    Some(match ty {
+        // Tin hết hạn & chưa hỗ trợ
+        "messageExpiredPhoto" => "🖼 Ảnh tự huỷ đã hết hạn",
+        "messageExpiredVideo" => "🎬 Video tự huỷ đã hết hạn",
+        "messageExpiredVoiceNote" => "🎤 Tin nhắn thoại tự huỷ đã hết hạn",
+        "messageExpiredVideoNote" => "⏺ Video tròn tự huỷ đã hết hạn",
+        "messageUnsupported" => "⚠️ Tin nhắn chưa được hỗ trợ",
+        // Cuộc gọi nhóm & trò chuyện video
+        "messageGroupCall" => "👥 Cuộc gọi nhóm",
+        "messageVideoChatScheduled" => "📅 Đã lên lịch trò chuyện video",
+        "messageInviteVideoChatParticipants" => "🎥 Đã mời tham gia trò chuyện video",
+        // Quản trị nhóm / hội thoại
+        "messageChatSetBackground" => "🎨 Đã đổi hình nền hội thoại",
+        "messageChatSetTheme" => "🎨 Đã đổi chủ đề hội thoại",
+        "messageChatBoost" => "⚡ Đã tăng cường cho hội thoại",
+        "messageChatShared" => "💬 Đã chia sẻ hội thoại",
+        "messageUsersShared" | "messageUserShared" => "👤 Đã chia sẻ người dùng",
+        "messageChatOwnerLeft" => "👑 Chủ hội thoại đã rời đi",
+        "messageChatOwnerChanged" => "👑 Đã chuyển quyền chủ hội thoại",
+        "messageChatHasProtectedContentDisableRequested" => "🛡 Đã yêu cầu tắt bảo vệ nội dung",
+        // Hệ thống chung / bot / web app / passport / gợi ý
+        "messageProximityAlertTriggered" => "📍 Đã đến gần vị trí",
+        "messageGameScore" => "🏆 Điểm trò chơi",
+        "messageBotWriteAccessAllowed" => "🤖 Đã cấp quyền nhắn tin cho bot",
+        "messageManagedBotCreated" => "🤖 Đã tạo bot được quản lý",
+        "messageWebsiteConnected" => "🌐 Đã kết nối trang web",
+        "messageWebAppDataSent" => "🧩 Đã gửi dữ liệu ứng dụng web",
+        "messageWebAppDataReceived" => "🧩 Đã nhận dữ liệu ứng dụng web",
+        "messagePassportDataSent" => "🪪 Đã gửi dữ liệu Telegram Passport",
+        "messagePassportDataReceived" => "🪪 Đã nhận dữ liệu Telegram Passport",
+        "messageSuggestProfilePhoto" => "🖼 Đã gợi ý ảnh đại diện",
+        "messageSuggestBirthdate" => "🎂 Đã gợi ý ngày sinh",
+        // Thanh toán, Stars, TON, quà tặng, tặng quà
+        "messagePaymentSuccessful" => "💳 Thanh toán thành công",
+        "messagePaymentSuccessfulBot" => "💳 Thanh toán qua bot thành công",
+        "messagePaymentRefunded" => "↩️ Đã hoàn tiền thanh toán",
+        "messageGiftedPremium" => "⭐ Đã tặng Telegram Premium",
+        "messagePremiumGiftCode" => "🎁 Mã quà tặng Telegram Premium",
+        "messageGiftedStars" => "⭐ Đã tặng Sao Telegram",
+        "messageGiftedTon" => "💎 Đã tặng TON",
+        "messageGift" => "🎁 Đã gửi quà tặng",
+        "messageUpgradedGift" => "🎁 Đã nhận quà tặng nâng cấp",
+        "messageRefundedUpgradedGift" => "↩️ Đã hoàn quà tặng nâng cấp",
+        "messageUpgradedGiftPurchaseOffer" => "🎁 Đề nghị mua quà tặng nâng cấp",
+        "messageUpgradedGiftPurchaseOfferRejected" => "❌ Đề nghị mua quà tặng bị từ chối",
+        "messageGiveawayCreated" => "🎉 Đã tạo chương trình tặng quà",
+        "messageGiveaway" => "🎉 Chương trình tặng quà",
+        "messageGiveawayCompleted" => "🎉 Đã kết thúc tặng quà",
+        "messageGiveawayWinners" => "🏆 Công bố người trúng quà",
+        "messageGiveawayPrizeStars" => "⭐ Giải thưởng Sao từ tặng quà",
+        "messagePaidMessagePriceChanged" => "💫 Đã đổi giá tin nhắn trả phí",
+        "messagePaidMessagesRefunded" => "↩️ Đã hoàn phí tin nhắn trả phí",
+        "messageDirectMessagePriceChanged" => "💫 Đã đổi giá tin nhắn trực tiếp",
+        // Công việc, bình chọn, bài đề xuất
+        "messageChecklistTasksDone" => "☑️ Đã hoàn thành mục công việc",
+        "messageChecklistTasksAdded" => "☑️ Đã thêm mục công việc",
+        "messagePollOptionAdded" => "📊 Đã thêm lựa chọn bình chọn",
+        "messagePollOptionDeleted" => "📊 Đã xoá lựa chọn bình chọn",
+        "messageSuggestedPostApprovalFailed" => "❌ Không duyệt được bài đề xuất",
+        "messageSuggestedPostApproved" => "✅ Đã duyệt bài đề xuất",
+        "messageSuggestedPostDeclined" => "❌ Đã từ chối bài đề xuất",
+        "messageSuggestedPostPaid" => "💫 Đã thanh toán bài đề xuất",
+        "messageSuggestedPostRefunded" => "↩️ Đã hoàn tiền bài đề xuất",
+        _ => return None,
+    })
+}
+
 fn content_with_ctx(m: &Value, ctx: &MessageContext<'_>) -> (&'static str, String, Option<Value>) {
     let c = &m["content"];
     let outgoing = truth(&m["is_outgoing"]);
@@ -232,7 +307,24 @@ fn content_with_ctx(m: &Value, ctx: &MessageContext<'_>) -> (&'static str, Strin
         }
         "messagePoll" => ("poll", "📊 Bình chọn".into(), None),
         "messageLocation" => ("location", "📍 Vị trí".into(), None),
+        "messageVenue" => ("location", with_name("📍 Địa điểm", text(&c["venue"]["title"]), "📍 Địa điểm"), None),
         "messageContact" => ("contact", "👤 Danh bạ".into(), None),
+        "messageAnimatedEmoji" => ("other", nonempty(&c["emoji"], "✨ Biểu tượng động").into(), None),
+        "messageDice" => ("other", nonempty(&c["emoji"], "🎲 Xúc xắc").into(), None),
+        "messageStakeDice" => ("other", "🎲 Xúc xắc".into(), None),
+        "messageGame" => ("other", with_name("🎮 Trò chơi", text(&c["game"]["title"]), "🎮 Trò chơi"), None),
+        "messagePaidMedia" => ("other", caption("🔒 Nội dung trả phí"), None),
+        "messageStory" => ("other", "⭕ Tin 24 giờ".into(), None),
+        "messageLiveStory" => ("other", "🔴 Phát trực tiếp".into(), None),
+        "messageChecklist" => (
+            "other",
+            with_name(
+                "☑️ Danh sách việc",
+                nonempty(&c["list"]["title"]["text"], text(&c["list"]["title"])),
+                "☑️ Danh sách việc",
+            ),
+            None,
+        ),
         "messageChatSetMessageAutoDeleteTime" => {
             let sec = c["message_auto_delete_time"].as_i64().unwrap_or(0).max(0);
             let from_uid = c["from_user_id"].as_i64().unwrap_or(0);
@@ -252,6 +344,15 @@ fn content_with_ctx(m: &Value, ctx: &MessageContext<'_>) -> (&'static str, Strin
                 format!("{who} đã đặt hẹn giờ tự hủy cho mọi cuộc trò chuyện sau {}", format_auto_delete_vi(sec))
             } else {
                 format!("{who} đã đặt hẹn giờ tự hủy tin nhắn sau {}", format_auto_delete_vi(sec))
+            };
+            ("service", msg, None)
+        }
+        "messageChatSetTtl" => {
+            let who = ctx.actor(m);
+            let msg = match c["ttl"].as_i64() {
+                Some(sec) if sec <= 0 => format!("{who} đã tắt hẹn giờ tự hủy tin nhắn"),
+                Some(sec) => format!("{who} đã đặt hẹn giờ tự hủy tin nhắn sau {}", format_auto_delete_vi(sec)),
+                None => format!("{who} đã đổi hẹn giờ tự hủy tin nhắn"),
             };
             ("service", msg, None)
         }
@@ -293,19 +394,54 @@ fn content_with_ctx(m: &Value, ctx: &MessageContext<'_>) -> (&'static str, Strin
         "messageChatChangePhoto" => ("service", format!("{} đã đổi ảnh nhóm", ctx.actor(m)), None),
         "messageChatDeletePhoto" => ("service", format!("{} đã xóa ảnh nhóm", ctx.actor(m)), None),
         "messagePinMessage" => ("service", format!("{} đã ghim một tin nhắn", ctx.actor(m)), None),
-        "messageBasicGroupChatCreate" | "messageSupergroupChatCreate" => ("service", format!("{} đã tạo nhóm", ctx.actor(m)), None),
+        "messageBasicGroupChatCreate" | "messageSupergroupChatCreate" => {
+            let actor = ctx.actor(m);
+            let t = text(&c["title"]).trim();
+            let msg = if t.is_empty() {
+                format!("{actor} đã tạo nhóm")
+            } else {
+                format!("{actor} đã tạo nhóm «{t}»")
+            };
+            ("service", msg, None)
+        }
         "messageChatUpgradeTo" | "messageChatUpgradeFrom" => ("service", "Nhóm đã được nâng cấp lên siêu nhóm".into(), None),
         "messageVideoChatStarted" => ("service", format!("{} đã bắt đầu cuộc trò chuyện video", ctx.actor(m)), None),
         "messageVideoChatEnded" => ("service", "Cuộc trò chuyện video đã kết thúc".into(), None),
         "messageScreenshotTaken" => ("service", format!("{} đã chụp ảnh màn hình", ctx.actor(m)), None),
+        "messageForumTopicCreated" => ("service", with_name("💬 Đã tạo chủ đề", text(&c["name"]), "💬 Đã tạo chủ đề"), None),
+        "messageForumTopicEdited" => ("service", with_name("💬 Đã sửa chủ đề thành", text(&c["name"]), "💬 Đã sửa chủ đề"), None),
+        "messageForumTopicIsClosedToggled" => ("service", match c["is_closed"].as_bool() {
+            Some(true) => "🔒 Đã đóng chủ đề",
+            Some(false) => "🔓 Đã mở lại chủ đề",
+            None => "💬 Đã đổi trạng thái chủ đề",
+        }.into(), None),
+        "messageForumTopicIsHiddenToggled" => ("service", match c["is_hidden"].as_bool() {
+            Some(true) => "🙈 Đã ẩn chủ đề",
+            Some(false) => "👁 Đã hiện chủ đề",
+            None => "💬 Đã đổi hiển thị chủ đề",
+        }.into(), None),
+        "messageChatHasProtectedContentToggled" => ("service", match c["has_protected_content"].as_bool() {
+            Some(true) => "🔒 Đã bật bảo vệ nội dung",
+            Some(false) => "🔓 Đã tắt bảo vệ nội dung",
+            None => "🛡 Đã đổi bảo vệ nội dung",
+        }.into(), None),
+        "messageCustomServiceAction" => {
+            let action = text(&c["text"]).trim();
+            ("service", if action.is_empty() { "ℹ️ Thông báo hệ thống".into() } else { format!("ℹ️ {action}") }, None)
+        }
+        "messageInvoice" => (
+            "service",
+            with_name("🧾 Hoá đơn", nonempty(&c["product_info"]["title"], text(&c["title"])), "🧾 Hoá đơn"),
+            None,
+        ),
         "" => ("other", String::new(), None),
-        t => ("other", format!("[{}]", t.replacen("message", "", 1).to_lowercase()), None),
+        t => ("service", service_label(t).unwrap_or(DEFAULT_SERVICE_LABEL).into(), None),
     };
     (kind, summary.trim().into(), call_meta)
 }
 
 fn nonempty<'a>(v: &'a Value, default: &'a str) -> &'a str {
-    v.as_str().filter(|s| !s.is_empty()).unwrap_or(default)
+    v.as_str().map(str::trim).filter(|s| !s.is_empty()).unwrap_or(default)
 }
 
 fn file_info(f: &Value) -> Option<Value> {

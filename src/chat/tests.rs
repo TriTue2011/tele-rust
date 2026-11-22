@@ -9,6 +9,7 @@ type FakeReply = (Value, Result<Value, TdError>);
 mod catalog;
 mod contacts;
 mod info;
+mod shape;
 mod writing;
 
 struct FakeTd {
