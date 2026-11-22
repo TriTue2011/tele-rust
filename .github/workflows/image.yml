@@ -1,0 +1,201 @@
+name: Image
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Thẻ phát hành (tuỳ chọn), ví dụ v0.7.1'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+# Chỉ dựng linux/amd64: nhị phân tĩnh NTgCalls 3.0.7 và wheel PyPI tdjson==1.8.69 chỉ hỗ trợ linux/amd64.
+jobs:
+  verify:
+    name: Dựng thử và kiểm khói ảnh Docker (amd64)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      ref: ${{ steps.meta.outputs.ref }}
+      app_version: ${{ steps.meta.outputs.app_version }}
+      tags: ${{ steps.meta.outputs.tags }}
+    steps:
+      - name: Xác định ref, phiên bản và danh sách thẻ ảnh
+        id: meta
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          GITHUB_REF_FULL: ${{ github.ref }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          TAG=""
+          if [ -n "$INPUT_TAG" ]; then
+            TAG="$INPUT_TAG"
+            REF="$INPUT_TAG"
+          elif [ "$REF_TYPE" = "tag" ]; then
+            TAG="$REF_NAME"
+            REF="$REF_NAME"
+          else
+            REF="$SHA"
+          fi
+
+          if [ -n "$TAG" ]; then
+            if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+              echo "::error::Thẻ không đúng khuôn dạng vX.Y.Z: $TAG"
+              exit 1
+            fi
+            VER="${TAG#v}"
+          else
+            VER="sha-${SHA:0:7}"
+          fi
+
+          IMAGE="ghcr.io/tritue2011/tele-rust"
+          TAGS="${IMAGE}:sha-${SHA:0:7}"
+          if [ -n "$TAG" ] || [ "$GITHUB_REF_FULL" = "refs/heads/main" ]; then
+            TAGS="${TAGS}"$'\n'"${IMAGE}:latest"
+          fi
+          if [ -n "$TAG" ]; then
+            TAGS="${TAGS}"$'\n'"${IMAGE}:${TAG}"$'\n'"${IMAGE}:${VER}"
+          fi
+
+          echo "ref=${REF}" >> "$GITHUB_OUTPUT"
+          echo "app_version=${VER}" >> "$GITHUB_OUTPUT"
+          {
+            echo "tags<<EOF"
+            printf '%s\n' "$TAGS"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.meta.outputs.ref }}
+
+      - name: Kiểm thẻ v* khớp Cargo.toml và Add-on
+        if: startsWith(steps.meta.outputs.app_version, 'sha-') == false
+        env:
+          VER: ${{ steps.meta.outputs.app_version }}
+        run: |
+          python3 -c '
+          import os, re, pathlib
+          tag_ver = os.environ["VER"]
+          cargo = pathlib.Path("Cargo.toml").read_text(encoding="utf-8")
+          m = re.search(r"^\[package\][\s\S]*?^version\s*=\s*\"([^\"]+)\"", cargo, re.M)
+          assert m, "Không tìm thấy version trong Cargo.toml"
+          assert m.group(1) == tag_ver, f"Cargo.toml={m.group(1)} khác tag={tag_ver}"
+          cfg = pathlib.Path("addon/tele-rs/config.yaml").read_text(encoding="utf-8")
+          m2 = re.search(r"^version\s*:\s*\"?([^\s\"]+)\"?", cfg, re.M)
+          assert m2, "Không tìm thấy version trong addon/tele-rs/config.yaml"
+          assert m2.group(1) == tag_ver, f"addon config.yaml={m2.group(1)} khác tag={tag_ver}"
+          print(f"VERSION_MATCH={tag_ver}")
+          '
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          load: true
+          push: false
+          build-args: |
+            APP_VERSION=${{ steps.meta.outputs.app_version }}
+          tags: tele-rust:verify
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Kiểm không-root, TDLib/NTgCalls, công cụ, giấy phép và /health
+        run: |
+          set -euo pipefail
+          UID_NUM="$(docker run --rm --entrypoint id tele-rust:verify -u)"
+          test "$UID_NUM" != "0"
+
+          docker run --rm --entrypoint ffmpeg tele-rust:verify -version >/dev/null
+          docker run --rm --entrypoint ffprobe tele-rust:verify -version >/dev/null
+          docker run --rm --entrypoint edge-tts tele-rust:verify --help >/dev/null
+
+          docker run --rm --entrypoint sh tele-rust:verify -c \
+            'test -s /licenses/LICENSE && test -s /licenses/NOTICE.md && test -s /licenses/QRCODE-LICENSE.txt'
+
+          VER_OUT="$(docker run --rm tele-rust:verify version)"
+          echo "$VER_OUT"
+          echo "$VER_OUT" | grep -q "TDLib 1.8.69"
+
+          PROTO_OUT="$(docker run --rm tele-rust:verify protocol)"
+          echo "$PROTO_OUT"
+          echo "$PROTO_OUT" | grep -q "NTgCalls 3.0.7"
+
+          docker rm -f tele-rust-smoke >/dev/null 2>&1 || true
+          trap 'docker rm -f tele-rust-smoke >/dev/null 2>&1 || true' EXIT
+          docker run -d --name tele-rust-smoke -p 127.0.0.1:13334:3334 \
+            -e GATEWAY_TOKEN=ci-fake-gateway-token \
+            -e TG_API_ID=12345 \
+            -e TG_API_HASH=ci-fake-api-hash \
+            -e TG_UI_USER=ci-user \
+            -e TG_UI_PASSWORD=ci-fake-password-only \
+            tele-rust:verify
+
+          ok=0
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:13334/health | grep -q '"version"'; then
+              ok=1
+              break
+            fi
+            sleep 1
+          done
+          test "$ok" -eq 1
+          LOGS="$(docker logs tele-rust-smoke 2>&1)"
+          for secret in ci-fake-gateway-token ci-fake-api-hash ci-fake-password-only; do
+            if printf '%s' "$LOGS" | grep -qF "$secret"; then
+              echo "::error::Phát hiện bí mật giả trong log container"
+              exit 1
+            fi
+          done
+
+  publish:
+    name: Đẩy ảnh lên GHCR (linux/amd64)
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.verify.outputs.ref }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          push: true
+          build-args: |
+            APP_VERSION=${{ needs.verify.outputs.app_version }}
+          tags: ${{ needs.verify.outputs.tags }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ needs.verify.outputs.app_version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

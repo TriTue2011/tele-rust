@@ -1,0 +1,135 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: Dựng và kiểm thử tele-rust
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cài công cụ hệ thống (cmake, g++, zlib, ffmpeg)
+        run: |
+          for i in 1 2 3; do
+            sudo apt-get update \
+              && sudo apt-get install -y --no-install-recommends \
+                cmake make pkg-config g++ zlib1g-dev ffmpeg \
+              && exit 0
+            sleep 10
+          done
+          exit 1
+
+      - name: Cài Rust 1.90
+        run: |
+          rustup toolchain install 1.90 --profile minimal
+          rustup default 1.90
+          rustc --version
+          cargo --version
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Kiểm tra biên dịch mọi target
+        run: |
+          if [ -f Cargo.lock ]; then
+            cargo check --release --all-targets --locked
+          else
+            cargo check --release --all-targets
+          fi
+
+      - name: Dựng bản phát hành
+        run: |
+          if [ -f Cargo.lock ]; then
+            cargo build --release --locked --bin tggw
+          else
+            cargo build --release --bin tggw
+          fi
+
+      - name: Chạy toàn bộ test Rust
+        run: |
+          if [ -f Cargo.lock ]; then
+            cargo test --release --locked
+          else
+            cargo test --release
+          fi
+
+  web:
+    name: Kiểm thử giao diện (Node) và hợp đồng
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Chạy test Node không cần trình duyệt
+        run: |
+          node --test \
+            tests/build_script_test.cjs \
+            tests/security_test.cjs \
+            tests/web-auto-delete.test.cjs \
+            tests/web-chat-info.test.cjs \
+            tests/web-contacts.test.cjs \
+            tests/web-feed.test.cjs \
+            tests/web-macos-list-calls.test.cjs \
+            tests/web-settings.test.cjs \
+            tests/web-storage-confirm.test.cjs \
+            tests/web-text.test.cjs \
+            tests/web-wysiwyg-themes.test.cjs \
+            tests/readme-matches-code.test.cjs
+
+      - name: Quét tĩnh giao diện web và tự kiểm hợp đồng
+        run: |
+          python3 tests/contract/kiem_web.py
+          python3 tests/contract/kiem_hop_dong.py --self-test
+
+  web-chrome:
+    name: Kiểm thử giao diện trên Chrome headless
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Chuẩn bị Chrome hoặc Chromium headless
+        run: |
+          if command -v google-chrome >/dev/null 2>&1; then
+            echo "CHROME_BIN=$(command -v google-chrome)" >> "$GITHUB_ENV"
+          elif command -v chromium-browser >/dev/null 2>&1; then
+            echo "CHROME_BIN=$(command -v chromium-browser)" >> "$GITHUB_ENV"
+          else
+            sudo apt-get update && sudo apt-get install -y --no-install-recommends chromium-browser
+            echo "CHROME_BIN=$(command -v chromium-browser)" >> "$GITHUB_ENV"
+          fi
+
+      - name: Chạy test Node dùng Chrome headless
+        run: |
+          node --test \
+            tests/web-storage.test.cjs \
+            tests/web-settings-chrome.test.cjs \
+            tests/web-wysiwyg-themes-chrome.test.cjs \
+            tests/web-chat-info-chrome.test.cjs \
+            tests/web-macos-list-calls-chrome.test.cjs

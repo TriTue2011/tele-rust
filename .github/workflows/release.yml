@@ -1,0 +1,126 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Thẻ phát hành đã tồn tại, ví dụ v0.7.1'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Kiểm thẻ khớp Cargo.toml và Add-on
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.t.outputs.tag }}
+      version: ${{ steps.t.outputs.version }}
+    steps:
+      - name: Đọc và kiểm thẻ phát hành
+        id: t
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          TAG="${INPUT_TAG:-$REF_NAME}"
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Thẻ không đúng khuôn dạng vX.Y.Z: $TAG"
+            exit 1
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.t.outputs.tag }}
+
+      - name: Đối chiếu version với Cargo.toml và addon/tele-rs/config.yaml
+        env:
+          TAG_VER: ${{ steps.t.outputs.version }}
+        run: |
+          python3 -c '
+          import os, pathlib, re
+          tag_ver = os.environ["TAG_VER"]
+          cargo = pathlib.Path("Cargo.toml").read_text(encoding="utf-8")
+          m = re.search(r"^\[package\][\s\S]*?^version\s*=\s*\"([^\"]+)\"", cargo, re.M)
+          assert m, "Không tìm thấy version trong Cargo.toml"
+          assert m.group(1) == tag_ver, f"Cargo.toml={m.group(1)} khác tag={tag_ver}"
+
+          addon_cfg = pathlib.Path("addon/tele-rs/config.yaml").read_text(encoding="utf-8")
+          m2 = re.search(r"^version\s*:\s*\"?([^\s\"]+)\"?", addon_cfg, re.M)
+          assert m2, "Không tìm thấy version trong addon/tele-rs/config.yaml"
+          assert m2.group(1) == tag_ver, f"addon config.yaml={m2.group(1)} khác tag={tag_ver}"
+          print(f"RELEASE_VERSION_OK={tag_ver}")
+          '
+
+  publish:
+    name: Tạo GitHub Release (chỉ mã nguồn)
+    needs: check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.check.outputs.tag }}
+          fetch-depth: 0
+
+      - name: Tạo ghi chú từ git log và đóng gói tarball mã nguồn
+        env:
+          TAG: ${{ needs.check.outputs.tag }}
+          VER: ${{ needs.check.outputs.version }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          PREV_TAG="$(git tag --list 'v*' --sort=-v:refname | grep -v -F -x "$TAG" | head -n 1 || true)"
+          if [ -n "$PREV_TAG" ]; then
+            RANGE="${PREV_TAG}..${TAG}"
+            TITLE="Thay đổi từ ${PREV_TAG}"
+          else
+            RANGE="${TAG}"
+            TITLE="Thay đổi đến ${TAG}"
+          fi
+
+          NOTES="$(git log "$RANGE" --no-merges --format='- %s (%h)' | grep -v -E '^- release:' || true)"
+          if [ -z "$NOTES" ]; then
+            NOTES="- (Không có commit mới ngoài commit phát hành)"
+          fi
+
+          mkdir -p dist
+          ARCHIVE="tele-rust-${TAG}-src.tar.gz"
+          git archive --format=tar.gz --prefix="tele-rust-${TAG}/" -o "dist/${ARCHIVE}" "$TAG"
+          (cd dist && sha256sum "${ARCHIVE}" > "${ARCHIVE}.sha256")
+
+          cat > release_body.md <<EOF
+          ## ${TITLE}
+
+          ${NOTES}
+
+          ## Ảnh Docker và Add-on Home Assistant
+
+          - **Ảnh Docker (\`linux/amd64\`):** \`ghcr.io/tritue2011/tele-rust:${TAG}\` (cùng thẻ \`:${VER}\` và \`:latest\`).
+          - **Add-on Home Assistant:** cập nhật trực tiếp từ kho \`https://github.com/${REPO}\`.
+          - **Lưu ý giấy phép:** Bản phát hành chỉ đính kèm tarball mã nguồn (không kèm nhị phân trần)
+            vì NTgCalls \`3.0.7\` được liên kết tĩnh theo LGPL-3.0; xem hướng dẫn liên kết lại trong \`NOTICE.md\`.
+          - **macOS:** chưa hỗ trợ ở phiên bản này (TDLib và NTgCalls cho macOS chưa kiểm chứng).
+          EOF
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.check.outputs.tag }}
+          name: ${{ needs.check.outputs.tag }}
+          body_path: release_body.md
+          fail_on_unmatched_files: true
+          files: |
+            dist/*.tar.gz
+            dist/*.sha256

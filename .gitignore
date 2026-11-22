@@ -1,4 +1,14 @@
-target/
-tham-khao-anh/
+.h2-build-test-*/
 .tggw-build-host
+BAN-GIAO*.md
+BAO-CAO-TEST*.md
+BRIEF*
+BRIEF*.md
+HOAN-TAT*
+KE-HOACH-TEST*.md
+KET-QUA*
+THIET-KE*.md
+target/
 tests/.*-browser-*/
+tham-khao*/
+tham-khao-anh/
