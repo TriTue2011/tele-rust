@@ -174,7 +174,7 @@ test('TC-CAIDAT: khung cài đặt 390/700 px, giao diện, hồ sơ, định d�
   // 3. Hồ sơ: che số điện thoại, chống XSS, xác nhận trước khi lưu.
   await evaluate('document.querySelector(\'#settings-dialog [data-section="profile"]\').click()');
   await until('document.getElementById("profile-phone-masked").textContent === "+849•••••000"');
-  assert.equal(await evaluate('document.getElementById("settings-dialog").querySelector("em") === null'), true);
+  assert.equal(await evaluate('document.getElementById("settings-panel-profile").querySelector("em") === null'), true);
   await evaluate(`{
     document.getElementById('profile-first-name').value = 'Minh';
     document.getElementById('profile-bio').value = 'Tiểu sử mới';
@@ -206,16 +206,23 @@ test('TC-CAIDAT: khung cài đặt 390/700 px, giao diện, hồ sơ, định d�
   await click('call-settings-close');
   await click('settings-close');
 
-  // 6. Chiều gửi định dạng chữ đậm + preview + entities trong khung chat.
+  // 6. Chiều gửi định dạng WYSIWYG chữ đậm (không chèn '*') + entities trong khung chat.
   await evaluate('document.querySelector("#list .chat").click()');
   await until('document.getElementById("composer").hidden === false');
   await evaluate(`{
     const t = document.getElementById('text');
-    t.value = 'Xin chào';
-    t.setSelectionRange(4, 8);
+    t.focus();
+    t.textContent = 'Xin chào';
+    const r = document.createRange();
+    r.setStart(t.firstChild, 4);
+    r.setEnd(t.firstChild, 8);
+    const s = window.getSelection();
+    s.removeAllRanges();
+    s.addRange(r);
     document.getElementById('fmt-bold').click();
   }`);
-  assert.equal(await evaluate('document.querySelector("#compose-preview strong")?.textContent'), 'chào');
+  assert.equal(await evaluate('document.getElementById("text").textContent.includes("*")'), false);
+  assert.equal(await evaluate('document.querySelector("#text strong")?.textContent'), 'chào');
   await click('send');
   await until('document.querySelectorAll("#msgs .m").length === 1');
   const sendWrite = (await writes()).at(-1);

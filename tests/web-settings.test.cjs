@@ -24,17 +24,34 @@ class MockClassList {
   contains(name) { return this.set.has(name); }
 }
 
+class MockText {
+  constructor(text = '') {
+    this.nodeType = 3;
+    this.nodeValue = String(text);
+    this.parentNode = null;
+  }
+  get textContent() { return this.nodeValue; }
+  set textContent(v) { this.nodeValue = String(v ?? ''); }
+}
+
 class MockNode extends EventTarget {
   constructor(tag = 'div', className = '', text = '') {
     super();
-    this.tag = tag;
+    this.nodeType = 1;
+    this.tag = String(tag).toLowerCase();
+    this.tagName = this.tag.toUpperCase();
     this.className = className;
-    this.children = text === undefined || text === '' ? [] : [text];
+    this.children = [];
+    this.parentNode = null;
     this.attributes = new Map();
     this.dataset = {};
     this.classList = new MockClassList();
     this.style = {
       props: new Map(),
+      fontWeight: '',
+      fontStyle: '',
+      textDecoration: '',
+      textDecorationLine: '',
       setProperty(k, v) { this.props.set(k, v); },
       getPropertyValue(k) { return this.props.get(k) || ''; },
     };
@@ -46,17 +63,33 @@ class MockNode extends EventTarget {
     this.selectionStart = 0;
     this.selectionEnd = 0;
     this.scrollHeight = 40;
-    this.firstChild = { textContent: '' };
+    this._firstChild = { textContent: '' };
+    if (text !== undefined && text !== '') {
+      this.appendChild(new MockText(text));
+    }
   }
+  get childNodes() { return this.children; }
+  get firstChild() { return this.children[0] || this._firstChild; }
   get textContent() { return this.children.map((c) => (typeof c === 'string' ? c : c.textContent)).join(''); }
-  set textContent(v) { this.children = v === '' || v === undefined || v === null ? [] : [String(v)]; }
+  set textContent(v) {
+    this.children = [];
+    if (v !== '' && v !== undefined && v !== null) this.appendChild(new MockText(String(v)));
+  }
   get selectedOptions() {
     const picked = this.children.find((c) => c.value === this.value);
     return picked ? [picked] : (this.children[0] ? [this.children[0]] : []);
   }
-  append(...nodes) { this.children.push(...nodes); }
-  appendChild(node) { this.children.push(node); return node; }
-  replaceChildren(...nodes) { this.children = nodes; }
+  append(...nodes) { for (const n of nodes) this.appendChild(n); }
+  appendChild(node) {
+    const item = typeof node === 'string' ? new MockText(node) : node;
+    if (item && typeof item === 'object') item.parentNode = this;
+    this.children.push(item);
+    return item;
+  }
+  replaceChildren(...nodes) {
+    this.children = [];
+    for (const n of nodes) this.appendChild(n);
+  }
   setAttribute(k, v) { this.attributes.set(k, String(v)); }
   getAttribute(k) { return this.attributes.get(k); }
   removeAttribute(k) { this.attributes.delete(k); }
@@ -66,21 +99,29 @@ class MockNode extends EventTarget {
   focus() { this.focused = true; }
   click() { this.dispatchEvent(new Event('click')); }
   find(tag) {
-    return this.children.flatMap((c) => (c instanceof MockNode ? [...(c.tag === tag ? [c] : []), ...c.find(tag)] : []));
+    const t = String(tag).toLowerCase();
+    return this.children.flatMap((c) => (c instanceof MockNode ? [...(c.tag === t ? [c] : []), ...c.find(t)] : []));
   }
 }
 
 function setupComposerHarness() {
   const nodes = new Map();
-  for (const id of ['text', 'send', 'reply', 'reply-txt', 'reply-x', 'attach', 'file', 'compose-preview', 'fmt-bold', 'fmt-italic', 'fmt-code']) {
-    nodes.set(id, new MockNode(id === 'text' ? 'textarea' : 'div'));
+  for (const id of ['text', 'send', 'reply', 'reply-txt', 'reply-x', 'attach', 'file',
+    'fmt-bold', 'fmt-italic', 'fmt-underline', 'fmt-strike', 'fmt-code', 'fmt-clear']) {
+    nodes.set(id, new MockNode('div'));
   }
   const posts = [];
   const appended = [];
+  const doc = {
+    createTextNode: (t) => new MockText(String(t)),
+    createElement: (tag) => new MockNode(tag),
+    createDocumentFragment: () => new MockNode('fragment'),
+    getSelection: () => null,
+  };
   const ctx = {
     $: (id) => nodes.get(id) || (nodes.set(id, new MockNode()), nodes.get(id)),
     el: (tag, cls, text) => new MockNode(tag, cls, text),
-    document: { createTextNode: (t) => String(t) },
+    document: doc,
     URL,
     curKind: 'private',
     hhmm: () => '12:00',
@@ -93,15 +134,10 @@ function setupComposerHarness() {
     appendMessages: (list) => appended.push(...list),
     scheduleChats: () => {},
     toast: () => {},
-    Set,
-    Event,
-    Date,
-    Math,
-    Number,
-    Object,
+    Set, Map, Event, Date, Math, Number, Object, Array, String, Boolean, JSON, RegExp,
   };
   vm.runInNewContext(
-    `${rendererCode}\n${composerCode}\nthis.exports = { parseComposerFormats, applyComposerFormat, renderText, send };`,
+    `${rendererCode}\n${composerCode}\nthis.exports = { extractComposerContent, applyComposerFormat, renderText, send };`,
     ctx,
   );
   return { ...ctx.exports, nodes, posts, appended };
@@ -231,10 +267,20 @@ test('web/app.html sạch bảo mật, không có chuỗi cấm và giữ nguyê
 
 const clone = (v) => structuredClone(v);
 
-test('định dạng soạn tin tạo đúng UTF-16 entities, bảo vệ URL/biến/XSS và gửi qua /send', async () => {
-  const { parseComposerFormats, applyComposerFormat, renderText, send, nodes, posts } = setupComposerHarness();
+test('định dạng soạn tin WYSIWYG tạo đúng UTF-16 entities, giữ nguyên ** tự gõ, chống XSS và gửi qua /send', async () => {
+  const { extractComposerContent, renderText, send, nodes, posts } = setupComposerHarness();
+  const makeEl = (tag, ...items) => {
+    const n = new MockNode(tag);
+    for (const item of items) {
+      if (typeof item === 'string') n.appendChild(new MockText(item));
+      else n.appendChild(item);
+    }
+    return n;
+  };
 
-  const parsed = parseComposerFormats('🌙 **Chào** __bạn__ `code`');
+  const parsed = extractComposerContent(
+    makeEl('div', '🌙 ', makeEl('strong', 'Chào'), ' ', makeEl('em', 'bạn'), ' ', makeEl('code', 'code')),
+  );
   assert.equal(parsed.text, '🌙 Chào bạn code');
   assert.deepEqual(clone(parsed.entities), [
     { type: 'bold', offset: 3, length: 4 },
@@ -242,8 +288,12 @@ test('định dạng soạn tin tạo đúng UTF-16 entities, bảo vệ URL/bi�
     { type: 'code', offset: 12, length: 4 },
   ]);
 
-  const nested = parseComposerFormats('**Đậm __lồng__** và ```sh\nls -la\n```');
-  assert.equal(nested.text, 'Đậm lồng và ls -la');
+  const preNode = makeEl('pre', 'ls -la');
+  preNode.dataset.language = 'sh';
+  const nested = extractComposerContent(
+    makeEl('div', makeEl('strong', 'Đậm ', makeEl('em', 'lồng')), ' và', preNode),
+  );
+  assert.equal(nested.text, 'Đậm lồng và\nls -la');
   assert.deepEqual(clone(nested.entities), [
     { type: 'bold', offset: 0, length: 8 },
     { type: 'italic', offset: 4, length: 4 },
@@ -256,40 +306,25 @@ test('định dạng soạn tin tạo đúng UTF-16 entities, bảo vệ URL/bi�
   assert.equal(previewNode.find('strong')[0]?.find('em')[0]?.textContent, 'lồng');
   assert.equal(previewNode.find('pre')[0]?.find('code')[0]?.dataset.language, 'sh');
 
-  const safePlain = parseComposerFormats('https://example.test/a__b__c và ten_bien_1 và 2 * 3 * 4');
-  assert.deepEqual(clone(safePlain.entities), []);
-  assert.equal(safePlain.text, 'https://example.test/a__b__c và ten_bien_1 và 2 * 3 * 4');
+  const literal = extractComposerContent(makeEl('div', '**giữ nguyên** và https://example.test/a__b__c'));
+  assert.deepEqual(clone(literal.entities), []);
+  assert.equal(literal.text, '**giữ nguyên** và https://example.test/a__b__c');
 
-  const xss = parseComposerFormats('**<script>alert(1)</script>**');
+  const xss = extractComposerContent(makeEl('div', makeEl('strong', '<script>alert(1)</script>')));
   const xssNode = new MockNode('div');
   renderText(xssNode, xss.text, xss.entities);
   assert.equal(xssNode.find('script').length, 0);
   assert.equal(xssNode.find('strong')[0]?.textContent, '<script>alert(1)</script>');
 
   const input = nodes.get('text');
-  input.value = 'Xin chào';
-  input.setSelectionRange(4, 8);
-  const keyEvent = new Event('keydown');
-  keyEvent.ctrlKey = true;
-  keyEvent.key = 'b';
-  keyEvent.preventDefault = () => {};
-  input.dispatchEvent(keyEvent);
-  assert.equal(input.value, 'Xin **chào**');
-  assert.equal(nodes.get('compose-preview').hidden, false);
-  assert.equal(nodes.get('compose-preview').find('strong')[0]?.textContent, 'chào');
-
-  // Bấm lại Ctrl+B gỡ bọc định dạng.
-  input.dispatchEvent(keyEvent);
-  assert.equal(input.value, 'Xin chào');
-  assert.equal(nodes.get('compose-preview').hidden, true);
-
-  applyComposerFormat('italic', input);
+  input.appendChild(new MockText('Xin '));
+  input.appendChild(makeEl('em', 'chào'));
   await send();
   assert.equal(posts.length, 1);
   assert.equal(posts[0].path, '/api/chats/42/send');
   assert.equal(posts[0].body.text, 'Xin chào');
   assert.deepEqual(posts[0].body.entities, [{ type: 'italic', offset: 4, length: 4 }]);
-  assert.equal(nodes.get('compose-preview').hidden, true);
+  assert.equal(input.textContent, '');
 });
 
 test('khung cài đặt điều hướng 2 bước, mục sắp có trung thực, giao diện áp ngay và hoàn tác khi chưa lưu', async () => {
