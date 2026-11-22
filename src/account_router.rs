@@ -1,5 +1,5 @@
 //! Tách dịch vụ, phiên và cập nhật theo tài khoản; không đổi các hợp đồng backend.
-use std::{collections::BTreeMap, path::PathBuf, sync::{Arc, Mutex, RwLock, atomic::{AtomicBool, Ordering}}, time::Duration};
+use std::{collections::BTreeMap, path::PathBuf, sync::{Arc, Mutex, RwLock, atomic::{AtomicBool, AtomicU64, Ordering}}, time::Duration};
 use serde_json::{json, Value};
 use crate::{accounts::AccountStore, calls::CallManager, chat::ChatService,
     contract::{AudioOut, Binary, BoxFut, CallControl, CastAudio, ChatControl, GwError, TdLink},
@@ -11,7 +11,7 @@ pub(crate) struct Entry {
     storage_lock: tokio::sync::RwLock<()>,
     sweep_lock: tokio::sync::Mutex<()>,
     settings_lock: tokio::sync::Mutex<()>,
-    storage_changed: Arc<tokio::sync::Notify>,
+    storage_generation: Arc<AtomicU64>,
     storage_report: Mutex<crate::storage::Report>,
     chat: Arc<ChatService>,
     calls: CallManager,
@@ -72,13 +72,41 @@ impl Entry {
                 return Err(GwError::new(409, "STORAGE_BUSY", "Bộ nhớ đệm đang được bảo vệ trong lúc gọi."));
             }
             if let Some(scope) = scope {
-                crate::storage::clear(self.client.as_ref(), scope, &mut report).await
+                match scope {
+                    crate::storage::Clear::Chat(_) => {
+                        let cancelled = || !self.ready.load(Ordering::Acquire);
+                        crate::storage::clear_with_policy(self.client.as_ref(), scope, &[], &mut report, &cancelled).await
+                    }
+                    scope @ (crate::storage::Clear::All | crate::storage::Clear::Types(_)) => {
+                        let start_gen = self.storage_generation.load(Ordering::Acquire);
+                        let policy = crate::storage::settings(&self.session).await?;
+                        let forever = crate::storage::forever_exceptions(&policy)?;
+                        let cancelled = || {
+                            self.storage_generation.load(Ordering::Acquire) != start_gen
+                                || !self.ready.load(Ordering::Acquire)
+                        };
+                        crate::storage::clear_with_policy(self.client.as_ref(), scope, &forever, &mut report, &cancelled).await?;
+                        if report.policy_changed() {
+                            return Err(GwError::new(
+                                409,
+                                "STORAGE_POLICY_CHANGED",
+                                "Chính sách lưu trữ vừa thay đổi; hãy kiểm tra lại trước khi xoá.",
+                            ));
+                        }
+                        Ok(())
+                    }
+                }
             } else {
+                let start_gen = self.storage_generation.load(Ordering::Acquire);
                 let policy = crate::storage::settings(&self.session).await?;
                 if crate::storage::policy_is_noop(&policy)? {
                     return Ok(());
                 }
-                crate::storage::run(self.client.as_ref(), &policy, &mut report).await
+                let cancelled = || {
+                    self.storage_generation.load(Ordering::Acquire) != start_gen
+                        || !self.ready.load(Ordering::Acquire)
+                };
+                crate::storage::run_cancellable(self.client.as_ref(), &policy, &mut report, &cancelled).await
             }
         }.await;
         if let Err(ref err) = result { report.failed(&err.code); }
@@ -201,11 +229,10 @@ impl Accounts {
         let entry = Arc::new(Entry { client, session, chat: Arc::new(ChatService::with_events(td, phone, service_dir, Some(events.sink.clone())).follow_calls(calls.events())),
             calls, ready: AtomicBool::new(ready), events: tokio::sync::Mutex::new(Some(events)), call_events,
             storage_lock: tokio::sync::RwLock::new(()), sweep_lock: tokio::sync::Mutex::new(()),
-            settings_lock: tokio::sync::Mutex::new(()), storage_changed: Arc::new(tokio::sync::Notify::new()),
+            settings_lock: tokio::sync::Mutex::new(()), storage_generation: Arc::new(AtomicU64::new(0)),
             storage_report: Mutex::new(crate::storage::Report::new()), storage_task: std::sync::OnceLock::new() });
         let task_entry = Arc::downgrade(&entry);
         let mut updates = entry.client.updates();
-        let changed = entry.storage_changed.clone();
         let _ = entry.storage_task.set(tokio::spawn(async move {
             let period = Duration::from_secs(600);
             let mut clock = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
@@ -213,7 +240,6 @@ impl Accounts {
             loop {
                 let update = tokio::select! {
                     _ = clock.tick() => None,
-                    _ = changed.notified() => None,
                     update = updates.recv() => match update {
                         Ok(update) if update["@type"] == "updateNewMessage" => Some(update),
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
@@ -435,20 +461,23 @@ impl Accounts {
                     let _write = entry.settings_lock.lock().await;
                     if !entry.ready.load(Ordering::Acquire) { return Err(offline()); }
                     let dir = entry.session.clone();
-                    let saved = tokio::task::spawn_blocking(move || {
+                    let generation = entry.storage_generation.clone();
+                    tokio::task::spawn_blocking(move || {
                         let current = crate::storage_settings::load(&dir)
                             .map_err(|_| crate::storage::settings_error())?;
-                        if current["mode"] == "local" && clean["mode"] == "stream" && !confirmed {
-                            return Err(GwError::bad_request(
-                                "Chuyển sang chế độ xem trực tuyến cần confirm=true vì tệp cục bộ sẽ bị dọn sau thời hạn.",
-                            ));
+                        if crate::storage_settings::is_tightening(&current, &clean) && !confirmed {
+                            let message = if current["mode"] == "local" && clean["mode"] == "stream" {
+                                "Chuyển sang chế độ xem trực tuyến cần confirm=true vì tệp cục bộ sẽ bị dọn sau thời hạn."
+                            } else {
+                                "Thay đổi làm chặt chính sách lưu trữ cần confirm=true vì dữ liệu vượt giới hạn mới sẽ bị dọn trong lượt tới."
+                            };
+                            return Err(GwError::bad_request(message));
                         }
                         crate::storage_settings::save(&dir, &clean)
                             .map_err(|_| crate::storage::settings_error())?;
+                        generation.fetch_add(1, Ordering::Release);
                         Ok(clean)
-                    }).await.map_err(|_| crate::storage::settings_error())?;
-                    if saved.is_ok() { entry.storage_changed.notify_one(); }
-                    saved
+                    }).await.map_err(|_| crate::storage::settings_error())?
                 }).await.map_err(|_| crate::storage::settings_error())?;
             }
             return Ok(crate::storage::settings_read_only(&e.session).await);

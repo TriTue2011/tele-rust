@@ -640,16 +640,20 @@ async fn switching_local_to_stream_requires_confirm_and_delays_janitor_until_con
     assert!(saved.get("confirm").is_none());
     assert!(crate::storage_settings::load(file.parent().unwrap()).unwrap().get("confirm").is_none());
 
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
-    loop {
-        if f.api.sent.lock().unwrap().iter().any(|(_, req)| req["@type"] == "optimizeStorage" && req["ttl"] == 600) {
-            break;
-        }
-        assert!(tokio::time::Instant::now() < deadline);
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
+    // M1: lưu cấu hình không tự kích hoạt dọn ngay sau lưu; lượt dọn chạy theo lịch.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!f.api.sent.lock().unwrap().iter().any(|(_, req)| req["@type"] == "optimizeStorage"));
+
+    let (_, entry) = f.hub.select(phone).unwrap();
+    entry.storage_sweep(None).await.unwrap();
+    assert!(f.api.sent.lock().unwrap().iter().any(|(_, req)| req["@type"] == "optimizeStorage" && req["ttl"] == 600));
 
     settings["stream_ttl_s"] = json!(300);
+    assert_eq!(f.send("POST", "/api/settings/storage", settings.clone()).await.0, 400);
+    let mut confirm_ttl = settings.clone();
+    confirm_ttl["confirm"] = json!(true);
+    assert_eq!(f.send("POST", "/api/settings/storage", confirm_ttl).await.0, 200);
+    settings["stream_ttl_s"] = json!(600);
     assert_eq!(f.send("POST", "/api/settings/storage", settings.clone()).await.0, 200);
     settings["mode"] = json!("local");
     assert_eq!(f.send("POST", "/api/settings/storage", settings).await.0, 200);
@@ -787,7 +791,7 @@ async fn storage_routes_enforce_auth_and_cookie_csrf() {
 
     let (_, settings) = send(&router, "GET", "/api/settings/storage", Value::Null, true).await;
     let mut next_settings = settings.clone();
-    next_settings["max_cache_bytes"] = json!(500 * 1024 * 1024_u64);
+    next_settings["max_cache_bytes"] = json!(5 * 1024 * 1024 * 1024_u64);
 
     // Cookie ghi thiếu CSRF hoặc sai Origin -> 403.
     let send_cookie = |method: &'static str, path: &'static str, body: Value, extra: Vec<(&'static str, &'static str)>| {
@@ -896,5 +900,159 @@ async fn multi_account_storage_routes_require_explicit_account_parameter() {
     assert_eq!(f.send("GET", "/api/storage/usage", Value::Null).await.0, 400);
     assert_eq!(f.send("GET", "/api/storage/usage?account=test-storage-acc1", Value::Null).await.0, 200);
     assert_eq!(f.send("GET", "/api/storage/usage?account=test-storage-unknown", Value::Null).await.0, 404);
+    f.finish().await;
+}
+
+#[tokio::test]
+async fn tightening_storage_policy_requires_confirm_and_never_triggers_immediate_sweep() {
+    let f = Fixture::new("storage-tighten").await;
+    let phone = "test-storage-tighten";
+    f.ready(phone).await;
+    *f.api.storage_stats.lock().unwrap() = json!({
+        "@type":"storageStatistics","size":100,"count":1,
+        "by_chat":[{"chat_id":7,"size":100,"count":1,"by_file_type":[]}]
+    });
+
+    let (_, mut settings) = f.send("GET", "/api/settings/storage", Value::Null).await;
+    // Giảm thời hạn giữ hoặc giới hạn bộ nhớ đệm thiếu confirm -> 400.
+    let mut shorter_keep = settings.clone();
+    shorter_keep["keep"]["private"] = json!(86400);
+    assert_eq!(f.send("POST", "/api/settings/storage", shorter_keep.clone()).await.0, 400);
+    assert_eq!(f.send("GET", "/api/settings/storage", Value::Null).await.1["keep"]["private"], 604800);
+
+    shorter_keep["confirm"] = json!(true);
+    assert_eq!(f.send("POST", "/api/settings/storage", shorter_keep).await.0, 200);
+
+    let mut smaller_cache = f.send("GET", "/api/settings/storage", Value::Null).await.1;
+    smaller_cache["max_cache_bytes"] = json!(500 * 1024 * 1024_u64);
+    assert_eq!(f.send("POST", "/api/settings/storage", smaller_cache.clone()).await.0, 400);
+    smaller_cache["confirm"] = json!(true);
+    assert_eq!(f.send("POST", "/api/settings/storage", smaller_cache).await.0, 200);
+
+    // Nới lỏng và thêm ngoại lệ Mãi mãi không cần confirm -> 200.
+    settings["max_cache_bytes"] = json!(5 * 1024 * 1024 * 1024_u64);
+    settings["exceptions"] = json!([{"chat_id":43,"keep":null}]);
+    assert_eq!(f.send("POST", "/api/settings/storage", settings.clone()).await.0, 200);
+
+    // Gỡ ngoại lệ Mãi mãi khi chính sách còn giới hạn -> 400 nếu thiếu confirm.
+    settings["exceptions"] = json!([]);
+    assert_eq!(f.send("POST", "/api/settings/storage", settings.clone()).await.0, 400);
+    settings["confirm"] = json!(true);
+    assert_eq!(f.send("POST", "/api/settings/storage", settings).await.0, 200);
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!f.api.sent.lock().unwrap().iter().any(|(_, req)| req["@type"] == "optimizeStorage"));
+    f.finish().await;
+}
+
+#[tokio::test]
+async fn saving_forever_exception_during_active_sweep_aborts_before_deleting_that_chat() {
+    let f = Fixture::new("storage-mid-sweep").await;
+    let phone = "test-storage-mid-sweep";
+    f.ready(phone).await;
+    let (_, entry) = f.hub.select(phone).unwrap();
+
+    let mut initial = crate::storage_settings::safe_default();
+    initial["keep"] = json!({"private":86400,"groups":604800,"channels":null});
+    initial["confirm"] = json!(true);
+    assert_eq!(f.send("POST", "/api/settings/storage", initial).await.0, 200);
+
+    *f.api.storage_chats.lock().unwrap() = [
+        (40_i64, json!({"@type":"chatTypePrivate"})),
+        (41_i64, json!({"@type":"chatTypeBasicGroup"})),
+        (42_i64, json!({"@type":"chatTypeBasicGroup"})),
+    ].into_iter().collect();
+    *f.api.storage_stats.lock().unwrap() = json!({
+        "@type":"storageStatistics","size":200,"count":2,
+        "by_chat":[
+            {"chat_id":40,"size":100,"count":1,"by_file_type":[]},
+            {"chat_id":41,"size":100,"count":1,"by_file_type":[]}
+        ]
+    });
+    *f.api.optimize_delay.lock().unwrap() = Some(Duration::from_millis(250));
+    f.api.sent.lock().unwrap().clear();
+
+    let sweep_entry = entry.clone();
+    let sweep = tokio::spawn(async move { sweep_entry.storage_sweep(None).await });
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    while !f.api.sent.lock().unwrap().iter().any(|(_, req)| req["@type"] == "optimizeStorage") {
+        assert!(tokio::time::Instant::now() < deadline);
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+
+    let mut updated = f.send("GET", "/api/settings/storage", Value::Null).await.1;
+    updated["exceptions"] = json!([{"chat_id":41,"keep":null}]);
+    assert_eq!(f.send("POST", "/api/settings/storage", updated).await.0, 200);
+
+    sweep.await.unwrap().unwrap();
+    let optimize_reqs: Vec<_> = f.api.sent.lock().unwrap().iter()
+        .filter(|(_, req)| req["@type"] == "optimizeStorage")
+        .map(|(_, req)| req.clone())
+        .collect();
+    assert_eq!(optimize_reqs.len(), 1);
+    assert_eq!(optimize_reqs[0]["chat_ids"], json!([40]));
+
+    let (_, janitor) = f.send("GET", "/api/storage/janitor", Value::Null).await;
+    assert_eq!(janitor["policy_changed"], true);
+    assert!(janitor["error"].is_null());
+
+    // Lượt dọn kế tiếp đọc cấu hình mới và giữ nguyên chat 41.
+    *f.api.optimize_delay.lock().unwrap() = None;
+    f.api.sent.lock().unwrap().clear();
+    *f.api.storage_stats.lock().unwrap() = json!({
+        "@type":"storageStatistics","size":200,"count":2,
+        "by_chat":[
+            {"chat_id":41,"size":100,"count":1,"by_file_type":[]},
+            {"chat_id":42,"size":100,"count":1,"by_file_type":[]}
+        ]
+    });
+    entry.storage_sweep(None).await.unwrap();
+    let next_reqs: Vec<_> = f.api.sent.lock().unwrap().iter()
+        .filter(|(_, req)| req["@type"] == "optimizeStorage")
+        .map(|(_, req)| req.clone())
+        .collect();
+    assert_eq!(next_reqs.len(), 1);
+    assert_eq!(next_reqs[0]["chat_ids"], json!([42]));
+    assert_eq!(next_reqs[0]["exclude_chat_ids"], json!([41]));
+    f.finish().await;
+}
+
+#[tokio::test]
+async fn manual_clear_all_and_type_preserve_forever_chats_until_explicit_chat_clear() {
+    let f = Fixture::new("storage-clear-m4").await;
+    let phone = "test-storage-clear-m4";
+    f.ready(phone).await;
+    let (_, entry) = f.hub.select(phone).unwrap();
+
+    let mut settings = f.send("GET", "/api/settings/storage", Value::Null).await.1;
+    settings["exceptions"] = json!([{"chat_id":43,"keep":null}]);
+    assert_eq!(f.send("POST", "/api/settings/storage", settings).await.0, 200);
+
+    *f.api.storage_stats.lock().unwrap() = json!({
+        "@type":"storageStatistics","size":300,"count":2,
+        "by_chat":[
+            {"chat_id":10,"size":100,"count":1,"by_file_type":[{"file_type":{"@type":"fileTypePhoto"},"size":100,"count":1}]},
+            {"chat_id":43,"size":200,"count":1,"by_file_type":[{"file_type":{"@type":"fileTypePhoto"},"size":200,"count":1}]}
+        ]
+    });
+
+    assert_eq!(f.send("POST", "/api/storage/clear", json!({"scope":"type","file_types":["photo"],"confirm":true})).await.0, 200);
+    assert_eq!(f.api.sent.lock().unwrap().iter().rfind(|(_, r)| r["@type"] == "optimizeStorage").unwrap().1["exclude_chat_ids"], json!([43]));
+
+    assert_eq!(f.send("POST", "/api/storage/clear", json!({"scope":"all","confirm":true})).await.0, 200);
+    assert_eq!(f.api.sent.lock().unwrap().iter().rfind(|(_, r)| r["@type"] == "optimizeStorage").unwrap().1["exclude_chat_ids"], json!([43]));
+
+    assert_eq!(f.send("POST", "/api/storage/clear", json!({"scope":"chat","chat_id":43,"confirm":true})).await.0, 200);
+    let explicit = f.api.sent.lock().unwrap().iter().rfind(|(_, r)| r["@type"] == "optimizeStorage").unwrap().1.clone();
+    assert_eq!(explicit["chat_ids"], json!([43]));
+    assert_eq!(explicit["exclude_chat_ids"], json!([]));
+
+    // Nếu cấu hình trên đĩa hỏng thì xoá toàn bộ không được tự đoán mà phải dừng với 500.
+    let count_before = f.api.sent.lock().unwrap().iter().filter(|(_, r)| r["@type"] == "optimizeStorage").count();
+    std::fs::write(entry.session.join(crate::storage_settings::FILE), b"{corrupt").unwrap();
+    let (status, err) = f.send("POST", "/api/storage/clear", json!({"scope":"all","confirm":true})).await;
+    assert_eq!(status, 500);
+    assert_eq!(err["error"]["code"], "STORAGE_SETTINGS_IO");
+    assert_eq!(f.api.sent.lock().unwrap().iter().filter(|(_, r)| r["@type"] == "optimizeStorage").count(), count_before);
     f.finish().await;
 }

@@ -1769,7 +1769,79 @@
   const storageKinds = [["photo", "Ảnh", "#2a7de1"], ["video", "Video", "#a46ac2"], ["file", "Tệp", "#208650"], ["music", "Nhạc", "#bc710e"], ["other", "Khác", "#748598"]];
   const storageKeep = [[86400, "1 ngày"], [604800, "7 ngày"], [2678400, "1 tháng"], ["", "Mãi mãi"]];
   const storageMiB = 1024 * 1024;
-  let storageDraft, storageUsage, storageClear, storageSavedMode = "local";
+  let storageDraft, storageUsage, storageClear, storageSaved = null, storageSavedMode = "local";
+
+  function storageClone(value) {
+    return JSON.parse(JSON.stringify(value));
+  }
+
+  function storageTighter(oldVal, newVal) {
+    if (oldVal === null && newVal !== null) return true;
+    if (oldVal !== null && newVal !== null && newVal < oldVal) return true;
+    return false;
+  }
+
+  function storageExceptionMap(policy) {
+    const map = new Map();
+    for (const row of (policy?.exceptions || [])) map.set(row.chat_id, row.keep ?? null);
+    return map;
+  }
+
+  function storageForeverCount(policy) {
+    return (policy?.exceptions || []).filter((row) => row.keep === null).length;
+  }
+
+  function storageTighteningReasons(saved, draft) {
+    const reasons = [];
+    if (!saved || !draft) return reasons;
+    if (storageSavedMode === "local" && storageDraft.mode === "stream") {
+      reasons.push("mode");
+      return reasons;
+    }
+    const curExc = storageExceptionMap(saved);
+    const nextExc = storageExceptionMap(draft);
+    const allIds = new Set([...curExc.keys(), ...nextExc.keys()]);
+    if (draft.mode === "stream") {
+      if (storageTighter(saved.stream_ttl_s, draft.stream_ttl_s)) reasons.push("stream_ttl");
+      for (const id of allIds) {
+        const oldVal = curExc.has(id) ? curExc.get(id) : saved.stream_ttl_s;
+        const newVal = nextExc.has(id) ? nextExc.get(id) : draft.stream_ttl_s;
+        if (storageTighter(oldVal, newVal)) { reasons.push("exceptions"); break; }
+      }
+      return reasons;
+    }
+    if (storageTighter(saved.max_cache_bytes, draft.max_cache_bytes)) reasons.push("max_cache");
+    const nextHasLimit = draft.max_cache_bytes !== null || storageChats.some(([kind]) => draft.keep[kind] !== null);
+    if (saved.mode === "stream") {
+      if (storageChats.some(([kind]) => storageTighter(saved.stream_ttl_s, draft.keep[kind]))) reasons.push("keep");
+      for (const id of allIds) {
+        const oldVal = curExc.has(id) ? curExc.get(id) : saved.stream_ttl_s;
+        if (nextExc.has(id)) {
+          if (storageTighter(oldVal, nextExc.get(id))) { reasons.push("exceptions"); break; }
+        } else if (oldVal === null ? nextHasLimit : storageChats.some(([kind]) => storageTighter(oldVal, draft.keep[kind]))) {
+          reasons.push("exceptions"); break;
+        }
+      }
+      return reasons;
+    }
+    if (storageChats.some(([kind]) => storageTighter(saved.keep[kind], draft.keep[kind]))) reasons.push("keep");
+    for (const id of allIds) {
+      if (curExc.has(id) && nextExc.has(id)) {
+        if (storageTighter(curExc.get(id), nextExc.get(id))) { reasons.push("exceptions"); break; }
+      } else if (curExc.has(id) && !nextExc.has(id)) {
+        const oldVal = curExc.get(id);
+        if (oldVal === null ? nextHasLimit : storageChats.some(([kind]) => storageTighter(oldVal, draft.keep[kind]))) {
+          reasons.push("exceptions"); break;
+        }
+      } else if (!curExc.has(id) && nextExc.has(id)) {
+        const newVal = nextExc.get(id);
+        if (newVal !== null && storageChats.some(([kind]) => storageTighter(saved.keep[kind], newVal))) {
+          reasons.push("exceptions"); break;
+        }
+      }
+    }
+    return reasons;
+  }
 
   function storageOptions(select, values, current) {
     select.replaceChildren();
@@ -1872,8 +1944,10 @@
     try {
       const payload = extra ? Object.assign({}, storageDraft, extra) : storageDraft;
       storageDraft = await api("POST", "/api/settings/storage", payload);
+      storageSaved = storageClone(storageDraft);
       storageSavedMode = storageDraft.mode;
-      $("storage-status").textContent = "Đã lưu cài đặt cho tài khoản này.";
+      storageRender();
+      $("storage-status").textContent = "Đã lưu cài đặt cho tài khoản này. Chính sách mới sẽ áp dụng ở lượt dọn tới.";
       return true;
     } catch (error) {
       if ($("storage-mode-confirm").open) $("storage-mode-error").textContent = error.message;
@@ -1895,6 +1969,7 @@
       if (usage.status === "rejected") $("storage-usage").textContent = "Chưa lấy được dung lượng bộ nhớ đệm.";
       if (settings.status === "rejected") throw settings.reason;
       storageDraft = settings.value;
+      storageSaved = storageClone(storageDraft);
       storageSavedMode = storageDraft.mode;
       storageRender(); $("storage-fields").disabled = false; $("storage-save").disabled = false;
     } catch (error) { $("storage-error").textContent = error.message; }
@@ -1910,10 +1985,30 @@
   });
   $("storage-form").addEventListener("submit", async (event) => {
     event.preventDefault();
-    if (storageSavedMode === "local" && storageDraft.mode === "stream") {
-      const minutes = Math.max(1, Math.round((storageDraft.stream_ttl_s || 600) / 60));
+    const reasons = storageTighteningReasons(storageSaved, storageDraft);
+    if (reasons.length) {
       $("storage-mode-error").textContent = "";
-      $("storage-mode-confirm-summary").textContent = "Khi chuyển sang chế độ xem trực tuyến, các tệp cục bộ sẽ bị dọn sau " + minutes + " phút không truy cập.";
+      if (reasons.includes("mode")) {
+        const minutes = Math.max(1, Math.round((storageDraft.stream_ttl_s || 600) / 60));
+        $("storage-mode-confirm-title").textContent = "Xác nhận chuyển sang xem trực tuyến";
+        $("storage-mode-confirm-ok").textContent = "Chuyển sang xem trực tuyến";
+        $("storage-mode-confirm-summary").textContent = "Khi chuyển sang chế độ xem trực tuyến, các tệp cục bộ sẽ bị dọn sau " + minutes + " phút không truy cập. Dọn sẽ chạy trong lượt tới theo lịch.";
+      } else {
+        const labels = {
+          keep: "giảm thời hạn giữ phương tiện",
+          max_cache: "giảm giới hạn bộ nhớ đệm",
+          stream_ttl: "giảm thời hạn giữ tệp xem trực tuyến",
+          exceptions: "thay đổi hoặc gỡ ngoại lệ giữ lâu hơn",
+        };
+        const detail = reasons.map((r) => labels[r]).join(", ");
+        let estimate = "";
+        if (reasons.includes("max_cache") && storageUsage && storageDraft.max_cache_bytes !== null && storageUsage.total_bytes > storageDraft.max_cache_bytes) {
+          estimate = " Ước tính hiện vượt ngưỡng mới khoảng " + storageBytes(storageUsage.total_bytes - storageDraft.max_cache_bytes) + ".";
+        }
+        $("storage-mode-confirm-title").textContent = "Xác nhận làm chặt chính sách lưu trữ";
+        $("storage-mode-confirm-ok").textContent = "Xác nhận và lưu";
+        $("storage-mode-confirm-summary").textContent = "Thay đổi này (" + detail + ") có thể làm xoá dữ liệu vượt giới hạn mới." + estimate + " Dọn sẽ chạy trong lượt tới theo lịch.";
+      }
       $("storage-mode-confirm").showModal();
       return;
     }
@@ -1931,9 +2026,22 @@
     storageClear = { scope, confirm: true };
     let bytes = storageUsage.total_bytes;
     if (scope === "type") { storageClear.file_types = [key]; bytes = storageUsage.by_type[key]; }
-    if (scope === "chat") { storageClear.chat_id = Number(key); bytes = storageUsage.top_chats.find((row) => row.chat_id === Number(key)).bytes; }
+    let note = "";
+    if (scope === "chat") {
+      storageClear.chat_id = Number(key);
+      bytes = storageUsage.top_chats.find((row) => row.chat_id === Number(key)).bytes;
+      const isForever = (storageSaved?.exceptions || []).some((row) => row.chat_id === Number(key) && row.keep === null);
+      if (isForever) {
+        note = " Hội thoại này đang đặt giữ «Mãi mãi»; xác nhận này chỉ xoá bộ nhớ đệm của riêng hội thoại này.";
+      }
+    } else {
+      const foreverCount = storageForeverCount(storageSaved);
+      if (foreverCount > 0) {
+        note = " " + foreverCount + " hội thoại giữ mãi mãi sẽ được bỏ qua.";
+      }
+    }
     $("storage-clear-error").textContent = "";
-    $("storage-confirm-summary").textContent = "Phạm vi: " + (select.selectedOptions[0]?.textContent || "Bộ nhớ đệm") + ". Ước tính có thể giải phóng tối đa " + storageBytes(bytes) + ".";
+    $("storage-confirm-summary").textContent = "Phạm vi: " + (select.selectedOptions[0]?.textContent || "Bộ nhớ đệm") + ". Ước tính có thể giải phóng tối đa " + storageBytes(bytes) + "." + note;
     $("storage-confirm").showModal();
   });
   $("storage-cancel").addEventListener("click", () => $("storage-confirm").close());
