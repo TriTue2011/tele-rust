@@ -88,7 +88,7 @@ impl Ctx {
             None
         } else if let Some(token) = cookie_token(&parts.headers) {
             if matches!(parts.method, Method::POST | Method::PUT | Method::DELETE | Method::PATCH)
-                && !csrf_valid(&parts.headers) {
+                && !csrf_valid(&parts.headers, self.ui_auth.secure_cookie() || parts.uri.scheme_str() == Some("https")) {
                 return Err(GwError::new(403, "CSRF_FORBIDDEN", "Yêu cầu ghi bằng cookie thiếu kiểm tra CSRF."));
             }
             let secure = request_is_secure(parts, self.ui_auth.secure_cookie());
@@ -177,15 +177,41 @@ fn bytes_resp(result: Result<Binary, GwError>) -> Response {
     match result {
         Err(error) => error_resp(&error),
         Ok(content) => {
-            let mut response = ([(header::CONTENT_TYPE, content.content_type),
+            // Untrusted Telegram files may be navigated to with the web session cookie.
+            // Only passive media gets its original MIME type; unknown types are downloads.
+            let mime = content.content_type.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+            let inline = matches!(mime.as_str(), "image/png" | "image/jpeg" | "image/gif" | "image/webp")
+                || mime.starts_with("audio/") || mime.starts_with("video/");
+            let content_type = if inline { content.content_type } else { "application/octet-stream".into() };
+            let mut response = ([(header::CONTENT_TYPE, content_type),
                 (header::CACHE_CONTROL, content.cache_control.to_owned()),
                 (header::CONTENT_LENGTH, content.bytes.len().to_string())], content.bytes).into_response();
-            if let Some(disposition) = content.disposition {
-                response.headers_mut().insert(header::CONTENT_DISPOSITION, disposition.parse().unwrap());
+            if !inline {
+                let disposition = content.disposition.filter(|value| value.starts_with("attachment;"))
+                    .and_then(|value| value.parse().ok()).unwrap_or_else(|| "attachment".parse().unwrap());
+                response.headers_mut().insert(header::CONTENT_DISPOSITION, disposition);
+            } else if let Some(disposition) = content.disposition {
+                if let Ok(value) = disposition.parse() { response.headers_mut().insert(header::CONTENT_DISPOSITION, value); }
             }
-            response
+            isolate_binary(response)
         }
     }
+}
+
+/// Phản hồi tệp/nhị phân của người dùng (cần cookie/Bearer): chỉ cùng nguồn được nhúng.
+fn isolate_binary(response: Response) -> Response { isolate_with(response, "same-origin") }
+
+/// Luồng âm thanh dành cho THIẾT BỊ NGOÀI trình duyệt cùng nguồn (loa Google Cast, loa R1): đường này không dùng cookie mà dùng token riêng
+/// từng cuộc gọi trong URL, và bộ nhận của loa tải theo kiểu khác nguồn — `same-origin` sẽ làm loa im. Vẫn giữ nosniff + CSP sandbox.
+fn isolate_media(response: Response) -> Response { isolate_with(response, "cross-origin") }
+
+fn isolate_with(mut response: Response, corp: &'static str) -> Response {
+    for (name, value) in [
+        (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+        (header::CONTENT_SECURITY_POLICY, "default-src 'none'; sandbox"),
+        (header::HeaderName::from_static("cross-origin-resource-policy"), corp),
+    ] { response.headers_mut().insert(name, value.parse().unwrap()); }
+    response
 }
 
 /// `ApiError` → JSON như `_api_error_handler` (errors.py).
@@ -351,11 +377,12 @@ fn cookie_token(headers: &HeaderMap) -> Option<String> {
     })
 }
 
-fn csrf_valid(headers: &HeaderMap) -> bool {
+fn csrf_valid(headers: &HeaderMap, secure: bool) -> bool {
+    // This header is a CSRF boundary only while CORS stays disabled.
     if headers.get("x-requested-with").and_then(|value| value.to_str().ok()) == Some("fetch") { return true; }
     let Some(host) = headers.get(header::HOST).and_then(|value| value.to_str().ok()) else { return false; };
     let Some(origin) = headers.get(header::ORIGIN).and_then(|value| value.to_str().ok()) else { return false; };
-    let Some(authority) = origin.strip_prefix("http://").or_else(|| origin.strip_prefix("https://")) else { return false; };
+    let Some(authority) = origin.strip_prefix("https://").or_else(|| (!secure).then(|| origin.strip_prefix("http://")).flatten()) else { return false; };
     let authority = authority.strip_suffix('/').unwrap_or(authority);
     !authority.contains('/') && authority.eq_ignore_ascii_case(host)
 }
@@ -366,13 +393,22 @@ fn request_is_secure(parts: &axum::http::request::Parts, configured: bool) -> bo
 }
 
 async fn auth_handle(auth: Arc<UiAuth>, parts: axum::http::request::Parts, body: Body) -> Response {
+    let action = parts.uri.path().rsplit('/').next().unwrap_or_default();
     let payload = if parts.method == Method::POST {
-        match body_dict(body).await {
-            Ok(body) => body,
-            Err(error) => return error_resp(&error),
+        let raw = match tokio::time::timeout(Duration::from_secs(5), to_bytes(body, 8192)).await {
+            Ok(Ok(raw)) => raw,
+            Ok(Err(_)) => return error_resp(&GwError::bad_request("Thân đăng nhập web vượt 8 KB.")),
+            Err(_) => return error_resp(&GwError::new(408, "AUTH_TIMEOUT", "Quá thời gian nhận yêu cầu đăng nhập web.")),
+        };
+        match serde_json::from_slice::<Value>(&raw) {
+            Ok(body) if body.is_object() => body,
+            _ if raw.is_empty() => json!({}),
+            _ => return error_resp(&GwError::bad_request("Thân đăng nhập web phải là JSON object.")),
         }
     } else { Value::Null };
-    tokio::task::spawn_blocking(move || auth_action(&auth, &parts, &payload))
+    // Slow request bodies must not occupy slots reserved for password hashing.
+    let permit = if matches!(action, "setup" | "login" | "password") { Some(auth.hash_permit().await) } else { None };
+    tokio::task::spawn_blocking(move || { let _permit = permit; auth_action(&auth, &parts, &payload) })
         .await.unwrap_or_else(|_| error_resp(&auth_task_error()))
 }
 
@@ -413,21 +449,21 @@ fn auth_action(auth: &UiAuth, parts: &axum::http::request::Parts, payload: &Valu
             let Some(token) = current_cookie.as_deref() else { return error_resp(&auth_error(crate::ui_auth::AuthError {
                 status:401,code:"UNAUTHORIZED",message:"Chưa đăng nhập hoặc phiên đã hết hạn.",retry_after:None,
             })); };
-            if !csrf_valid(&parts.headers) { return error_resp(&GwError::new(403,"CSRF_FORBIDDEN","Yêu cầu ghi bằng cookie thiếu kiểm tra CSRF.")); }
+            if !csrf_valid(&parts.headers, auth.secure_cookie() || parts.uri.scheme_str() == Some("https")) { return error_resp(&GwError::new(403,"CSRF_FORBIDDEN","Yêu cầu ghi bằng cookie thiếu kiểm tra CSRF.")); }
             auth.logout(token).map(|_| (json!({"ok":true}), Some(clear_cookie(secure))))
         }
         "logout-all" => {
             let Some(token) = current_cookie.as_deref() else { return error_resp(&auth_error(crate::ui_auth::AuthError {
                 status:401,code:"UNAUTHORIZED",message:"Chưa đăng nhập hoặc phiên đã hết hạn.",retry_after:None,
             })); };
-            if !csrf_valid(&parts.headers) { return error_resp(&GwError::new(403,"CSRF_FORBIDDEN","Yêu cầu ghi bằng cookie thiếu kiểm tra CSRF.")); }
+            if !csrf_valid(&parts.headers, auth.secure_cookie() || parts.uri.scheme_str() == Some("https")) { return error_resp(&GwError::new(403,"CSRF_FORBIDDEN","Yêu cầu ghi bằng cookie thiếu kiểm tra CSRF.")); }
             auth.logout_all(token).map(|_| (json!({"ok":true}), Some(clear_cookie(secure))))
         }
         "password" => {
             let Some(token) = current_cookie.as_deref() else { return error_resp(&auth_error(crate::ui_auth::AuthError {
                 status:401,code:"UNAUTHORIZED",message:"Chưa đăng nhập hoặc phiên đã hết hạn.",retry_after:None,
             })); };
-            if !csrf_valid(&parts.headers) { return error_resp(&GwError::new(403,"CSRF_FORBIDDEN","Yêu cầu ghi bằng cookie thiếu kiểm tra CSRF.")); }
+            if !csrf_valid(&parts.headers, auth.secure_cookie() || parts.uri.scheme_str() == Some("https")) { return error_resp(&GwError::new(403,"CSRF_FORBIDDEN","Yêu cầu ghi bằng cookie thiếu kiểm tra CSRF.")); }
             let (Some(old), Some(new)) = (str_field(payload, "cu"), str_field(payload, "moi")) else {
                 return error_resp(&GwError::bad_request("Thiếu mật khẩu cũ hoặc mới."));
             };
@@ -514,8 +550,8 @@ async fn cast_stream(State(ctx): State<Arc<Ctx>>, req: Request) -> Response {
         let left = left - chunk.len();
         Some((Ok::<_, std::convert::Infallible>(chunk), (prime, audio, left)))
     });
-    ([(header::CONTENT_TYPE, "audio/mpeg".into()), (header::CACHE_CONTROL, "no-store".into()),
-        (header::CONTENT_LENGTH, CAST_LENGTH.to_string())], Body::from_stream(chunks)).into_response()
+    isolate_media(([(header::CONTENT_TYPE, "audio/mpeg".into()), (header::CACHE_CONTROL, "no-store".into()),
+        (header::CONTENT_LENGTH, CAST_LENGTH.to_string())], Body::from_stream(chunks)).into_response())
 }
 
 /// Token media ngắn hạn, chỉ lấy từ POST /media đã qua Bearer. Không nhận Bearer trong query.
@@ -544,8 +580,8 @@ fn audio_out_response(stream: crate::contract::AudioOut) -> Response {
             };
             Some((Ok::<_, std::convert::Infallible>(chunk), (prime, audio, stopped, expires)))
         });
-    ([(header::CONTENT_TYPE,"audio/wav"),(header::CACHE_CONTROL,"no-store"),
-        (header::REFERRER_POLICY,"no-referrer"),(header::X_CONTENT_TYPE_OPTIONS,"nosniff")],Body::from_stream(chunks)).into_response()
+    isolate_media(([(header::CONTENT_TYPE,"audio/wav"),(header::CACHE_CONTROL,"no-store"),
+        (header::REFERRER_POLICY,"no-referrer")],Body::from_stream(chunks)).into_response())
 }
 
 async fn next_jpeg(frames: &mut VideoFrames, limit: Duration) -> Result<Option<Arc<[u8]>>, ()> {
@@ -572,8 +608,8 @@ async fn live_view(mut frames: VideoFrames, first_wait: Duration, idle: Duration
         part.extend_from_slice(b"\r\n");
         Some((Ok::<_, std::convert::Infallible>(part), frames))
     });
-    ([(header::CONTENT_TYPE, "multipart/x-mixed-replace; boundary=frame"),
-        (header::CACHE_CONTROL, "no-store")], Body::from_stream(parts)).into_response()
+    isolate_binary(([(header::CONTENT_TYPE, "multipart/x-mixed-replace; boundary=frame"),
+        (header::CACHE_CONTROL, "no-store")], Body::from_stream(parts)).into_response())
 }
 
 /// Một phương thức → `spec`; phương thức khác → 405 kiểu FastAPI.
@@ -604,6 +640,7 @@ fn router_with(ctx: Arc<Ctx>) -> Router {
     let mut r = Router::new().route("/health", on(get, health).on(MethodFilter::HEAD, method_not_allowed).fallback(method_not_allowed));
     for path in ["/","/app.html","/ui/app.html"] {r=r.route(path,on(get,crate::web::app));}
     for path in ["/index.html","/ui/","/ui/index.html"] {r=r.route(path,on(get,crate::web::accounts));}
+    r = r.route("/ui/qrcode.min.js", on(get, crate::web::qrcode));
     r = r.route("/ui/api/auth/status", route(get, s(Auth)));
     for action in ["setup", "login", "logout", "logout-all", "password"] {
         r = r.route(&format!("/ui/api/auth/{action}"), route(post, s(Auth)));
@@ -616,7 +653,7 @@ fn router_with(ctx: Arc<Ctx>) -> Router {
     }
     // Chỉ đọc → ChatControl (routes.py + chat_routes.py).
     for p in ["/api/accounts", "/api/me", "/api/chats", "/api/contacts", "/api/search", "/api/feed",
-              "/api/calls", "/api/calltrace", "/api/storage/usage", "/api/storage/janitor"] {
+              "/api/calls", "/api/calltrace", "/api/contacts/blocked", "/api/storage/usage", "/api/storage/janitor"] {
         r = r.route(p, route(get, s(ChatGet)));
     }
     r = r
@@ -629,6 +666,7 @@ fn router_with(ctx: Arc<Ctx>) -> Router {
     for p in ["/api/send_message", "/api/send_media", "/api/send_voice", "/api/call", "/api/answer_call",
               "/api/hangup_call", "/api/audio/in", "/api/audio/upload", "/api/messages/edit", "/api/messages/delete",
               "/api/messages/forward", "/api/messages/react", "/api/resolve", "/api/translate", "/api/contacts/open",
+              "/api/contacts/add", "/api/contacts/edit", "/api/contacts/remove", "/api/contacts/block", "/api/contacts/unblock",
               "/api/do/:name", "/api/storage/clear"] {
         r = r.route(p, route(post, s(ChatPost)));
     }

@@ -345,15 +345,31 @@ async fn tc06_tc11_serve_accepts_cookie_on_account_and_event_routes_without_logg
     let setup = client.post(format!("{base}/ui/api/auth/setup"))
         .header(header::CONTENT_TYPE, "application/json").body(payload).send().await.unwrap();
     assert_eq!(setup.status(), 200);
-    let cookie = setup.headers()[header::SET_COOKIE].to_str().unwrap().split(';').next().unwrap();
+    let cookie = setup.headers()[header::SET_COOKIE].to_str().unwrap().split(';').next().unwrap().to_owned();
     for path in ["/api/accounts", "/api/live/calls", "/api/events"] {
         let request = client.get(format!("{base}{path}"));
-        let response = request.try_clone().unwrap().header(header::COOKIE, cookie).send().await.unwrap();
+        let response = request.try_clone().unwrap().header(header::COOKIE, &cookie).send().await.unwrap();
         let bearer = request.try_clone().unwrap().bearer_auth(GATEWAY_TOKEN).send().await.unwrap();
         assert_eq!(bearer.status(), response.status(), "{path}");
         assert_eq!(bearer.bytes().await.unwrap(), response.bytes().await.unwrap(), "{path}");
         assert_eq!(request.send().await.unwrap().status(), 401, "{path}");
     }
+    // Exercise both successful and rejected login/password paths before reading all log sinks.
+    let logged_in = client.post(format!("{base}/ui/api/auth/login")).header(header::CONTENT_TYPE, "application/json")
+        .body(json!({"ten":USER,"mat_khau":PASSWORD}).to_string()).send().await.unwrap();
+    assert_eq!(logged_in.status(), 200);
+    let login_cookie = logged_in.headers()[header::SET_COOKIE].to_str().unwrap().split(';').next().unwrap().to_owned();
+    for (old, new, expected) in [("wrong-old-password-value", "unused-new-password-value", 401),
+        (PASSWORD, "changed-password-value", 200)] {
+        let response = client.post(format!("{base}/ui/api/auth/password")).header(header::CONTENT_TYPE, "application/json")
+            .header(header::COOKIE, &login_cookie).header("X-Requested-With", "fetch")
+            .body(json!({"cu":old,"moi":new}).to_string()).send().await.unwrap();
+        assert_eq!(response.status(), expected);
+    }
+    let changed_login = client.post(format!("{base}/ui/api/auth/login")).header(header::CONTENT_TYPE, "application/json")
+        .body(json!({"ten":USER,"mat_khau":"changed-password-value"}).to_string()).send().await.unwrap();
+    assert_eq!(changed_login.status(), 200);
+    let changed_cookie = changed_login.headers()[header::SET_COOKIE].to_str().unwrap().split(';').next().unwrap().to_owned();
     // The connection address defines the limit; spoofed forwarding headers cannot bypass it.
     for host in 1..=6 {
         let response = client.post(format!("{base}/ui/api/auth/login"))
@@ -368,8 +384,13 @@ async fn tc06_tc11_serve_accepts_cookie_on_account_and_event_routes_without_logg
     use tokio::io::AsyncReadExt as _;
     stderr.read_to_string(&mut rest).await.unwrap();
     let output = server.wait_with_output().await.unwrap();
-    let logs = format!("{first}{rest}{}", String::from_utf8_lossy(&output.stdout));
-    for secret in [GATEWAY_TOKEN, PASSWORD, cookie.split_once('=').unwrap().1] {
+    let mut logs = format!("{first}{rest}{}", String::from_utf8_lossy(&output.stdout));
+    for entry in fs::read_dir(dir.join("calltrace")).into_iter().flatten().flatten() {
+        if entry.path().is_file() { logs.push_str(&fs::read_to_string(entry.path()).unwrap()); }
+    }
+    for secret in [GATEWAY_TOKEN, PASSWORD, "mat-khau-sai-gia", "wrong-old-password-value", "unused-new-password-value",
+        "changed-password-value", cookie.split_once('=').unwrap().1, login_cookie.split_once('=').unwrap().1,
+        changed_cookie.split_once('=').unwrap().1] {
         assert!(!logs.contains(secret), "gateway logs contained an authentication secret");
     }
     fs::remove_dir_all(dir).unwrap();
@@ -406,11 +427,15 @@ async fn tc14_passwd_command_changes_password_and_revokes_all_sessions() {
     setup(&initial).await;
     let old_cookie = session_cookie(&login(&initial, USER, PASSWORD, true).await);
     let other_cookie = session_cookie(&login(&initial, USER, PASSWORD, true).await);
+    for _ in 0..5 { assert_eq!(login(&initial, USER, "wrong-password-value", false).await.status(), 401); }
+    assert_eq!(login(&initial, USER, PASSWORD, false).await.status(), 429);
     let output = Command::new(env!("CARGO_BIN_EXE_tggw"))
         .arg("passwd").env("TGGW_DATA", &dir).env("TG_UI_USER", USER)
         .env("TG_UI_PASSWORD", "mat-khau-sau-reset").env_remove("GATEWAY_TOKEN")
         .output().unwrap();
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    // Reset must unlock the very first login, before status/API reads reload the account.
+    assert_eq!(login(&initial, USER, "mat-khau-sau-reset", false).await.status(), 200);
     assert_eq!(send(&initial, "GET", "/api/live/calls", None, &[("Cookie", &old_cookie)]).await.status(), 401);
     assert_eq!(send(&initial, "GET", "/api/live/calls", None, &[("Cookie", &other_cookie)]).await.status(), 401);
     assert_eq!(login(&initial, USER, PASSWORD, false).await.status(), 401);

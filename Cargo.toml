@@ -1,6 +1,6 @@
 [package]
 name = "telegram-gateway-rs"
-version = "0.5.2"
+version = "0.6.0"
 edition = "2021"
 description = "Gateway Telegram (tài khoản người dùng: tin nhắn + gọi thoại/video) cho Home Assistant — bản Rust, chạy song song bản Python"
 publish = false
@@ -24,6 +24,8 @@ ntgcalls = "=3.0.7"
 # Chạy bất đồng bộ (ntgcalls 3.0.7 cũng dùng tokio).
 tokio = { version = "=1.41.1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "process", "io-util", "signal"] }
 regex = "=1.11.1"
+unicode-normalization = "=0.1.25"
+icu_collator = "=2.1.1"
 mime_guess = "=2.0.5"
 rustix = { version = "=1.1.4", features = ["fs"] }
 jpeg-encoder = "=0.6.1"

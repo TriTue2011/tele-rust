@@ -25,7 +25,7 @@ impl ChatService {
                 bytes: String::from_utf8_lossy(&bytes).into_owned().into_bytes(),
                 content_type: "text/plain; charset=utf-8".into(),
                 cache_control: "no-store",
-                disposition: Some(format!("inline; filename=\"calltrace-{id}.log\"")),
+                disposition: Some(format!("attachment; filename=\"calltrace-{id}.log\"")),
             });
         }
         Err(GwError::not_found("Không có đường dẫn này."))
