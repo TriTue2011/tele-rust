@@ -1052,7 +1052,7 @@ mod tests {
             assert_eq!(send(&app, ok("GET", "/api/live/calls", Body::empty())).await.0, 200);
         }
         let got = send(&app, ok("GET", "/api/chats", Body::empty())).await;
-        assert_eq!(got, (429, err("RATE_LIMITED", "Quá 120 request/phút cho token này.")));
+        assert_eq!(got, (429, json!({"error": {"code": "RATE_LIMITED", "message": "Quá 3 request/phút cho token này.", "retry_after_seconds": 5}})));
         // /health không bị giới hạn.
         assert_eq!(send(&app, req("GET", "/health", None, Body::empty())).await.0, 200);
         assert_eq!(call.count(), 3);
@@ -1066,7 +1066,7 @@ mod tests {
             assert_eq!(send(&app, ok("GET", path, Body::empty())).await.0, 200);
         }
         assert_eq!(send(&app, ok("GET", "/api/accounts", Body::empty())).await,
-                   (429, err("RATE_LIMITED", "Quá 120 request/phút cho token này.")));
+                   (429, json!({"error": {"code": "RATE_LIMITED", "message": "Quá 120 request/phút cho token này.", "retry_after_seconds": 5}})));
         assert_eq!((call.count(), chat.count()), (60, 60));
     }
 
@@ -1294,7 +1294,7 @@ mod tests {
         )));
         let response = app.oneshot(ok("GET", "/api/chats", Body::empty())).await.unwrap();
         assert_eq!(response.status(), 429);
-        assert!(!response.headers().contains_key(header::RETRY_AFTER));
+        assert_eq!(response.headers().get(header::RETRY_AFTER).and_then(|v| v.to_str().ok()), Some("17"));
         let raw = to_bytes(response.into_body(), 4096).await.unwrap();
         assert_eq!(serde_json::from_slice::<Value>(&raw).unwrap(), json!({"error":{
             "code":"FLOOD_WAIT", "message":"Telegram yêu cầu chờ trước khi thử lại.", "retry_after_seconds":17
