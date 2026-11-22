@@ -24,6 +24,8 @@ pub(crate) struct Fake {
     pub supergroup_full_info:Mutex<HashMap<i64, Value>>,
     pub supergroup_members:Mutex<HashMap<i64, Value>>,
     pub search_messages:Mutex<HashMap<i64, Value>>,
+    pub message_threads:Mutex<HashMap<(i64, i64), Value>>,
+    pub thread_history:Mutex<HashMap<(i64, i64), Value>>,
     pub optimize_reply:Mutex<Option<Box<dyn Fn(&Value)->Value+std::marker::Send+std::marker::Sync>>>,
     pub optimize_delay:Mutex<Option<Duration>>,
 }
@@ -111,6 +113,35 @@ impl TdApi for Fake {
                 .unwrap_or_else(|| json!({"@type":"chatMembers","total_count":0,"members":[]})),
             "searchChatMessages" => self.search_messages.lock().unwrap().get(&r["chat_id"].as_i64().unwrap_or_default()).cloned()
                 .unwrap_or_else(|| json!({"@type":"foundChatMessages","total_count":0,"messages":[]})),
+            "getMessageThread" => {
+                let key = (
+                    r["chat_id"].as_i64().unwrap_or_default(),
+                    r["message_id"].as_i64().unwrap_or_default(),
+                );
+                self.message_threads.lock().unwrap().get(&key).cloned()
+                    .unwrap_or_else(|| json!({"@type":"error","code":400,"message":"Message thread not found"}))
+            }
+            "getMessageThreadHistory" => {
+                let key = (
+                    r["chat_id"].as_i64().unwrap_or_default(),
+                    r["message_id"].as_i64().unwrap_or_default(),
+                );
+                let from_id = r["from_message_id"].as_i64().unwrap_or(0);
+                let limit = r["limit"].as_u64().unwrap_or(30).max(1) as usize;
+                let mut msgs: Vec<Value> = self.thread_history.lock().unwrap().get(&key)
+                    .and_then(|v| v["messages"].as_array())
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|m| {
+                        let mid = m["id"].as_i64().unwrap_or(0);
+                        from_id == 0 || (mid > 0 && mid < from_id)
+                    })
+                    .collect();
+                msgs.sort_by(|a, b| b["id"].as_i64().cmp(&a["id"].as_i64()));
+                msgs.truncate(limit);
+                json!({"@type":"messages","total_count":msgs.len(),"messages":msgs})
+            }
             "deleteChatHistory" | "leaveChat" if self.strict_chats.load(Ordering::Relaxed)
                 && !r["chat_id"].as_i64().is_some_and(|cid| self.chats.lock().unwrap().contains_key(&cid)) => {
                 json!({"@type":"error","code":404,"message":"Chat not found"})

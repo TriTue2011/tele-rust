@@ -7,6 +7,7 @@ use crate::contract::TdError;
 type FakeReply = (Value, Result<Value, TdError>);
 
 mod catalog;
+mod comments;
 mod contacts;
 mod info;
 mod rich_text;

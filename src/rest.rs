@@ -166,6 +166,7 @@ struct Spec {
     kind: Kind,
     /// Tham số đường dẫn kiểu `int` của FastAPI: (tên, vị trí đoạn khi tách path theo '/').
     int_param: Option<(&'static str, usize)>,
+    int_param2: Option<(&'static str, usize)>,
 }
 
 fn json_resp(status: StatusCode, v: &Value) -> Response {
@@ -253,7 +254,7 @@ async fn handle(ctx: Arc<Ctx>, spec: Spec, req: Request) -> Response {
     let path = parts.uri.path().to_owned();
     let query = parts.uri.query().unwrap_or("").to_owned();
     // FastAPI kiểm kiểu tham số đường dẫn trước khi vào hàm (tức trước auth).
-    if let Some((name, idx)) = spec.int_param {
+    for (name, idx) in [spec.int_param, spec.int_param2].into_iter().flatten() {
         let seg = path.split('/').nth(idx).unwrap_or("");
         if seg.parse::<i64>().is_err() {
             let detail = json!({"detail": [{"type": "int_parsing", "loc": ["path", name],
@@ -624,12 +625,16 @@ fn add(r: MethodRouter<Arc<Ctx>>, filter: MethodFilter, spec: Spec) -> MethodRou
 }
 
 const fn s(kind: Kind) -> Spec {
-    Spec { kind, int_param: None }
+    Spec { kind, int_param: None, int_param2: None }
 }
 
 /// `/api/<a>/{chat_id|file_id}/…`: tham số số nằm ở đoạn thứ 3 (`["", "api", a, id, …]`).
 const fn s_id(kind: Kind, name: &'static str) -> Spec {
-    Spec { kind, int_param: Some((name, 3)) }
+    Spec { kind, int_param: Some((name, 3)), int_param2: None }
+}
+
+const fn s_ids(kind: Kind, first: (&'static str, usize), second: (&'static str, usize)) -> Spec {
+    Spec { kind, int_param: Some(first), int_param2: Some(second) }
 }
 
 fn router_with(ctx: Arc<Ctx>) -> Router {
@@ -662,6 +667,11 @@ fn router_with(ctx: Arc<Ctx>) -> Router {
         .route("/api/profile", add(route(get, s(ChatGet)), post, s(ChatPost)))
         .route("/api/events", route(get, s(Events)))
         .route("/api/chats/:chat_id/messages", route(get, s_id(ChatGet, "chat_id")))
+        .route("/api/chats/:chat_id/messages/:message_id/comments", add(
+            route(get, s_ids(ChatGet, ("chat_id", 3), ("message_id", 5))),
+            post,
+            s_ids(ChatPost, ("chat_id", 3), ("message_id", 5)),
+        ))
         .route("/api/chats/:chat_id/info", route(get, s_id(ChatGet, "chat_id")))
         .route("/api/chats/:chat_id/members", route(get, s_id(ChatGet, "chat_id")))
         .route("/api/file/:file_id", route(get, s_id(ChatBytes, "file_id")))

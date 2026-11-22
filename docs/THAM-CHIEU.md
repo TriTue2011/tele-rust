@@ -81,6 +81,8 @@ Mọi đường dẫn có xác thực đều chấp nhận `Authorization: Beare
 | `POST` | `/api/profile` | Bearer hoặc Cookie+CSRF | `confirm: true`, `first_name`, `last_name`, `bio`, `username`, `?account=` | Cập nhật hồ sơ Telegram (bắt buộc `confirm: true`). |
 | `GET` | `/api/chats` | Bearer hoặc Cookie | `?limit=1..200`, `?account=` | Lấy danh sách hội thoại chính kèm số chưa đọc, tự xoá, trạng thái. |
 | `GET` | `/api/chats/:chat_id/messages` | Bearer hoặc Cookie | `:chat_id`, `?before=`, `?limit=1..100`, `?q=`, `?account=` | Lấy lịch sử tin nhắn hoặc tìm kiếm tin nhắn trong hội thoại khi có `q`. |
+| `GET` | `/api/chats/:chat_id/messages/:message_id/comments` | Bearer hoặc Cookie | `:chat_id`, `:message_id`, `?from=`, `?limit=1..100`, `?account=` | Lấy danh sách bình luận của bài đăng kênh từ nhóm thảo luận liên kết (`409 NO_DISCUSSION` nếu không có). |
+| `POST` | `/api/chats/:chat_id/messages/:message_id/comments` | Bearer hoặc Cookie+CSRF | `:chat_id`, `:message_id`, `text`, `entities`, `format`, `auto_emphasis`, `ai_markup`, `reply_to` | Gửi bình luận vào nhóm thảo luận của bài đăng kênh (`409 NO_DISCUSSION` nếu không có). |
 | `GET` | `/api/chats/:chat_id/info` | Bearer hoặc Cookie | `:chat_id`, `?account=` | Lấy thông tin chi tiết hội thoại (cá nhân/nhóm/kênh), quyền và thông báo. |
 | `GET` | `/api/chats/:chat_id/members` | Bearer hoặc Cookie | `:chat_id`, `?q=`, `?limit=1..50`, `?account=` | Liệt kê và tìm kiếm thành viên nhóm/siêu nhóm. |
 | `POST` | `/api/chats/:chat_id/settings` | Bearer hoặc Cookie+CSRF | `:chat_id`, `notification`, `auto_delete` (`seconds`, `confirm: true`), `pin`, `archive`, `mark_unread` | Cập nhật thông báo, ghim, lưu trữ, chưa đọc và tự xoá (đổi `auto_delete` cần `confirm: true`). |

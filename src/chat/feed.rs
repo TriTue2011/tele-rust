@@ -4,7 +4,11 @@ use serde_json::{json, Value};
 use tokio::{sync::{broadcast, Notify}, time::{timeout_at, Instant}};
 
 use crate::events::{mask_peer_id, EventSink};
-use super::{array, field, shape::{message_with_ctx, user_name, MessageContext}, text, truth};
+use super::{
+    array, field,
+    shape::{message_with_comments, user_avatar, user_name, CommentsContext, MessageContext},
+    text, truth,
+};
 
 #[derive(Default)]
 pub(super) struct State {
@@ -22,6 +26,8 @@ struct AutoDeleteEntry {
 pub(super) struct ChatMeta {
     pub title: String,
     pub is_private: bool,
+    pub is_channel: bool,
+    pub avatar_file: Option<i64>,
 }
 
 fn lru_put<V>(map: &mut HashMap<i64, V>, order: &mut VecDeque<i64>, id: i64, value: V) {
@@ -88,9 +94,12 @@ impl Inner {
 
     fn remember_chat(&mut self, chat: &Value) {
         let Some(id) = chat["id"].as_i64().filter(|id| *id != 0) else { return; };
-        let is_private = matches!(text(&chat["type"]["@type"]), "chatTypePrivate" | "chatTypeSecret");
+        let ct = &chat["type"];
+        let is_private = matches!(text(&ct["@type"]), "chatTypePrivate" | "chatTypeSecret");
+        let is_channel = text(&ct["@type"]) == "chatTypeSupergroup" && truth(&ct["is_channel"]);
         let title = text(&chat["title"]).to_owned();
-        lru_put(&mut self.chats, &mut self.chat_order, id, ChatMeta { title, is_private });
+        let avatar_file = chat["photo"]["small"]["id"].as_i64().filter(|&fid| fid > 0);
+        lru_put(&mut self.chats, &mut self.chat_order, id, ChatMeta { title, is_private, is_channel, avatar_file });
     }
 
     fn touch_auto_delete(&mut self, chat_id: i64) {
@@ -152,14 +161,22 @@ impl Inner {
             _ => String::new(),
         };
         let chat_meta = m["chat_id"].as_i64().and_then(|id| self.chats.get(&id));
+        let is_channel = chat_meta.map_or_else(|| truth(&m["is_channel_post"]), |c| c.is_channel);
         let resolver = |uid: i64| self.users.get(&uid).map(user_name);
+        let user_replier = |uid: i64| self.users.get(&uid).map(|u| (user_name(&u), user_avatar(&u)));
+        let chat_replier = |cid: i64| self.chats.get(&cid).map(|c| (c.title.clone(), c.avatar_file));
         let ctx = MessageContext {
             sender: &sender,
             chat_title: chat_meta.map_or("", |c| c.title.as_str()),
             is_private: chat_meta.is_some_and(|c| c.is_private),
             resolve_user: Some(&resolver),
         };
-        message_with_ctx(m, &ctx)
+        let comments_ctx = CommentsContext {
+            is_channel,
+            resolve_user: Some(&user_replier),
+            resolve_chat: Some(&chat_replier),
+        };
+        message_with_comments(m, &ctx, Some(&comments_ctx))
     }
 }
 
