@@ -5,32 +5,59 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Telegram</title>
 <style>
-  :root { color-scheme: light dark; --bg:#eef1f5; --panel:#fff; --fg:#17212b; --mut:#5a6877; --line:#e1e6ec;
-          --acc:#1d68c4; --btn-bg:#1d68c4; --in:#fff; --out:#d6eafd; --badge:#1d68c4; --mute:#9aa7b4; --err:#c62828; --ok:#1e8e4e;
+  :root { color-scheme: light; --bg:#eef1f5; --panel:#ffffff; --fg:#17212b; --mut:#4f5e6e; --line:#dce2e9;
+          --acc:#155ab4; --btn-bg:#155ab4; --btn-fg:#ffffff; --in:#ffffff; --out:#d6eafd; --badge:#155ab4; --mute:#6b7b8a; --err:#b71c1c; --ok:#157347; --online:#157347;
+          --warn-bg:#fff6d6; --warn-fg:#6b4700; --warn-border:#d49b00; --chat-grad-a:#dce9f7; --chat-grad-b:#e8eef6; --bubble-border:transparent;
+          --code-font:ui-monospace,"SFMono-Regular","Liberation Mono",Consolas,monospace;
+          --code-bg:#f3f6fa; --code-fg:#1b2430; --code-border:#cfd8e3; --code-kw:#0b4db8; --code-str:#0e6b35; --code-cm:#52606d; --code-num:#9e3d00;
           --chat-font:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; --chat-font-size:15px; --chat-line-height:1.45;
           --bubble-radius:12px; --bubble-pad:6px 10px 4px; --msg-gap:4px; }
+  :root[data-theme="system"] { color-scheme: light dark; }
   :root[data-theme="light"] { color-scheme: light; }
-  :root[data-theme="dark"] { color-scheme: dark; --bg:#0e1621; --panel:#17212b; --fg:#e8eef4; --mut:#95a6b8;
-          --line:#26323f; --acc:#6bb0ff; --btn-bg:#1d68c4; --in:#1f2c3a; --out:#2b5278; --badge:#1d68c4; --mute:#5f7080; --err:#ef6c6c; --ok:#4cc27f; }
-  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#0e1621; --panel:#17212b; --fg:#e8eef4; --mut:#95a6b8;
-          --line:#26323f; --acc:#6bb0ff; --btn-bg:#1d68c4; --in:#1f2c3a; --out:#2b5278; --badge:#1d68c4; --mute:#5f7080; --err:#ef6c6c; --ok:#4cc27f; } }
-  :root[data-accent="green"] { --acc:#167a42; --btn-bg:#167a42; --badge:#167a42; --out:#d5f2df; }
-  :root[data-accent="purple"] { --acc:#6f3ec2; --btn-bg:#6f3ec2; --badge:#6f3ec2; --out:#e9dffc; }
-  :root[data-accent="orange"] { --acc:#b84c00; --btn-bg:#b84c00; --badge:#b84c00; --out:#fde6d2; }
-  :root[data-accent="pink"] { --acc:#b32568; --btn-bg:#b32568; --badge:#b32568; --out:#fcdceb; }
-  :root[data-accent="teal"] { --acc:#0d6e75; --btn-bg:#0d6e75; --badge:#0d6e75; --out:#d3f1f3; }
-  :root[data-theme="dark"][data-accent="green"] { --acc:#56cf87; --btn-bg:#167a42; --badge:#167a42; --out:#1d4a35; }
-  :root[data-theme="dark"][data-accent="purple"] { --acc:#b392ff; --btn-bg:#6f3ec2; --badge:#6f3ec2; --out:#3a2c5e; }
-  :root[data-theme="dark"][data-accent="orange"] { --acc:#f59e42; --btn-bg:#b84c00; --badge:#b84c00; --out:#573419; }
-  :root[data-theme="dark"][data-accent="pink"] { --acc:#f47bb3; --btn-bg:#b32568; --badge:#b32568; --out:#57233f; }
-  :root[data-theme="dark"][data-accent="teal"] { --acc:#4ac7cf; --btn-bg:#0d6e75; --badge:#0d6e75; --out:#18474d; }
-  @media (prefers-color-scheme: dark) {
-    :root:not([data-theme="light"])[data-accent="green"] { --acc:#56cf87; --btn-bg:#167a42; --badge:#167a42; --out:#1d4a35; }
-    :root:not([data-theme="light"])[data-accent="purple"] { --acc:#b392ff; --btn-bg:#6f3ec2; --badge:#6f3ec2; --out:#3a2c5e; }
-    :root:not([data-theme="light"])[data-accent="orange"] { --acc:#f59e42; --btn-bg:#b84c00; --badge:#b84c00; --out:#573419; }
-    :root:not([data-theme="light"])[data-accent="pink"] { --acc:#f47bb3; --btn-bg:#b32568; --badge:#b32568; --out:#57233f; }
-    :root:not([data-theme="light"])[data-accent="teal"] { --acc:#4ac7cf; --btn-bg:#0d6e75; --badge:#0d6e75; --out:#18474d; }
-  }
+  :root[data-theme="dark"], :root[data-theme="system"][data-resolved-theme="dark"] {
+          color-scheme: dark; --bg:#0e1621; --panel:#17212b; --fg:#e8eef4; --mut:#adc0d4;
+          --line:#26323f; --acc:#6bb0ff; --btn-bg:#1d68c4; --btn-fg:#ffffff; --in:#1f2c3a; --out:#1f4162; --badge:#1d68c4; --mute:#7c8f9f; --err:#ff7b7b; --ok:#4cc27f; --online:#61d59e;
+          --warn-bg:#3b2d08; --warn-fg:#ffe08a; --warn-border:#c99614; --chat-grad-a:#112238; --chat-grad-b:#0b131d; }
+  :root[data-theme="midnight"] {
+          color-scheme: dark; --bg:#05070b; --panel:#0c1018; --fg:#f0f4f8; --mut:#9aa7b8;
+          --line:#1e2636; --acc:#7cb7ff; --btn-bg:#2563c9; --btn-fg:#ffffff; --in:#131926; --out:#1b3457; --badge:#2563c9; --mute:#778599; --err:#ff8080; --ok:#52d18c; --online:#52d18c;
+          --warn-bg:#332605; --warn-fg:#ffe08a; --warn-border:#c99614; --chat-grad-a:#0c1628; --chat-grad-b:#04060a; }
+  :root[data-theme="telegram"] {
+          color-scheme: light; --bg:#d9e8f5; --panel:#f7fbff; --fg:#132230; --mut:#435a6e;
+          --line:#c4daec; --acc:#1464a5; --btn-bg:#1772bd; --btn-fg:#ffffff; --in:#ffffff; --out:#d4f4c8; --badge:#1772bd; --mute:#587187; --err:#b71c1c; --ok:#167940; --online:#167940;
+          --warn-bg:#fff6d6; --warn-fg:#6b4700; --warn-border:#d49b00; --chat-grad-a:#c7e0f5; --chat-grad-b:#dbeee2; }
+  :root[data-theme="green"] {
+          color-scheme: light; --bg:#e7f3ec; --panel:#f8fcf9; --fg:#10261a; --mut:#3c5c4a;
+          --line:#c8e0d1; --acc:#136b3a; --btn-bg:#157340; --btn-fg:#ffffff; --in:#ffffff; --out:#cdecd8; --badge:#157340; --mute:#4f705d; --err:#b71c1c; --ok:#136b3a; --online:#136b3a;
+          --warn-bg:#fff6d6; --warn-fg:#6b4700; --warn-border:#d49b00; --chat-grad-a:#d5ecdf; --chat-grad-b:#e8f5ec; }
+  :root[data-theme="purple"] {
+          color-scheme: light; --bg:#f0ebf9; --panel:#fbf9fe; --fg:#201533; --mut:#554470;
+          --line:#dad0ee; --acc:#5e30b0; --btn-bg:#6535bc; --btn-fg:#ffffff; --in:#ffffff; --out:#e3d6fb; --badge:#6535bc; --mute:#6b5a87; --err:#b71c1c; --ok:#167940; --online:#167940;
+          --warn-bg:#fff6d6; --warn-fg:#6b4700; --warn-border:#d49b00; --chat-grad-a:#e4daf8; --chat-grad-b:#f2ecfb; }
+  :root[data-theme="orange"] {
+          color-scheme: light; --bg:#faf0e6; --panel:#fffcf8; --fg:#2b1a0c; --mut:#6b4c32;
+          --line:#ebd6c0; --acc:#a34100; --btn-bg:#ab4500; --btn-fg:#ffffff; --in:#ffffff; --out:#fde2c6; --badge:#ab4500; --mute:#7c5c40; --err:#b71c1c; --ok:#157340; --online:#157340;
+          --warn-bg:#fff6d6; --warn-fg:#6b4700; --warn-border:#d49b00; --chat-grad-a:#f8e2cc; --chat-grad-b:#fcf3ea; }
+  :root[data-theme="pink"] {
+          color-scheme: light; --bg:#faebf2; --panel:#fff9fc; --fg:#2e1220; --mut:#6d4156;
+          --line:#ecd0de; --acc:#a31d5c; --btn-bg:#ad2163; --btn-fg:#ffffff; --in:#ffffff; --out:#fbd5e7; --badge:#ad2163; --mute:#7d5066; --err:#b71c1c; --ok:#157340; --online:#157340;
+          --warn-bg:#fff6d6; --warn-fg:#6b4700; --warn-border:#d49b00; --chat-grad-a:#f7d7e6; --chat-grad-b:#fcf0f6; }
+  :root[data-theme="high-contrast"] {
+          color-scheme: dark; --bg:#000000; --panel:#0a0a0a; --fg:#ffffff; --mut:#e0e0e0;
+          --line:#9a9a9a; --acc:#ffea00; --btn-bg:#ffea00; --btn-fg:#000000; --in:#141414; --out:#003566; --badge:#ffea00; --mute:#d0d0d0; --err:#ff6b6b; --ok:#5cff9d; --online:#5cff9d;
+          --warn-bg:#2b2100; --warn-fg:#ffea00; --warn-border:#ffea00; --chat-grad-a:#0a1526; --chat-grad-b:#000000; --bubble-border:#9a9a9a; }
+  :root[data-code-theme="dark"] {
+          --code-bg:#0d131c; --code-fg:#e6edf5; --code-border:#2a3748; --code-kw:#7cc0ff; --code-str:#7ee2a8; --code-cm:#94a7bc; --code-num:#ffb470; }
+  :root[data-accent="green"]:is([data-theme="system"],[data-theme="light"],[data-theme="dark"],[data-theme="midnight"]) { --acc:#167a42; --btn-bg:#167a42; --badge:#167a42; --out:#d5f2df; }
+  :root[data-accent="purple"]:is([data-theme="system"],[data-theme="light"],[data-theme="dark"],[data-theme="midnight"]) { --acc:#6f3ec2; --btn-bg:#6f3ec2; --badge:#6f3ec2; --out:#e9dffc; }
+  :root[data-accent="orange"]:is([data-theme="system"],[data-theme="light"],[data-theme="dark"],[data-theme="midnight"]) { --acc:#b84c00; --btn-bg:#b84c00; --badge:#b84c00; --out:#fde6d2; }
+  :root[data-accent="pink"]:is([data-theme="system"],[data-theme="light"],[data-theme="dark"],[data-theme="midnight"]) { --acc:#b32568; --btn-bg:#b32568; --badge:#b32568; --out:#fcdceb; }
+  :root[data-accent="teal"]:is([data-theme="system"],[data-theme="light"],[data-theme="dark"],[data-theme="midnight"]) { --acc:#0d6e75; --btn-bg:#0d6e75; --badge:#0d6e75; --out:#d3f1f3; }
+  :root[data-surface="dark"][data-accent="green"]:is([data-theme="system"],[data-theme="dark"],[data-theme="midnight"]) { --acc:#56cf87; --btn-bg:#167a42; --badge:#167a42; --out:#1d4a35; }
+  :root[data-surface="dark"][data-accent="purple"]:is([data-theme="system"],[data-theme="dark"],[data-theme="midnight"]) { --acc:#b392ff; --btn-bg:#6f3ec2; --badge:#6f3ec2; --out:#3a2c5e; }
+  :root[data-surface="dark"][data-accent="orange"]:is([data-theme="system"],[data-theme="dark"],[data-theme="midnight"]) { --acc:#f59e42; --btn-bg:#b84c00; --badge:#b84c00; --out:#573419; }
+  :root[data-surface="dark"][data-accent="pink"]:is([data-theme="system"],[data-theme="dark"],[data-theme="midnight"]) { --acc:#f47bb3; --btn-bg:#b32568; --badge:#b32568; --out:#57233f; }
+  :root[data-surface="dark"][data-accent="teal"]:is([data-theme="system"],[data-theme="dark"],[data-theme="midnight"]) { --acc:#4ac7cf; --btn-bg:#0d6e75; --badge:#0d6e75; --out:#18474d; }
   :root[data-bubble="rounded"] { --bubble-radius:18px; --bubble-pad:8px 14px 6px; --msg-gap:6px; }
   :root[data-bubble="compact"] { --bubble-radius:7px; --bubble-pad:4px 8px 3px; --msg-gap:2px; }
   * { box-sizing:border-box; }
@@ -47,7 +74,7 @@
           background:var(--bg); color:var(--fg); font:inherit; }
   textarea { resize:none; max-height:140px; }
   input:focus-visible, textarea:focus-visible, select:focus-visible, button:focus-visible, .chat:focus-visible { outline:2px solid var(--acc); outline-offset:1px; }
-  button { padding:8px 12px; border:0; border-radius:9px; background:var(--btn-bg); color:#fff; font:inherit; cursor:pointer; }
+  button { padding:8px 12px; border:0; border-radius:9px; background:var(--btn-bg); color:var(--btn-fg); font:inherit; cursor:pointer; }
   button.ghost { background:transparent; color:var(--acc); padding:6px 9px; }
   button.icon { background:transparent; color:var(--mut); padding:6px 9px; font-size:18px; line-height:1; }
   button:disabled { opacity:.5; cursor:default; }
@@ -67,7 +94,7 @@
   .meta { flex:1; min-width:0; }
   .row { display:flex; justify-content:space-between; gap:8px; align-items:center; }
   .t { font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family:var(--chat-font); font-size:var(--chat-font-size); }
-  .verified-badge { display:inline-flex; align-items:center; justify-content:center; width:15px; height:15px; border-radius:50%; background:var(--acc); color:#fff; font-size:10px; font-weight:700; flex:none; line-height:1; }
+  .verified-badge { display:inline-flex; align-items:center; justify-content:center; width:15px; height:15px; border-radius:50%; background:var(--acc); color:var(--btn-fg); font-size:10px; font-weight:700; flex:none; line-height:1; }
   .muted-icon { display:inline-flex; align-items:center; justify-content:center; color:var(--mute); flex:none; line-height:1; }
   .muted-icon svg { width:14px; height:14px; display:block; }
   .row1-right { display:inline-flex; align-items:center; gap:4px; flex:none; }
@@ -88,8 +115,8 @@
   .call-prev-icon { display:inline-flex; align-items:center; flex:none; }
   .call-prev-icon svg { width:13px; height:13px; display:block; }
   .row2-badges { display:inline-flex; align-items:center; gap:4px; flex:none; }
-  .mention-badge { background:var(--badge); color:#fff; border-radius:99px; width:20px; height:20px; font-size:12px; font-weight:700; display:inline-flex; align-items:center; justify-content:center; flex:none; }
-  .badge { background:var(--badge); color:#fff; border-radius:99px; padding:0 7px; font-size:12px; min-width:20px; text-align:center; flex:none; }
+  .mention-badge { background:var(--badge); color:var(--btn-fg); border-radius:99px; width:20px; height:20px; font-size:12px; font-weight:700; display:inline-flex; align-items:center; justify-content:center; flex:none; }
+  .badge { background:var(--badge); color:var(--btn-fg); border-radius:99px; padding:0 7px; font-size:12px; min-width:20px; text-align:center; flex:none; }
   .badge.mute { background:var(--mute); }
   .badge.dot { width:10px; height:10px; min-width:10px; padding:0; }
   .pin-badge { color:var(--mute); font-size:12px; flex:none; line-height:1; }
@@ -113,10 +140,7 @@
   .contact-main:hover { background:var(--bg); }
   .contact-main .t, .contact-status { display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .contact-status { color:var(--mut); font-size:13px; }
-  .contact-status.online { color:#187d4e; }
-  @media (prefers-color-scheme:dark) { .contact-status.online { color:#61d59e; } }
-  :root[data-theme="dark"] .contact-status.online { color:#61d59e; }
-  :root[data-theme="light"] .contact-status.online { color:#187d4e; }
+  .contact-status.online { color:var(--online); }
   .contact-menu { flex:none; position:relative; margin-top:8px; }
   .contact-menu summary { min-width:44px; min-height:44px; display:grid; place-items:center; list-style:none;
     cursor:pointer; color:var(--mut); border-radius:9px; }
@@ -138,16 +162,30 @@
   .contact-dialog .contact-actions { justify-content:flex-end; margin-top:12px; }
   .contact-dialog #contact-error { color:var(--err); }
   #msgs { flex:1; overflow-y:auto; padding:12px 14px; display:flex; flex-direction:column; gap:var(--msg-gap); font-family:var(--chat-font); font-size:var(--chat-font-size); line-height:var(--chat-line-height); }
+  :root[data-chat-bg="pattern"] #msgs, :root[data-chat-bg="pattern"] #appearance-preview {
+    background-color:var(--bg);
+    background-image:radial-gradient(color-mix(in srgb, var(--acc) 14%, transparent) 1.25px, transparent 1.25px),
+      radial-gradient(color-mix(in srgb, var(--fg) 7%, transparent) 1px, transparent 1px);
+    background-size:22px 22px;
+    background-position:0 0, 11px 11px;
+  }
+  :root[data-chat-bg="gradient"] #msgs, :root[data-chat-bg="gradient"] #appearance-preview {
+    background:linear-gradient(145deg, var(--chat-grad-a) 0%, var(--bg) 52%, var(--chat-grad-b) 100%);
+  }
   .day { align-self:center; color:var(--mut); font-size:12px; background:var(--panel); border-radius:99px; padding:2px 10px; margin:8px 0; }
-  .m { max-width:min(78%,560px); padding:var(--bubble-pad); border-radius:var(--bubble-radius); background:var(--in); word-wrap:break-word; overflow-wrap:anywhere; position:relative; font-family:var(--chat-font); font-size:var(--chat-font-size); line-height:var(--chat-line-height); }
+  .m { max-width:min(78%,560px); padding:var(--bubble-pad); border-radius:var(--bubble-radius); background:var(--in); border:1px solid var(--bubble-border); word-wrap:break-word; overflow-wrap:anywhere; position:relative; font-family:var(--chat-font); font-size:var(--chat-font-size); line-height:var(--chat-line-height); }
   .m.out { align-self:flex-end; background:var(--out); }
   :root[data-bubble="rounded"] .m:not(.out) { border-bottom-left-radius:5px; }
   :root[data-bubble="rounded"] .m.out { border-bottom-right-radius:5px; }
   .m .who { font-size:13px; font-weight:600; color:var(--acc); }
   .m .txt { white-space:pre-wrap; }
-  .m .txt code { font-family:ui-monospace,monospace; background:color-mix(in srgb, var(--fg) 8%, transparent); padding:1px 4px; border-radius:4px; }
-  .m .txt pre { margin:4px 0; padding:6px 8px; background:var(--bg); border-radius:6px; overflow-x:auto; white-space:pre; overflow-wrap:normal; }
-  .m .txt pre code { background:transparent; padding:0; border-radius:0; }
+  .m .txt code, #appearance-preview code { font-family:var(--code-font); background:var(--code-bg); color:var(--code-fg); border:1px solid var(--code-border); padding:1px 4px; border-radius:4px; }
+  .m .txt pre, #appearance-preview pre { margin:4px 0; padding:8px 10px; font-family:var(--code-font); background:var(--code-bg); color:var(--code-fg); border:1px solid var(--code-border); border-radius:8px; overflow-x:auto; white-space:pre; overflow-wrap:normal; }
+  .m .txt pre code, #appearance-preview pre code { background:transparent; border:0; padding:0; border-radius:0; color:inherit; }
+  .tok-kw { color:var(--code-kw); font-weight:600; }
+  .tok-str { color:var(--code-str); }
+  .tok-cm { color:var(--code-cm); font-style:italic; }
+  .tok-num { color:var(--code-num); }
   .m .txt blockquote { margin:4px 0; padding:2px 8px; border-left:3px solid var(--acc); }
   .m .txt .mention { color:var(--acc); }
   .m .txt .spoiler:not(.revealed) { background:var(--mut); border-radius:3px; cursor:pointer; }
@@ -186,13 +224,20 @@
   .compose-tools { display:flex; align-items:center; gap:4px; flex-wrap:wrap; }
   .compose-tools button { background:transparent; color:var(--mut); border:1px solid var(--line); padding:2px 9px; min-height:28px; font-size:13px; border-radius:7px; }
   .compose-tools button:hover { color:var(--acc); border-color:var(--acc); }
+  .compose-tools button[aria-pressed="true"], .compose-tools button.active { background:var(--btn-bg); color:var(--btn-fg); border-color:var(--btn-bg); }
   .compose-tools small { margin-left:auto; color:var(--mut); font-size:12px; }
   .compose-row { display:flex; gap:8px; align-items:flex-end; }
-  .compose-row textarea { font-family:var(--chat-font); font-size:var(--chat-font-size); }
-  #compose-preview { padding:6px 10px; border-radius:8px; background:var(--bg); border:1px solid var(--line); font-family:var(--chat-font); font-size:var(--chat-font-size); white-space:pre-wrap; overflow-wrap:anywhere; max-height:110px; overflow-y:auto; }
-  #compose-preview code { font-family:ui-monospace,monospace; background:color-mix(in srgb, var(--fg) 8%, transparent); padding:1px 4px; border-radius:4px; }
-  #compose-preview pre { margin:4px 0; padding:6px 8px; background:var(--panel); border-radius:6px; overflow-x:auto; white-space:pre; }
-  #compose-preview pre code { background:transparent; padding:0; }
+  .compose-editor { flex:1; min-width:0; min-height:40px; max-height:140px; overflow-y:auto; padding:9px 11px; border:1px solid var(--line); border-radius:9px;
+                    background:var(--bg); color:var(--fg); font-family:var(--chat-font); font-size:var(--chat-font-size); line-height:var(--chat-line-height);
+                    white-space:pre-wrap; word-wrap:break-word; overflow-wrap:anywhere; }
+  .compose-editor:focus-visible { outline:2px solid var(--acc); outline-offset:1px; }
+  .compose-editor.is-empty::before, .compose-editor:empty::before { content:attr(data-placeholder); color:var(--mut); pointer-events:none; }
+  .compose-editor strong, .compose-editor b { font-weight:700; }
+  .compose-editor em, .compose-editor i { font-style:italic; }
+  .compose-editor u { text-decoration:underline; }
+  .compose-editor s, .compose-editor strike, .compose-editor del { text-decoration:line-through; }
+  .compose-editor code { font-family:var(--code-font); background:var(--code-bg); color:var(--code-fg); border:1px solid var(--code-border); padding:1px 4px; border-radius:4px; }
+  .compose-editor pre { margin:4px 0; padding:6px 8px; font-family:var(--code-font); background:var(--code-bg); color:var(--code-fg); border:1px solid var(--code-border); border-radius:6px; white-space:pre-wrap; }
   #reply { display:none; padding:4px 12px; background:var(--panel); border-top:1px solid var(--line); color:var(--mut); font-size:13px; }
   #more { align-self:center; margin:6px 0; }
   .empty { margin:auto; color:var(--mut); text-align:center; padding:24px; }
@@ -236,8 +281,8 @@
   .settings-sep { margin:8px 8px 4px; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; color:var(--mut); }
   .settings-item { display:flex; align-items:center; justify-content:space-between; gap:8px; width:100%; text-align:left; padding:10px 12px; min-height:44px; border-radius:10px; background:transparent; color:var(--fg); font-weight:500; }
   .settings-item:hover { background:var(--panel); }
-  .settings-item[aria-current="page"] { background:var(--btn-bg); color:#fff; }
-  .settings-item[aria-current="page"] .soon-badge { background:#ffffff33; color:#fff; border-color:transparent; }
+  .settings-item[aria-current="page"] { background:var(--btn-bg); color:var(--btn-fg); }
+  .settings-item[aria-current="page"] .soon-badge { background:#ffffff33; color:var(--btn-fg); border-color:transparent; }
   .soon-badge { display:inline-block; padding:2px 8px; border-radius:99px; font-size:11px; font-weight:600; background:var(--panel); color:var(--mut); border:1px solid var(--line); flex:none; }
   .settings-detail { flex:1; min-width:0; overflow-y:auto; padding:16px 20px 24px; display:flex; flex-direction:column; gap:14px; }
   .settings-panel { display:flex; flex-direction:column; gap:14px; max-width:100%; }
@@ -255,6 +300,11 @@
   .choice-row { display:flex; flex-wrap:wrap; gap:8px; }
   .choice-btn { flex:1 1 92px; min-height:44px; padding:8px 10px; border-radius:10px; border:2px solid var(--line); background:var(--panel); color:var(--fg); display:inline-flex; align-items:center; justify-content:center; gap:6px; font-weight:500; }
   .choice-btn[aria-pressed="true"] { border-color:var(--acc); background:color-mix(in srgb, var(--acc) 12%, var(--panel)); color:var(--fg); }
+  .theme-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(136px, 1fr)); gap:8px; }
+  .theme-card { min-height:44px; padding:8px 10px; border-radius:10px; border:2px solid var(--line); background:var(--panel); color:var(--fg); display:flex; align-items:center; justify-content:flex-start; gap:8px; font-weight:500; text-align:left; }
+  .theme-card[aria-pressed="true"] { border-color:var(--acc); background:color-mix(in srgb, var(--acc) 12%, var(--panel)); color:var(--fg); }
+  .theme-swatch { display:inline-flex; align-items:center; border-radius:6px; overflow:hidden; border:1px solid var(--line); flex:none; height:18px; }
+  .theme-swatch i { display:block; width:8px; height:18px; }
   .accent-dot { width:14px; height:14px; border-radius:50%; flex:none; display:inline-block; }
   .range-row { display:flex; align-items:center; gap:8px; }
   .range-row button { min-width:44px; min-height:44px; padding:0 12px; background:var(--panel); color:var(--fg); border:1px solid var(--line); }
@@ -408,7 +458,7 @@
   .ci-member-info strong { display:block; font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .ci-member-info small { display:block; font-size:12px; color:var(--mut); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .role-badge { display:inline-block; padding:2px 8px; border-radius:99px; font-size:11px; font-weight:600; background:color-mix(in srgb, var(--acc) 14%, transparent); color:var(--acc); flex:none; }
-  .role-badge.creator { background:var(--btn-bg); color:#fff; }
+  .role-badge.creator { background:var(--btn-bg); color:var(--btn-fg); }
   @media (max-width:1059px) {
     .chat-info-drawer { position:fixed; top:0; right:0; bottom:0; width:min(340px, 50vw); z-index:7; box-shadow:-8px 0 28px rgba(0,0,0,.18); }
   }
@@ -426,11 +476,7 @@
   .ci-autodelete-current { margin:0; font-size:13px; font-weight:600; color:var(--fg); }
   .ci-autodelete-custom { display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin-top:4px; }
   .ci-autodelete-custom input[type=number] { flex:1 1 90px; min-width:80px; min-height:44px; max-width:100%; padding:8px 10px; border:1px solid var(--line); border-radius:9px; background:var(--panel); color:var(--fg); font:inherit; }
-  .ci-warn-banner { margin:0; padding:9px 11px; border-radius:9px; border:1px solid #d49b00; background:#fff6d6; color:#6b4700; font-size:13px; font-weight:600; line-height:1.4; }
-  :root[data-theme="dark"] .ci-warn-banner { border-color:#c99614; background:#3b2d08; color:#ffe08a; }
-  @media (prefers-color-scheme: dark) {
-    :root:not([data-theme="light"]) .ci-warn-banner { border-color:#c99614; background:#3b2d08; color:#ffe08a; }
-  }
+  .ci-warn-banner { margin:0; padding:9px 11px; border-radius:9px; border:1px solid var(--warn-border); background:var(--warn-bg); color:var(--warn-fg); font-size:13px; font-weight:600; line-height:1.4; }
 </style>
 </head>
 <body>
@@ -567,16 +613,18 @@
     <div id="typing" hidden></div>
     <div id="reply"><span id="reply-txt"></span> <button class="ghost" id="reply-x" aria-label="Bỏ trả lời">✕</button></div>
     <div id="composer" hidden>
-      <div id="compose-preview" hidden aria-live="polite"></div>
-      <div class="compose-tools">
-        <button type="button" id="fmt-bold" title="Chữ đậm (Ctrl/Cmd+B)" aria-label="Định dạng chữ đậm"><strong>B</strong></button>
-        <button type="button" id="fmt-italic" title="Chữ nghiêng (Ctrl/Cmd+I)" aria-label="Định dạng chữ nghiêng"><em>I</em></button>
-        <button type="button" id="fmt-code" title="Mã nguồn (Ctrl/Cmd+E)" aria-label="Định dạng mã nguồn">&lt;/&gt;</button>
-        <small>Hỗ trợ **đậm**, __nghiêng__, `mã`</small>
+      <div class="compose-tools" role="toolbar" aria-label="Định dạng văn bản">
+        <button type="button" id="fmt-bold" data-fmt="bold" aria-pressed="false" title="Đậm (Ctrl/Cmd+B)" aria-label="Định dạng chữ đậm"><strong>B</strong></button>
+        <button type="button" id="fmt-italic" data-fmt="italic" aria-pressed="false" title="Nghiêng (Ctrl/Cmd+I)" aria-label="Định dạng chữ nghiêng"><em>I</em></button>
+        <button type="button" id="fmt-underline" data-fmt="underline" aria-pressed="false" title="Gạch chân (Ctrl/Cmd+U)" aria-label="Định dạng gạch chân"><u>U</u></button>
+        <button type="button" id="fmt-strike" data-fmt="strikethrough" aria-pressed="false" title="Gạch giữa (Ctrl/Cmd+Shift+X)" aria-label="Định dạng gạch giữa"><s>S</s></button>
+        <button type="button" id="fmt-code" data-fmt="code" aria-pressed="false" title="Mã nguồn (Ctrl/Cmd+Shift+M)" aria-label="Định dạng mã nguồn">&lt;/&gt;</button>
+        <button type="button" id="fmt-clear" data-fmt="clear" title="Xoá định dạng (Ctrl/Cmd+Shift+N)" aria-label="Xoá định dạng">T<sub>x</sub></button>
+        <small>Enter gửi · Shift+Enter xuống dòng</small>
       </div>
       <div class="compose-row">
         <button class="icon" id="attach" aria-label="Đính kèm tệp">📎</button><input id="file" type="file" hidden>
-        <textarea id="text" rows="1" placeholder="Nhập tin nhắn…" aria-label="Tin nhắn"></textarea>
+        <div id="text" class="compose-editor is-empty" contenteditable="true" role="textbox" aria-multiline="true" aria-label="Tin nhắn" data-placeholder="Nhập tin nhắn…" spellcheck="true"></div>
         <button id="send">Gửi</button>
       </div>
     </div>
@@ -844,10 +892,33 @@
         <form id="appearance-form" class="settings-card">
           <div>
             <label>Chủ đề</label>
+            <div class="theme-grid" role="group" aria-label="Chủ đề giao diện">
+              <button type="button" id="theme-system" class="theme-card" data-theme="system" aria-pressed="true"><span class="theme-swatch" aria-hidden="true"><i style="background:#eef1f5"></i><i style="background:#0e1621"></i><i style="background:#155ab4"></i></span><span>Theo hệ thống</span></button>
+              <button type="button" id="theme-light" class="theme-card" data-theme="light" aria-pressed="false"><span class="theme-swatch" aria-hidden="true"><i style="background:#eef1f5"></i><i style="background:#ffffff"></i><i style="background:#d6eafd"></i><i style="background:#155ab4"></i></span><span>Sáng</span></button>
+              <button type="button" id="theme-dark" class="theme-card" data-theme="dark" aria-pressed="false"><span class="theme-swatch" aria-hidden="true"><i style="background:#0e1621"></i><i style="background:#1f2c3a"></i><i style="background:#1f4162"></i><i style="background:#6bb0ff"></i></span><span>Tối</span></button>
+              <button type="button" id="theme-midnight" class="theme-card" data-theme="midnight" aria-pressed="false"><span class="theme-swatch" aria-hidden="true"><i style="background:#05070b"></i><i style="background:#131926"></i><i style="background:#1b3457"></i><i style="background:#7cb7ff"></i></span><span>Tối sâu (Midnight)</span></button>
+              <button type="button" id="theme-telegram" class="theme-card" data-theme="telegram" aria-pressed="false"><span class="theme-swatch" aria-hidden="true"><i style="background:#d9e8f5"></i><i style="background:#ffffff"></i><i style="background:#d4f4c8"></i><i style="background:#1464a5"></i></span><span>Xanh Telegram cổ điển</span></button>
+              <button type="button" id="theme-green" class="theme-card" data-theme="green" aria-pressed="false"><span class="theme-swatch" aria-hidden="true"><i style="background:#e7f3ec"></i><i style="background:#ffffff"></i><i style="background:#cdecd8"></i><i style="background:#136b3a"></i></span><span>Xanh lá</span></button>
+              <button type="button" id="theme-purple" class="theme-card" data-theme="purple" aria-pressed="false"><span class="theme-swatch" aria-hidden="true"><i style="background:#f0ebf9"></i><i style="background:#ffffff"></i><i style="background:#e3d6fb"></i><i style="background:#5e30b0"></i></span><span>Tím</span></button>
+              <button type="button" id="theme-orange" class="theme-card" data-theme="orange" aria-pressed="false"><span class="theme-swatch" aria-hidden="true"><i style="background:#faf0e6"></i><i style="background:#ffffff"></i><i style="background:#fde2c6"></i><i style="background:#a34100"></i></span><span>Cam</span></button>
+              <button type="button" id="theme-pink" class="theme-card" data-theme="pink" aria-pressed="false"><span class="theme-swatch" aria-hidden="true"><i style="background:#faebf2"></i><i style="background:#ffffff"></i><i style="background:#fbd5e7"></i><i style="background:#a31d5c"></i></span><span>Hồng</span></button>
+              <button type="button" id="theme-high-contrast" class="theme-card" data-theme="high-contrast" aria-pressed="false"><span class="theme-swatch" aria-hidden="true"><i style="background:#000000"></i><i style="background:#141414"></i><i style="background:#003566"></i><i style="background:#ffea00"></i></span><span>Tương phản cao</span></button>
+            </div>
+          </div>
+          <div>
+            <label>Nền khung chat</label>
             <div class="choice-row">
-              <button type="button" id="theme-system" class="choice-btn" data-theme="system" aria-pressed="true">Theo hệ thống</button>
-              <button type="button" id="theme-light" class="choice-btn" data-theme="light" aria-pressed="false">Sáng</button>
-              <button type="button" id="theme-dark" class="choice-btn" data-theme="dark" aria-pressed="false">Tối</button>
+              <button type="button" id="chat-bg-plain" class="choice-btn" data-chat-bg="plain" aria-pressed="true">Trơn</button>
+              <button type="button" id="chat-bg-pattern" class="choice-btn" data-chat-bg="pattern" aria-pressed="false">Họa tiết nhẹ</button>
+              <button type="button" id="chat-bg-gradient" class="choice-btn" data-chat-bg="gradient" aria-pressed="false">Chuyển sắc</button>
+            </div>
+          </div>
+          <div>
+            <label>Chủ đề khối mã (&lt;/&gt; và ```)</label>
+            <div class="choice-row">
+              <button type="button" id="code-theme-auto" class="choice-btn" data-code-theme="auto" aria-pressed="true">Theo chủ đề</button>
+              <button type="button" id="code-theme-light" class="choice-btn" data-code-theme="light" aria-pressed="false">Sáng</button>
+              <button type="button" id="code-theme-dark" class="choice-btn" data-code-theme="dark" aria-pressed="false">Tối</button>
             </div>
           </div>
           <div>
@@ -899,7 +970,7 @@
           <p id="appearance-status" class="settings-status" role="status" aria-live="polite"></p>
           <p id="appearance-error" class="settings-error" role="alert"></p>
           <div class="settings-actions">
-            <button type="button" id="appearance-reset" class="ghost">Mặc định</button>
+            <button type="button" id="appearance-reset" class="ghost">Đặt lại</button>
             <button type="submit" id="appearance-save">Lưu giao diện</button>
           </div>
         </form>
@@ -1382,6 +1453,21 @@
     if (type === "text_mention" && user_id != null) node.dataset.userId = String(user_id);
     return [node];
   }
+  const CODE_TOK_RE = /(\/\/[^\n]*|\/\*[\s\S]*?\*\/|#[^\n]*|"(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'|`(?:\\.|[^`\\])*`|\b(?:const|let|var|fn|func|function|def|class|struct|enum|impl|trait|pub|return|if|else|for|while|loop|match|switch|case|break|continue|async|await|try|catch|import|from|export|use|mod|true|false|null|None|self|this|new)\b|\b\d+(?:\.\d+)?\b)/g;
+  function highlightCode(parent, source) {
+    let pos = 0;
+    for (const m of source.matchAll(CODE_TOK_RE)) {
+      if (m.index > pos) parent.appendChild(document.createTextNode(source.slice(pos, m.index)));
+      const tok = m[0];
+      const cls = (tok.startsWith("//") || tok.startsWith("/*") || tok.startsWith("#")) ? "tok-cm"
+        : (tok[0] === '"' || tok[0] === "'" || tok[0] === "`") ? "tok-str"
+        : /^\d/.test(tok) ? "tok-num"
+        : "tok-kw";
+      parent.appendChild(el("span", cls, tok));
+      pos = m.index + tok.length;
+    }
+    if (pos < source.length) parent.appendChild(document.createTextNode(source.slice(pos)));
+  }
   function renderText(parent, text, entities) {
     if (!Array.isArray(entities) || !entities.length) { linkify(parent, text); return; }
     const ranges = [];
@@ -1430,7 +1516,10 @@
         if (node) { target.appendChild(node); target = inner ? node.appendChild(inner) : node; }
         stack.push({ range, target });
       }
-      target.appendChild(document.createTextNode(text.slice(start, boundaries[i + 1])));
+      const slice = text.slice(start, boundaries[i + 1]);
+      const inPre = active.some((r) => r.type === "pre") && !active.some((r) => r.tag === "a" || r.type === "spoiler");
+      if (inPre) highlightCode(target, slice);
+      else target.appendChild(document.createTextNode(slice));
     }
   }
   function fileSize(n) { return n > 1048576 ? (n / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(n / 1024)) + " KB"; }
@@ -1547,7 +1636,7 @@
       markRead(c.id, msgs);
     } catch (e) { toast(e.message); }
     if (typeof onChatOpened === "function") onChatOpened(c);
-    updateComposePreview();
+    if (typeof updateComposerToolbar === "function") updateComposerToolbar();
     $("text").focus();
   }
   async function loadOlder() {
@@ -1567,168 +1656,710 @@
   }
 
   // ---- định dạng soạn tin -----------------------------------------------------------------------
-  function parseInlineFormats(src, from, to, baseOffset, stopMarker, active) {
+  const COMPOSER_FORMATS = { bold: "strong", italic: "em", underline: "u", strikethrough: "s", code: "code" };
+  const COMPOSER_BUTTONS = [
+    ["fmt-bold", "bold"], ["fmt-italic", "italic"], ["fmt-underline", "underline"],
+    ["fmt-strike", "strikethrough"], ["fmt-code", "code"],
+  ];
+  const COMPOSER_ALLOWED_TYPES = new Set(["bold", "italic", "underline", "strikethrough", "code", "pre"]);
+  const COMPOSER_FORMAT_ORDER = { bold: 0, italic: 1, underline: 2, strikethrough: 3, code: 4, pre: 5 };
+  const COMPOSER_TAG_MAP = new Map([
+    ["strong", "bold"], ["b", "bold"],
+    ["em", "italic"], ["i", "italic"],
+    ["u", "underline"],
+    ["s", "strikethrough"], ["strike", "strikethrough"], ["del", "strikethrough"],
+    ["code", "code"], ["pre", "pre"],
+  ]);
+  const COMPOSER_BLOCK_TAGS = new Set(["div", "p", "li", "blockquote", "pre", "h1", "h2", "h3", "h4", "h5", "h6"]);
+  const COMPOSER_SKIP_TAGS = new Set(["script", "style", "noscript", "template"]);
+  let isComposing = false;
+  let lastComposerRange = null;
+
+  function isUtf16Boundary(str, pos) {
+    if (pos < 0 || pos > str.length) return false;
+    if (pos === 0 || pos === str.length) return true;
+    const c = str.charCodeAt(pos);
+    return c < 0xDC00 || c > 0xDFFF;
+  }
+  function nodeTagName(node) {
+    return String(node?.tagName || node?.tag || "").toLowerCase();
+  }
+  function nodeChildList(node) {
+    return Array.from(node?.childNodes || node?.children || []);
+  }
+  function isTextLikeNode(node) {
+    return typeof node === "string" || node?.nodeType === 3;
+  }
+  function isElementLikeNode(node) {
+    return Boolean(node && typeof node === "object" && (node.nodeType === 1 || (!node.nodeType && (node.tag || node.tagName))));
+  }
+  function nodeInlineFormats(node) {
+    const out = [];
+    const st = node?.style;
+    if (!st) return out;
+    const fw = String(st.fontWeight || "").toLowerCase();
+    if (fw === "bold" || fw === "bolder" || (Number(fw) >= 600 && Number.isFinite(Number(fw)))) out.push("bold");
+    if (String(st.fontStyle || "").toLowerCase() === "italic") out.push("italic");
+    const td = String(st.textDecorationLine || st.textDecoration || "").toLowerCase();
+    if (td.includes("underline")) out.push("underline");
+    if (td.includes("line-through")) out.push("strikethrough");
+    return out;
+  }
+  function collectNodeFormats(node, active) {
+    const next = new Map(active);
+    if (!isElementLikeNode(node)) return next;
+    const tag = nodeTagName(node);
+    const mapped = COMPOSER_TAG_MAP.get(tag);
+    if (mapped) {
+      if (mapped === "pre") {
+        const rawLang = String(node.dataset?.language || node.getAttribute?.("data-language") || "").trim();
+        const language = rawLang && rawLang.length <= 64 && !/[\u0000-\u001F\u007F]/.test(rawLang) ? rawLang : "";
+        next.set("pre:" + language, { type: "pre", language });
+      } else if (!(mapped === "code" && Array.from(active.values()).some((v) => v.type === "pre"))) {
+        next.set(mapped, { type: mapped, language: "" });
+      }
+    }
+    for (const fmt of nodeInlineFormats(node)) {
+      if (!next.has(fmt)) next.set(fmt, { type: fmt, language: "" });
+    }
+    return next;
+  }
+  function nodeHasMeaningfulContent(node) {
+    if (isTextLikeNode(node)) {
+      const txt = String(typeof node === "string" ? node : (node.nodeValue ?? node.textContent ?? "")).replace(/\u200B/g, "");
+      return txt.length > 0;
+    }
+    if (!isElementLikeNode(node)) return false;
+    const tag = nodeTagName(node);
+    if (COMPOSER_SKIP_TAGS.has(tag)) return false;
+    if (tag === "br" || COMPOSER_BLOCK_TAGS.has(tag)) return true;
+    return nodeChildList(node).some(nodeHasMeaningfulContent);
+  }
+  function extractComposerContent(root) {
+    if (!root) return { text: "", entities: [] };
     const parts = [];
-    const entities = [];
+    const rawEntities = [];
+    const open = new Map();
     let outLen = 0;
-    let i = from;
-    const emit = (chunk) => { if (chunk) { parts.push(chunk); outLen += chunk.length; } };
-    while (i < to) {
-      if (stopMarker && src.startsWith(stopMarker, i) && i > from && !/\s/.test(src[i - 1])
-          && (stopMarker !== "__" || !/[A-Za-z0-9_]/.test(src[i + 2] || ""))) {
-        return { matched: true, next: i + stopMarker.length, parts, textLen: outLen, entities };
-      }
-      if (src.startsWith("```", i)) {
-        const close = src.indexOf("```", i + 3);
-        if (close > i + 3 && close < to) {
-          const raw = src.slice(i + 3, close);
-          const langMatch = /^([A-Za-z0-9_+-]{1,32})\r?\n([\s\S]+)$/.exec(raw);
-          let lang = "";
-          let body = raw;
-          if (langMatch) {
-            lang = langMatch[1];
-            body = langMatch[2].replace(/\r?\n$/, "");
-          } else if (raw.startsWith("\n") || raw.startsWith("\r\n")) {
-            body = raw.replace(/^\r?\n/, "").replace(/\r?\n$/, "");
+    let blockEnded = false;
+
+    const closeMissing = (activeMap) => {
+      for (const [key, ent] of open.entries()) {
+        if (!activeMap.has(key)) {
+          const len = outLen - ent.offset;
+          if (len > 0) {
+            const item = { type: ent.type, offset: ent.offset, length: len };
+            if (ent.language) item.language = ent.language;
+            rawEntities.push(item);
           }
-          if (body.length > 0) {
-            const entity = { type: "pre", offset: baseOffset + outLen, length: body.length };
-            if (lang) entity.language = lang;
-            entities.push(entity);
-            emit(body);
-            i = close + 3;
-            continue;
-          }
+          open.delete(key);
         }
       }
-      if (src[i] === "`" && !src.startsWith("```", i)) {
-        const close = src.indexOf("`", i + 1);
-        if (close > i + 1 && close < to) {
-          const body = src.slice(i + 1, close);
-          if (body && !body.includes("\n") && !body.includes("\r")) {
-            entities.push({ type: "code", offset: baseOffset + outLen, length: body.length });
-            emit(body);
-            i = close + 1;
-            continue;
-          }
-        }
+    };
+    const emit = (chunk, activeMap) => {
+      if (!chunk) return;
+      closeMissing(activeMap);
+      for (const [key, spec] of activeMap.entries()) {
+        if (!open.has(key)) open.set(key, { type: spec.type, offset: outLen, language: spec.language || "" });
       }
-      if ((i === 0 || !/[A-Za-z0-9]/.test(src[i - 1])) && (src.startsWith("https://", i) || src.startsWith("http://", i))) {
-        const match = /^https?:\/\/[^\s<>"']+/.exec(src.slice(i, to));
-        if (match) {
-          let url = match[0];
-          if (stopMarker && url.endsWith(stopMarker)) url = url.slice(0, -stopMarker.length);
-          if (url.length > 7) {
-            emit(url);
-            i += url.length;
-            continue;
+      parts.push(chunk);
+      outLen += chunk.length;
+    };
+
+    const walk = (node, active, inBlock) => {
+      const children = nodeChildList(node);
+      for (let i = 0; i < children.length; i++) {
+        const child = children[i];
+        if (isTextLikeNode(child)) {
+          const raw = typeof child === "string" ? child : (child.nodeValue ?? child.textContent ?? "");
+          const clean = String(raw).replace(/\u200B/g, "").replace(/\r\n?/g, "\n");
+          if (!clean) continue;
+          if (blockEnded) {
+            emit("\n", active);
+            blockEnded = false;
           }
-        }
-      }
-      const marker = src.startsWith("**", i) ? "**" : src.startsWith("__", i) ? "__" : "";
-      if (marker && !active.has(marker) && i + 2 < to && !/\s/.test(src[i + 2])
-          && (marker !== "__" || i === 0 || !/[A-Za-z0-9_]/.test(src[i - 1]))) {
-        const nextActive = new Set(active);
-        nextActive.add(marker);
-        const res = parseInlineFormats(src, i + 2, to, baseOffset + outLen, marker, nextActive);
-        if (res.matched && res.textLen > 0) {
-          entities.push({ type: marker === "**" ? "bold" : "italic", offset: baseOffset + outLen, length: res.textLen });
-          for (const nested of res.entities) entities.push(nested);
-          for (const chunk of res.parts) emit(chunk);
-          i = res.next;
+          emit(clean, active);
           continue;
         }
+        if (!isElementLikeNode(child)) continue;
+        const tag = nodeTagName(child);
+        if (COMPOSER_SKIP_TAGS.has(tag)) continue;
+        if (tag === "br") {
+          const hasAfter = children.slice(i + 1).some(nodeHasMeaningfulContent);
+          if (!hasAfter && ((inBlock && node !== root) || (outLen === 0 && !blockEnded))) continue;
+          if (blockEnded) {
+            emit("\n", active);
+            blockEnded = false;
+          }
+          emit("\n", active);
+          continue;
+        }
+        const isBlock = COMPOSER_BLOCK_TAGS.has(tag);
+        if (isBlock) {
+          if (outLen > 0 || blockEnded) {
+            emit("\n", active);
+            blockEnded = false;
+          }
+          walk(child, collectNodeFormats(child, active), true);
+          blockEnded = true;
+        } else {
+          if (blockEnded && nodeHasMeaningfulContent(child)) {
+            emit("\n", active);
+            blockEnded = false;
+          }
+          walk(child, collectNodeFormats(child, active), inBlock);
+        }
       }
-      emit(src[i]);
-      i += 1;
-    }
-    return { matched: false, next: to, parts, textLen: outLen, entities };
+    };
+
+    walk(root, new Map(), false);
+    closeMissing(new Map());
+    const text = parts.join("");
+    const entities = rawEntities
+      .filter((e) => e.length > 0 && e.offset >= 0 && e.offset + e.length <= text.length
+        && isUtf16Boundary(text, e.offset) && isUtf16Boundary(text, e.offset + e.length))
+      .sort((a, b) => a.offset - b.offset || b.length - a.length || (COMPOSER_FORMAT_ORDER[a.type] ?? 99) - (COMPOSER_FORMAT_ORDER[b.type] ?? 99))
+      .slice(0, 100);
+    return { text, entities };
   }
-  function parseComposerFormats(input) {
-    const src = typeof input === "string" ? input : "";
-    if (!src) return { text: "", entities: [] };
-    const res = parseInlineFormats(src, 0, src.length, 0, null, new Set());
-    return { text: res.parts.join(""), entities: res.entities };
+
+  function getSelectionInEditor(editor) {
+    if (typeof window === "undefined" || typeof window.getSelection !== "function") return null;
+    const sel = window.getSelection();
+    if (!sel || !sel.rangeCount) return null;
+    const range = sel.getRangeAt(0);
+    if (!editor.contains(range.commonAncestorContainer)) return null;
+    return { sel, range };
+  }
+  function saveComposerSelection(editor) {
+    const info = getSelectionInEditor(editor || $("text"));
+    if (info) lastComposerRange = info.range.cloneRange();
+  }
+  function getActiveComposerFormats(editor) {
+    const ed = editor || $("text");
+    const active = new Set();
+    if (!ed) return active;
+    const info = getSelectionInEditor(ed);
+    if (!info) return active;
+    const collectAncestors = (startNode) => {
+      const set = new Set();
+      let curNode = startNode?.nodeType === 3 ? startNode.parentNode : startNode;
+      while (curNode && curNode !== ed) {
+        for (const spec of collectNodeFormats(curNode, new Map()).values()) {
+          if (spec.type !== "pre") set.add(spec.type);
+        }
+        curNode = curNode.parentNode;
+      }
+      return set;
+    };
+    const { range } = info;
+    if (range.collapsed) return collectAncestors(range.startContainer);
+    const textNodes = collectRangeTextNodes(ed, range);
+    if (!textNodes.length) return collectAncestors(range.startContainer);
+    const first = collectAncestors(textNodes[0]);
+    for (const fmt of first) {
+      if (textNodes.every((tn) => collectAncestors(tn).has(fmt))) active.add(fmt);
+    }
+    return active;
+  }
+  function updateComposerToolbar(editor) {
+    const ed = editor || $("text");
+    const active = getActiveComposerFormats(ed);
+    for (const [id, kind] of COMPOSER_BUTTONS) {
+      const btn = $(id);
+      if (!btn) continue;
+      const on = active.has(kind);
+      btn.setAttribute("aria-pressed", String(on));
+      btn.classList?.toggle("active", on);
+    }
+  }
+  function syncComposerEmpty(editor) {
+    const ed = editor || $("text");
+    if (!ed || isComposing) return;
+    const { text } = extractComposerContent(ed);
+    ed.classList?.toggle("is-empty", !text);
+  }
+  function nodeHasFormatKind(editor, node, kind) {
+    let curNode = node?.nodeType === 3 ? node.parentNode : node;
+    while (curNode && curNode !== editor) {
+      for (const spec of collectNodeFormats(curNode, new Map()).values()) {
+        if (kind === "clear" || spec.type === kind) return true;
+      }
+      curNode = curNode.parentNode;
+    }
+    return false;
+  }
+  function findHighestFormatAncestor(editor, node, kind) {
+    let curNode = node?.nodeType === 3 ? node.parentNode : node;
+    let found = null;
+    while (curNode && curNode !== editor) {
+      const fmts = collectNodeFormats(curNode, new Map());
+      if (kind === "clear" ? fmts.size > 0 : fmts.has(kind)) found = curNode;
+      curNode = curNode.parentNode;
+    }
+    return found;
+  }
+  function cloneShellWithoutFormat(node, kind) {
+    const clone = node.cloneNode(false);
+    if (nodeTagName(clone) === "span" && kind !== "clear") {
+      if (kind === "bold") clone.style.fontWeight = "";
+      if (kind === "italic") clone.style.fontStyle = "";
+      if (kind === "underline" || kind === "strikethrough") {
+        const line = String(clone.style.textDecorationLine || clone.style.textDecoration || "");
+        clone.style.textDecorationLine = line.replace(kind === "underline" ? /\bunderline\b/gi : /\bline-through\b/gi, "").trim();
+      }
+    }
+    return clone;
+  }
+  function fragmentHasContent(frag) {
+    return Array.from(frag.childNodes || []).some((n) => (n.nodeType === 3 ? n.nodeValue !== "" : true));
+  }
+  function splitAncestorForNode(editor, anc, targetNode, kind) {
+    const parent = anc.parentNode;
+    if (!parent) return;
+    const beforeRange = document.createRange();
+    beforeRange.setStart(anc, 0);
+    beforeRange.setEndBefore(targetNode);
+    const beforeFrag = beforeRange.extractContents();
+    if (fragmentHasContent(beforeFrag)) {
+      const beforeWrap = anc.cloneNode(false);
+      beforeWrap.appendChild(beforeFrag);
+      parent.insertBefore(beforeWrap, anc);
+    }
+    const afterRange = document.createRange();
+    afterRange.setStartAfter(targetNode);
+    afterRange.setEnd(anc, anc.childNodes.length);
+    const afterFrag = afterRange.extractContents();
+    if (fragmentHasContent(afterFrag)) {
+      const afterWrap = anc.cloneNode(false);
+      afterWrap.appendChild(afterFrag);
+      parent.insertBefore(afterWrap, anc.nextSibling);
+    }
+    const tag = nodeTagName(anc);
+    if (tag === "span" && kind !== "clear" && nodeInlineFormats(cloneShellWithoutFormat(anc, kind)).length > 0) {
+      const keep = cloneShellWithoutFormat(anc, kind);
+      while (anc.firstChild) keep.appendChild(anc.firstChild);
+      parent.replaceChild(keep, anc);
+    } else {
+      while (anc.firstChild) parent.insertBefore(anc.firstChild, anc);
+      anc.remove();
+    }
+  }
+  function unwrapFormatAtTextNode(editor, textNode, kind) {
+    let anc;
+    while ((anc = findHighestFormatAncestor(editor, textNode, kind)) !== null) {
+      splitAncestorForNode(editor, anc, textNode, kind);
+    }
+  }
+  function collectRangeTextNodes(editor, range) {
+    if (typeof document.createTreeWalker !== "function") return [];
+    const nodes = [];
+    const walker = document.createTreeWalker(editor, 4);
+    let node;
+    while ((node = walker.nextNode())) {
+      if (!node.nodeValue) continue;
+      if (typeof range.intersectsNode === "function" ? range.intersectsNode(node) : true) {
+        nodes.push(node);
+      }
+    }
+    return nodes;
+  }
+  function splitRangeBoundaries(range) {
+    if (range.endContainer.nodeType === 3 && range.endOffset > 0 && range.endOffset < range.endContainer.nodeValue.length) {
+      range.endContainer.splitText(range.endOffset);
+    }
+    if (range.startContainer.nodeType === 3 && range.startOffset > 0 && range.startOffset < range.startContainer.nodeValue.length) {
+      const next = range.startContainer.splitText(range.startOffset);
+      if (range.startContainer === range.endContainer) {
+        range.setStart(next, 0);
+        range.setEnd(next, next.nodeValue.length);
+      } else {
+        range.setStart(next, 0);
+      }
+    }
+  }
+  function cleanEmptyFormatTags(editor) {
+    if (typeof editor.querySelectorAll !== "function") return;
+    for (const node of Array.from(editor.querySelectorAll("strong,b,em,i,u,s,strike,del,code"))) {
+      if (!node.textContent && !node.querySelector("br")) node.remove();
+    }
   }
   function applyComposerFormat(kind, target) {
-    const t = target || $("text");
-    if (!t) return;
-    const markers = { bold: ["**", "chữ đậm"], italic: ["__", "chữ nghiêng"], code: ["`", "mã"] };
-    const spec = markers[kind];
-    if (!spec) return;
-    const [marker, placeholder] = spec;
-    const value = t.value || "";
-    const start = typeof t.selectionStart === "number" ? t.selectionStart : value.length;
-    const end = typeof t.selectionEnd === "number" ? t.selectionEnd : start;
-    const selected = value.slice(start, end);
-    let nextValue = value;
-    let selStart = start;
-    let selEnd = end;
-    if (!selected) {
-      nextValue = value.slice(0, start) + marker + placeholder + marker + value.slice(end);
-      selStart = start + marker.length;
-      selEnd = selStart + placeholder.length;
-    } else if (selected.startsWith(marker) && selected.endsWith(marker) && selected.length > marker.length * 2) {
-      const inner = selected.slice(marker.length, -marker.length);
-      nextValue = value.slice(0, start) + inner + value.slice(end);
-      selStart = start;
-      selEnd = start + inner.length;
-    } else if (start >= marker.length && value.slice(start - marker.length, start) === marker && value.slice(end, end + marker.length) === marker) {
-      nextValue = value.slice(0, start - marker.length) + selected + value.slice(end + marker.length);
-      selStart = start - marker.length;
-      selEnd = selStart + selected.length;
-    } else {
-      nextValue = value.slice(0, start) + marker + selected + marker + value.slice(end);
-      selStart = start + marker.length;
-      selEnd = selStart + selected.length;
+    const ed = target || $("text");
+    if (!ed || isComposing) return;
+    if (kind !== "clear" && !COMPOSER_FORMATS[kind]) return;
+    if (typeof ed.focus === "function") ed.focus();
+    let info = getSelectionInEditor(ed);
+    if (!info && lastComposerRange && typeof window !== "undefined" && typeof window.getSelection === "function" && ed.contains(lastComposerRange.commonAncestorContainer)) {
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(lastComposerRange);
+      info = getSelectionInEditor(ed);
     }
-    t.value = nextValue;
-    if (typeof t.setSelectionRange === "function") t.setSelectionRange(selStart, selEnd);
-    if (t.style) { t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight || 40, 140) + "px"; }
-    updateComposePreview();
-    if (typeof t.focus === "function") t.focus();
+    if (!info) return;
+    const { sel, range } = info;
+    if (range.collapsed) {
+      const container = range.startContainer;
+      const offset = range.startOffset;
+      const anchorFmt = container.nodeType === 3 && container.nodeValue === "\u200B" ? container.parentNode : null;
+      const currentFmts = [];
+      let p = container.nodeType === 3 ? container.parentNode : container;
+      while (p && p !== ed) {
+        for (const spec of collectNodeFormats(p, new Map()).values()) {
+          if (spec.type !== "pre" && !currentFmts.includes(spec.type)) currentFmts.push(spec.type);
+        }
+        p = p.parentNode;
+      }
+      if (kind !== "clear" && !currentFmts.includes(kind)) {
+        const wrapper = document.createElement(COMPOSER_FORMATS[kind]);
+        const zw = document.createTextNode("\u200B");
+        wrapper.appendChild(zw);
+        range.insertNode(wrapper);
+        const nr = document.createRange();
+        nr.setStart(zw, 1);
+        nr.collapse(true);
+        sel.removeAllRanges();
+        sel.addRange(nr);
+      } else {
+        const anc = findHighestFormatAncestor(ed, container, kind);
+        if (anc) {
+          if (anchorFmt && anchorFmt === anc && anchorFmt.textContent === "\u200B") {
+            const parent = anc.parentNode;
+            const nr = document.createRange();
+            nr.setStartBefore(anc);
+            nr.collapse(true);
+            anc.remove();
+            if (parent) { sel.removeAllRanges(); sel.addRange(nr); }
+          } else {
+            let splitNode = container;
+            if (container.nodeType === 3 && offset > 0 && offset < container.nodeValue.length) {
+              splitNode = container.splitText(offset);
+            }
+            const beforeRange = document.createRange();
+            beforeRange.setStart(anc, 0);
+            if (container.nodeType === 3) {
+              beforeRange.setEnd(container.nodeType === 3 && offset === 0 ? container : splitNode, container.nodeType === 3 && offset > 0 && offset < container.nodeValue.length ? 0 : (offset === 0 ? 0 : container.nodeValue.length));
+            } else {
+              beforeRange.setEnd(container, offset);
+            }
+            const beforeFrag = beforeRange.extractContents();
+            const afterRange = document.createRange();
+            afterRange.selectNodeContents(anc);
+            const afterFrag = afterRange.extractContents();
+            const parent = anc.parentNode;
+            if (fragmentHasContent(beforeFrag)) {
+              const bw = anc.cloneNode(false);
+              bw.appendChild(beforeFrag);
+              parent.insertBefore(bw, anc);
+            }
+            const remaining = kind === "clear" ? [] : currentFmts.filter((f) => f !== kind).reverse();
+            let leaf = document.createTextNode("\u200B");
+            const caretNode = leaf;
+            for (const f of remaining) {
+              const w = document.createElement(COMPOSER_FORMATS[f]);
+              w.appendChild(leaf);
+              leaf = w;
+            }
+            parent.insertBefore(leaf, anc);
+            if (fragmentHasContent(afterFrag)) {
+              const aw = anc.cloneNode(false);
+              aw.appendChild(afterFrag);
+              parent.insertBefore(aw, anc);
+            }
+            anc.remove();
+            const nr = document.createRange();
+            nr.setStart(caretNode, 1);
+            nr.collapse(true);
+            sel.removeAllRanges();
+            sel.addRange(nr);
+          }
+        }
+      }
+      cleanEmptyFormatTags(ed);
+      saveComposerSelection(ed);
+      syncComposerEmpty(ed);
+      updateComposerToolbar(ed);
+      return;
+    }
+
+    splitRangeBoundaries(range);
+    const textNodes = collectRangeTextNodes(ed, range);
+    if (!textNodes.length) return;
+    if (kind === "clear") {
+      for (const tn of textNodes) unwrapFormatAtTextNode(ed, tn, "clear");
+    } else {
+      const allFormatted = textNodes.every((tn) => nodeHasFormatKind(ed, tn, kind));
+      if (allFormatted) {
+        for (const tn of textNodes) unwrapFormatAtTextNode(ed, tn, kind);
+      } else {
+        for (const tn of textNodes) {
+          if (nodeHasFormatKind(ed, tn, kind)) continue;
+          const wrap = document.createElement(COMPOSER_FORMATS[kind]);
+          tn.parentNode.insertBefore(wrap, tn);
+          wrap.appendChild(tn);
+        }
+      }
+    }
+    cleanEmptyFormatTags(ed);
+    const nr = document.createRange();
+    nr.setStart(textNodes[0], 0);
+    const last = textNodes[textNodes.length - 1];
+    nr.setEnd(last, last.nodeValue.length);
+    sel.removeAllRanges();
+    sel.addRange(nr);
+    saveComposerSelection(ed);
+    syncComposerEmpty(ed);
+    updateComposerToolbar(ed);
   }
-  function updateComposePreview() {
-    const preview = $("compose-preview"), t = $("text");
-    if (!preview || !t) return;
-    const raw = t.value || "";
-    if (!raw.trim()) { preview.hidden = true; preview.textContent = ""; return; }
-    const parsed = parseComposerFormats(raw);
-    if (!parsed.entities.length) { preview.hidden = true; preview.textContent = ""; return; }
-    preview.textContent = "";
-    renderText(preview, parsed.text, parsed.entities);
-    preview.hidden = false;
+
+  function stripHtmlToPlainText(rawHtml) {
+    const src = String(rawHtml || "");
+    if (!src) return "";
+    if (typeof DOMParser === "function") {
+      const doc = new DOMParser().parseFromString(src, "text/html");
+      for (const bad of doc.querySelectorAll("script,style,noscript,template")) bad.remove();
+      const lines = [];
+      let blockPending = false;
+      const walkPlain = (node) => {
+        for (const ch of Array.from(node.childNodes || [])) {
+          if (ch.nodeType === 3) {
+            if (ch.nodeValue) {
+              if (blockPending) { lines.push("\n"); blockPending = false; }
+              lines.push(ch.nodeValue);
+            }
+          } else if (ch.nodeType === 1) {
+            const tag = ch.tagName.toLowerCase();
+            if (COMPOSER_SKIP_TAGS.has(tag)) continue;
+            if (tag === "br") { lines.push("\n"); blockPending = false; continue; }
+            if (COMPOSER_BLOCK_TAGS.has(tag)) {
+              if (lines.length || blockPending) { lines.push("\n"); blockPending = false; }
+              walkPlain(ch);
+              blockPending = true;
+            } else {
+              walkPlain(ch);
+            }
+          }
+        }
+      };
+      if (doc.body) walkPlain(doc.body);
+      return lines.join("").replace(/\u200B/g, "");
+    }
+    return src
+      .replace(/<(script|style|noscript|template)\b[^>]*>[\s\S]*?<\/\1>/gi, "")
+      .replace(/<br\s*\/?>/gi, "\n")
+      .replace(/<\/(?:div|p|li|tr|h[1-6]|blockquote|pre)>/gi, "\n")
+      .replace(/<[^>]+>/g, "")
+      .replace(/&nbsp;/gi, " ")
+      .replace(/&lt;/gi, "<")
+      .replace(/&gt;/gi, ">")
+      .replace(/&quot;/gi, '"')
+      .replace(/&#39;/gi, "'")
+      .replace(/&amp;/gi, "&")
+      .replace(/\u200B/g, "");
+  }
+  function extractPastePayload(clipboardData) {
+    if (!clipboardData || typeof clipboardData.getData !== "function") return { text: "", entities: [] };
+    const internalRaw = clipboardData.getData("application/x-tggw-composer");
+    if (internalRaw) {
+      try {
+        const parsed = JSON.parse(internalRaw);
+        if (parsed && typeof parsed.text === "string") {
+          const text = parsed.text.replace(/\u200B/g, "").replace(/\r\n?/g, "\n");
+          const entities = Array.isArray(parsed.entities) ? parsed.entities.filter((e) =>
+            e && COMPOSER_ALLOWED_TYPES.has(e.type) && Number.isInteger(e.offset) && Number.isInteger(e.length)
+            && e.offset >= 0 && e.length >= 1 && e.offset + e.length <= text.length
+            && isUtf16Boundary(text, e.offset) && isUtf16Boundary(text, e.offset + e.length)
+          ).map((e) => (e.type === "pre" && typeof e.language === "string" && e.language.trim()
+            ? { type: "pre", offset: e.offset, length: e.length, language: e.language.trim().slice(0, 64) }
+            : { type: e.type, offset: e.offset, length: e.length })) : [];
+          return { text, entities };
+        }
+      } catch (_) {}
+    }
+    const plain = clipboardData.getData("text/plain");
+    if (plain) return { text: String(plain).replace(/\u200B/g, "").replace(/\r\n?/g, "\n"), entities: [] };
+    const htmlStr = clipboardData.getData("text/html");
+    if (htmlStr) return { text: stripHtmlToPlainText(htmlStr).replace(/\r\n?/g, "\n"), entities: [] };
+    return { text: "", entities: [] };
+  }
+  function appendTextWithBreaks(target, chunk) {
+    const lines = chunk.split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      if (i > 0) target.appendChild(document.createElement("br"));
+      if (lines[i]) target.appendChild(document.createTextNode(lines[i]));
+    }
+  }
+  function buildFragmentFromFormatted(text, entities) {
+    const frag = document.createDocumentFragment();
+    if (!text) return frag;
+    if (!Array.isArray(entities) || !entities.length) {
+      appendTextWithBreaks(frag, text);
+      return frag;
+    }
+    const ranges = entities
+      .filter((e) => e && COMPOSER_FORMATS[e.type] && Number.isInteger(e.offset) && Number.isInteger(e.length) && e.offset >= 0 && e.length >= 1 && e.offset + e.length <= text.length)
+      .map((e) => ({ start: e.offset, end: e.offset + e.length, tag: COMPOSER_FORMATS[e.type] }))
+      .sort((a, b) => a.start - b.start || b.end - a.end);
+    if (!ranges.length) {
+      appendTextWithBreaks(frag, text);
+      return frag;
+    }
+    const bounds = [...new Set([0, text.length, ...ranges.flatMap((r) => [r.start, r.end])])].sort((a, b) => a - b);
+    let stack = [];
+    for (let i = 0; i < bounds.length - 1; i++) {
+      const start = bounds[i];
+      const active = ranges.filter((r) => r.start <= start && r.end > start);
+      let depth = 0;
+      while (depth < active.length && stack[depth]?.range === active[depth]) depth++;
+      stack.length = depth;
+      let target = stack.at(-1)?.target || frag;
+      for (const r of active.slice(depth)) {
+        const node = document.createElement(r.tag);
+        target.appendChild(node);
+        target = node;
+        stack.push({ range: r, target });
+      }
+      appendTextWithBreaks(target, text.slice(start, bounds[i + 1]));
+    }
+    return frag;
+  }
+  function clearComposer(editor) {
+    const t = editor || $("text");
+    if (!t) return;
+    if (typeof t.replaceChildren === "function") t.replaceChildren();
+    else t.textContent = "";
+    lastComposerRange = null;
+    syncComposerEmpty(t);
+    updateComposerToolbar(t);
   }
 
   // ---- gửi / sửa / xoá --------------------------------------------------------------------------
   function setReply(m) { replyTo = m.id; $("reply").style.display = "block"; $("reply-txt").textContent = "↩ " + ((m.text || m.summary).slice(0, 60)); $("text").focus(); }
   $("reply-x").addEventListener("click", () => { replyTo = 0; $("reply").style.display = "none"; });
   async function send() {
-    const t = $("text"), raw = t.value; if (!raw.trim() || !cur) return;
-    const parsed = parseComposerFormats(raw);
-    const body = parsed.text.trim()
-      ? (parsed.entities.length ? { text: parsed.text, entities: parsed.entities, reply_to: replyTo } : { text: parsed.text, reply_to: replyTo })
-      : { text: raw, reply_to: replyTo };
+    const t = $("text");
+    if (!t || !cur || isComposing) return;
+    const parsed = extractComposerContent(t);
+    if (!parsed.text.trim()) return;
+    const body = parsed.entities.length
+      ? { text: parsed.text, entities: parsed.entities, reply_to: replyTo }
+      : { text: parsed.text, reply_to: replyTo };
     $("send").disabled = true;
-    try { const m = await api("POST", "/api/chats/" + cur + "/send", body); t.value = ""; t.style.height = "auto"; updateComposePreview();
-      replyTo = 0; $("reply").style.display = "none"; if (m && m.id) appendMessages([Object.assign({}, m, { outgoing: true, date: m.date || Date.now() / 1000 })], false); scheduleChats(); }
+    try {
+      const m = await api("POST", "/api/chats/" + cur + "/send", body);
+      clearComposer(t);
+      replyTo = 0; $("reply").style.display = "none";
+      if (m && m.id) appendMessages([Object.assign({}, m, { outgoing: true, date: m.date || Date.now() / 1000 })], false);
+      scheduleChats();
+    }
     catch (e) { toast(e.message); } finally { $("send").disabled = false; t.focus(); }
   }
   $("send").addEventListener("click", send);
-  for (const [id, kind] of [["fmt-bold", "bold"], ["fmt-italic", "italic"], ["fmt-code", "code"]]) {
-    $(id).addEventListener("mousedown", (e) => e.preventDefault());
+  for (const [id, kind] of [...COMPOSER_BUTTONS, ["fmt-clear", "clear"]]) {
+    $(id).addEventListener("mousedown", (e) => { e.preventDefault(); saveComposerSelection($("text")); });
     $(id).addEventListener("click", () => applyComposerFormat(kind));
   }
+  $("text").addEventListener("compositionstart", () => { isComposing = true; $("text").classList?.remove("is-empty"); });
+  $("text").addEventListener("compositionend", () => { isComposing = false; saveComposerSelection($("text")); syncComposerEmpty($("text")); updateComposerToolbar($("text")); });
+  $("text").addEventListener("beforeinput", (e) => {
+    if (e.isComposing || isComposing) return;
+    const map = { formatBold: "bold", formatItalic: "italic", formatUnderline: "underline", formatStrikeThrough: "strikethrough" };
+    const kind = map[e.inputType];
+    if (kind) { e.preventDefault(); applyComposerFormat(kind); }
+  });
   $("text").addEventListener("keydown", (e) => {
+    if (e.isComposing || isComposing || e.keyCode === 229) return;
     if ((e.ctrlKey || e.metaKey) && !e.altKey) {
       const key = (e.key || "").toLowerCase();
-      if (key === "b") { e.preventDefault(); applyComposerFormat("bold"); return; }
-      if (key === "i") { e.preventDefault(); applyComposerFormat("italic"); return; }
-      if (key === "e") { e.preventDefault(); applyComposerFormat("code"); return; }
+      if (!e.shiftKey) {
+        if (key === "b") { e.preventDefault(); applyComposerFormat("bold"); return; }
+        if (key === "i") { e.preventDefault(); applyComposerFormat("italic"); return; }
+        if (key === "u") { e.preventDefault(); applyComposerFormat("underline"); return; }
+      } else {
+        if (key === "x") { e.preventDefault(); applyComposerFormat("strikethrough"); return; }
+        if (key === "m") { e.preventDefault(); applyComposerFormat("code"); return; }
+        if (key === "n") { e.preventDefault(); applyComposerFormat("clear"); return; }
+      }
     }
-    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+    if (e.key === "Enter" && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) { e.preventDefault(); send(); }
   });
-  $("text").addEventListener("input", (e) => { e.target.style.height = "auto"; e.target.style.height = Math.min(e.target.scrollHeight, 140) + "px"; updateComposePreview(); });
+  $("text").addEventListener("input", () => { saveComposerSelection($("text")); syncComposerEmpty($("text")); updateComposerToolbar($("text")); });
+  $("text").addEventListener("keyup", () => { saveComposerSelection($("text")); updateComposerToolbar($("text")); });
+  $("text").addEventListener("mouseup", () => { saveComposerSelection($("text")); updateComposerToolbar($("text")); });
+  $("text").addEventListener("focus", () => updateComposerToolbar($("text")));
+  for (const evName of ["copy", "cut"]) {
+    $("text").addEventListener(evName, (e) => {
+      const ed = $("text");
+      const info = getSelectionInEditor(ed);
+      if (!info || info.range.collapsed || !e.clipboardData) return;
+      const box = document.createElement("div");
+      let p = info.range.commonAncestorContainer;
+      if (p.nodeType === 3) p = p.parentNode;
+      const wrapTags = [];
+      let curP = p;
+      while (curP && curP !== ed) {
+        const tag = nodeTagName(curP);
+        if (COMPOSER_TAG_MAP.has(tag)) wrapTags.push(tag);
+        curP = curP.parentNode;
+      }
+      let inner = box;
+      for (let i = wrapTags.length - 1; i >= 0; i--) {
+        const w = document.createElement(wrapTags[i]);
+        inner.appendChild(w);
+        inner = w;
+      }
+      inner.appendChild(info.range.cloneContents());
+      const payload = extractComposerContent(box);
+      if (!payload.text) return;
+      e.preventDefault();
+      e.clipboardData.setData("text/plain", payload.text);
+      e.clipboardData.setData("application/x-tggw-composer", JSON.stringify(payload));
+      if (evName === "cut") {
+        info.range.deleteContents();
+        cleanEmptyFormatTags(ed);
+        syncComposerEmpty(ed);
+        updateComposerToolbar(ed);
+      }
+    });
+  }
+  $("text").addEventListener("paste", (e) => {
+    const ed = $("text");
+    if (!ed || isComposing || !e.clipboardData) return;
+    e.preventDefault();
+    const payload = extractPastePayload(e.clipboardData);
+    if (!payload.text) return;
+    const frag = buildFragmentFromFormatted(payload.text, payload.entities);
+    const info = getSelectionInEditor(ed);
+    if (!info) {
+      ed.appendChild(frag);
+      syncComposerEmpty(ed);
+      updateComposerToolbar(ed);
+      return;
+    }
+    const { sel, range } = info;
+    range.deleteContents();
+    const marker = document.createTextNode("");
+    frag.appendChild(marker);
+    range.insertNode(frag);
+    const nr = document.createRange();
+    nr.setStartAfter(marker);
+    nr.collapse(true);
+    marker.remove();
+    sel.removeAllRanges();
+    sel.addRange(nr);
+    saveComposerSelection(ed);
+    syncComposerEmpty(ed);
+    updateComposerToolbar(ed);
+  });
+  if (typeof document !== "undefined" && typeof document.addEventListener === "function") {
+    document.addEventListener("selectionchange", () => {
+      const ed = $("text");
+      if (ed && getSelectionInEditor(ed)) {
+        saveComposerSelection(ed);
+        updateComposerToolbar(ed);
+      }
+    });
+  }
   $("attach").addEventListener("click", () => $("file").click());
   $("file").addEventListener("change", async (e) => {
     const f = e.target.files[0]; e.target.value = ""; if (!f || !cur) return;
@@ -2810,6 +3441,10 @@
   }));
   // ---- cài đặt chung, giao diện và hồ sơ --------------------------------------------------------
   const APPEARANCE_DEFAULTS = { font_family: "system", font_size: 15, theme: "system", bubble_style: "classic", accent: "blue" };
+  const APPEARANCE_THEMES = ["system", "light", "dark", "midnight", "telegram", "green", "purple", "orange", "pink", "high-contrast"];
+  const DARK_THEMES = new Set(["dark", "midnight", "high-contrast"]);
+  const APPEARANCE_CHAT_BGS = ["plain", "pattern", "gradient"];
+  const APPEARANCE_CODE_THEMES = ["auto", "light", "dark"];
   const FONT_STACKS = {
     system: 'system-ui,-apple-system,"Segoe UI",Roboto,sans-serif',
     sans: '"Noto Sans","Liberation Sans","DejaVu Sans","Segoe UI",Arial,sans-serif',
@@ -2834,6 +3469,12 @@
   let pendingProfileChanges = null;
   let settingsSection = "profile";
   let accountRows = [];
+  const darkMedia = typeof window !== "undefined" && typeof window.matchMedia === "function"
+    ? window.matchMedia("(prefers-color-scheme: dark)")
+    : null;
+  function systemPrefersDark() {
+    return Boolean(darkMedia && darkMedia.matches);
+  }
 
   function maskPhone(raw) {
     const digits = String(raw || "").replace(/\D/g, "");
@@ -2849,24 +3490,39 @@
     const out = {
       font_family: Object.hasOwn(FONT_STACKS, src.font_family) ? src.font_family : APPEARANCE_DEFAULTS.font_family,
       font_size: Number.isFinite(size) ? Math.min(20, Math.max(12, Math.round(size))) : APPEARANCE_DEFAULTS.font_size,
-      theme: ["system", "light", "dark"].includes(src.theme) ? src.theme : APPEARANCE_DEFAULTS.theme,
+      theme: APPEARANCE_THEMES.includes(src.theme) ? src.theme : APPEARANCE_DEFAULTS.theme,
       bubble_style: ["classic", "rounded", "compact"].includes(src.bubble_style) ? src.bubble_style : APPEARANCE_DEFAULTS.bubble_style,
       accent: ["blue", "green", "purple", "orange", "pink", "teal"].includes(src.accent) ? src.accent : APPEARANCE_DEFAULTS.accent,
     };
     if (src.line_height === "compact" || src.line_height === "relaxed") {
       out.line_height = src.line_height;
     }
+    if (src.chat_bg === "pattern" || src.chat_bg === "gradient") {
+      out.chat_bg = src.chat_bg;
+    }
+    if (src.code_theme === "light" || src.code_theme === "dark") {
+      out.code_theme = src.code_theme;
+    }
     return out;
   }
 
   function applyAppearance(raw) {
     const cfg = normalizeAppearance(raw);
+    const resolvedTheme = cfg.theme === "system" ? (systemPrefersDark() ? "dark" : "light") : cfg.theme;
+    const surface = DARK_THEMES.has(resolvedTheme) ? "dark" : "light";
+    const chatBg = cfg.chat_bg || "plain";
+    const codeThemePref = cfg.code_theme || "auto";
+    const resolvedCodeTheme = codeThemePref === "auto" ? surface : codeThemePref;
     const root = document.documentElement;
     if (root) {
       if (root.dataset) {
         root.dataset.theme = cfg.theme;
+        root.dataset.resolvedTheme = resolvedTheme;
+        root.dataset.surface = surface;
         root.dataset.bubble = cfg.bubble_style;
         root.dataset.accent = cfg.accent;
+        root.dataset.chatBg = chatBg;
+        root.dataset.codeTheme = resolvedCodeTheme;
       }
       if (root.style && typeof root.style.setProperty === "function") {
         root.style.setProperty("--chat-font", FONT_STACKS[cfg.font_family]);
@@ -2887,24 +3543,28 @@
     const r1 = el("div", "row");
     r1.append(el("span", "t", "Hội thoại xem trước"), el("span", "d", "12:00"));
     const r2 = el("div", "row");
-    r2.append(el("span", "p", "Kiểu chữ và cỡ chữ áp dụng cho danh sách"));
+    r2.append(el("span", "p", "Kiểu chữ, chủ đề và nền áp dụng tức thì"));
     meta.append(r1, r2);
     row.append(meta);
     const msgs = el("div", "preview-msgs");
     const m1 = el("div", "m");
     const t1 = el("div", "txt");
     if (typeof renderText === "function") {
-      renderText(t1, "Xem trước chữ đậm, nghiêng và mã nguồn.", [
-        { type: "bold", offset: 14, length: 3 },
-        { type: "italic", offset: 19, length: 7 },
-        { type: "code", offset: 30, length: 8 },
+      const sample = "Xem trước đậm, nghiêng, gạch chân, gạch giữa, mã\nconst x = 42;";
+      renderText(t1, sample, [
+        { type: "bold", offset: 10, length: 3 },
+        { type: "italic", offset: 15, length: 7 },
+        { type: "underline", offset: 24, length: 9 },
+        { type: "strikethrough", offset: 35, length: 9 },
+        { type: "code", offset: 46, length: 2 },
+        { type: "pre", offset: 49, length: 13, language: "js" },
       ]);
     } else {
       t1.textContent = "Xem trước khung chat.";
     }
     m1.append(t1);
     const m2 = el("div", "m out");
-    m2.append(el("div", "txt", "Bong bóng và màu nhấn cập nhật tức thì."));
+    m2.append(el("div", "txt", "Bong bóng, chủ đề và khối mã cập nhật tức thì."));
     msgs.append(m1, m2);
     box.append(row, msgs);
   }
@@ -2915,8 +3575,16 @@
     $("appearance-size-value").textContent = appearanceDraft.font_size + " px";
     $("appearance-size-dec").disabled = appearanceDraft.font_size <= 12;
     $("appearance-size-inc").disabled = appearanceDraft.font_size >= 20;
-    for (const theme of ["system", "light", "dark"]) {
+    for (const theme of APPEARANCE_THEMES) {
       $("theme-" + theme).setAttribute("aria-pressed", String(appearanceDraft.theme === theme));
+    }
+    const chatBg = appearanceDraft.chat_bg || "plain";
+    for (const bg of APPEARANCE_CHAT_BGS) {
+      $("chat-bg-" + bg).setAttribute("aria-pressed", String(chatBg === bg));
+    }
+    const codeTheme = appearanceDraft.code_theme || "auto";
+    for (const ct of APPEARANCE_CODE_THEMES) {
+      $("code-theme-" + ct).setAttribute("aria-pressed", String(codeTheme === ct));
     }
     for (const bubble of ["classic", "rounded", "compact"]) {
       $("bubble-" + bubble).setAttribute("aria-pressed", String(appearanceDraft.bubble_style === bubble));
@@ -3155,8 +3823,14 @@
     }
   }
 
-  for (const theme of ["system", "light", "dark"]) {
+  for (const theme of APPEARANCE_THEMES) {
     $("theme-" + theme).addEventListener("click", () => previewAppearance({ theme }));
+  }
+  for (const bg of APPEARANCE_CHAT_BGS) {
+    $("chat-bg-" + bg).addEventListener("click", () => previewAppearance({ chat_bg: bg }));
+  }
+  for (const ct of APPEARANCE_CODE_THEMES) {
+    $("code-theme-" + ct).addEventListener("click", () => previewAppearance({ code_theme: ct }));
   }
   for (const bubble of ["classic", "rounded", "compact"]) {
     $("bubble-" + bubble).addEventListener("click", () => previewAppearance({ bubble_style: bubble }));
@@ -3171,7 +3845,17 @@
   for (const lh of ["compact", "normal", "relaxed"]) {
     $("lh-" + lh).addEventListener("click", () => previewAppearance({ line_height: lh }));
   }
-  $("appearance-reset").addEventListener("click", () => previewAppearance({ ...APPEARANCE_DEFAULTS, line_height: "normal" }));
+  $("appearance-reset").addEventListener("click", () => previewAppearance({
+    ...APPEARANCE_DEFAULTS, line_height: "normal", chat_bg: "plain", code_theme: "auto",
+  }));
+  if (darkMedia && typeof darkMedia.addEventListener === "function") {
+    try {
+      darkMedia.addEventListener("change", () => {
+        if ((appearanceDraft.theme || "system") === "system") applyAppearance(appearanceDraft);
+      });
+    } catch (_) {}
+  }
+  applyAppearance(APPEARANCE_DEFAULTS);
   $("appearance-form").addEventListener("submit", async (e) => {
     e.preventDefault();
     $("appearance-error").textContent = "";
