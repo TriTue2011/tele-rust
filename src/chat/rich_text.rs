@@ -10,6 +10,10 @@ use crate::contract::GwError;
 
 pub(super) const MAX_TEXT_UTF16: usize = 4096;
 pub(super) const MAX_ENTITIES: usize = 100;
+/// Trần ĐẦU VÀO THÔ (kể cả dấu định dạng) kiểm TRƯỚC khi phân tích: dấu markdown chỉ bị bỏ đi nên chữ sau khi
+/// dựng không bao giờ dài hơn đầu vào; cho phép gấp 4 lần trần chữ để chứa dấu định dạng. Phân tích có chỗ bậc hai,
+/// nên kiểm kích thước ở biên chặn chi phí CPU thay vì chờ phân tích xong mới từ chối.
+pub(super) const MAX_RAW_UTF16: usize = MAX_TEXT_UTF16 * 4;
 const MAX_URL_BYTES: usize = 2048;
 const MAX_AI_INSERTED_EMOJIS: usize = 16;
 const MAX_INLINE_DEPTH: usize = 8;
@@ -964,6 +968,11 @@ fn normalize_entities(text: &str, entities: &mut Vec<RichEntity>) {
 }
 
 pub(super) fn render(text: &str, opts: &RichOptions<'_>) -> Result<RichText, GwError> {
+    for raw in std::iter::once(text).chain(opts.ai_markup) {
+        if raw.len() > MAX_RAW_UTF16 * 3 || utf16_len(raw) > MAX_RAW_UTF16 {
+            return Err(GwError::bad_request("Tin quá dài (tối đa 4096 đơn vị UTF-16 chữ, kể cả dấu định dạng không quá 16384)."));
+        }
+    }
     let mut rich = if let Some(markup) = opts.ai_markup {
         let parsed = from_markdown(markup);
         if !preserves_original_text(text, &parsed.text) {

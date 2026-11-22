@@ -112,4 +112,18 @@ Camera trình duyệt được hoãn: cấu hình nhận `camera:"browser"`, nh�
 Chọn `black` hoặc camera HA cho cuộc gọi video. Âm thanh với nguồn browser đã được kiểm bằng TDLib/media giả;
 độ trễ, khử vọng và khả năng phát WAV cần kiểm tiếp với trình duyệt và cuộc gọi Telegram thật.
 
+## Định dạng chữ tự động khi gửi qua API / automation
+
+Các route gửi/sửa chữ hỗ trợ thêm 3 tham số tuỳ chọn để gateway tự dựng `entities` chuẩn UTF-16 cho TDLib (bỏ trống toàn bộ ⇒ giữ nguyên hành vi cũ, không tự định dạng):
+- `POST /api/chats/{chat_id}/send`, `POST /api/messages/edit`, `POST /api/send_message`, `POST /api/send_media`, `POST /api/chats/{chat_id}/send_album` (trong JSON body; `send_album` đặt ở gốc hoặc từng phần tử `items[]`).
+- `POST /api/chats/{chat_id}/send_file` (trong query string cùng `caption`).
+
+| Tham số | Giá trị | Ý nghĩa |
+| --- | --- | --- |
+| `format` | `"plain"` (mặc định) \| `"markdown"` | Phân tích markdown nhẹ: `**đậm**`, `*nghiêng*` / `_nghiêng_`, `__gạch chân__`, `~~gạch giữa~~`, `` `mã` ``, ```` ```khối mã``` ````, `\|\|spoiler\|\|`, dòng đầu `> ` trích dẫn, `[chữ](url)` (chỉ nhận `http://`, `https://`, `tg://`), escape bằng `\`. Markdown không đóng hoặc URL lạ giữ nguyên chữ, không mất nội dung. |
+| `auto_emphasis` | `false` (mặc định) \| `true` | Tự in đậm con số kèm đơn vị dính liền theo cú pháp số (vd `29°C`, `-5°C`, `75%`, `3 giờ`, `15 phút`, `12,5 mm`, `30 km/h`, `29 độ C`, `2.5 kg`), bỏ qua vùng đã có định dạng/mã và URL. |
+| `ai_markup` | chuỗi markdown | Chuỗi đã gắn dấu định dạng (và tối đa 16 emoji trang trí) do trợ lý hội thoại/AI sinh quanh chữ gốc. Gateway kiểm tra chữ gốc giữ nguyên sau khi bỏ dấu; sai lệch trả `422 AI_MARKUP_MISMATCH`. |
+
+Giới hạn áp dụng khi dựng định dạng: nội dung sau bỏ dấu `≤ 4096` đơn vị mã UTF-16, tối đa `100` entity; không dùng đồng thời với `parse_mode` khác `plain` hoặc `entities` khác rỗng (`400 BAD_REQUEST`).
+
 Kiểm hình dạng JSON không cần máy chủ: `python3 tests/contract/kiem_hop_dong.py --self-test`.

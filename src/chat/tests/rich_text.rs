@@ -2,7 +2,7 @@ use super::*;
 use crate::chat::rich_text::{
     apply_auto_emphasis, from_markdown, is_allowed_url, parse_options, preserves_original_text,
     render, render_tdlib, utf16_len, EntityKind, FormatMode, RichEntity, RichOptions,
-    MAX_ENTITIES, MAX_TEXT_UTF16,
+    MAX_ENTITIES, MAX_RAW_UTF16, MAX_TEXT_UTF16,
 };
 use axum::{
     body::{to_bytes, Body},
@@ -779,4 +779,25 @@ async fn rich_text_send_and_legacy_routes_enforce_auth_and_csrf() {
         .await
         .unwrap();
     assert_eq!(res_bearer_ok.status(), 200);
+}
+
+
+#[test]
+fn oversized_raw_input_is_rejected_before_quadratic_parsing() {
+    // B soát 22/11: 400.000 ký tự '*' từng tốn 40–240 s CPU rồi mới bị từ chối vì phân tích chạy trước phép kiểm độ dài.
+    let started = std::time::Instant::now();
+    for bomb in ["*".repeat(400_000), "[a](".repeat(100_000), "😀".repeat(MAX_RAW_UTF16)] {
+        for opts in [md_opts(true), md_opts(false), plain_opts(true)] {
+            assert_eq!(render(&bomb, &opts).unwrap_err().status, 400);
+        }
+        assert_eq!(render("ok", &ai_opts(&bomb, false)).unwrap_err().status, 400);
+        assert_eq!(render(&bomb, &ai_opts("ok", false)).unwrap_err().status, 400);
+    }
+    assert!(started.elapsed() < std::time::Duration::from_secs(2), "từ chối phải tức thì, mất {:?}", started.elapsed());
+    // Đúng ở biên: đầu vào thô đúng trần vẫn được phân tích (chữ sau khi bỏ dấu còn trong 4096 thì nhận).
+    let at_limit = format!("{}{}", "**a**".repeat(60), "b".repeat(MAX_RAW_UTF16 - 300));
+    assert_eq!(utf16_len(&at_limit), MAX_RAW_UTF16);
+    assert_eq!(render(&at_limit, &md_opts(false)).unwrap_err().status, 400, "chữ dựng xong vẫn > 4096 nên bị từ chối ở phép kiểm cũ");
+    let fits = format!("{}{}", "**a**".repeat(60), "b".repeat(3000));
+    assert!(render(&fits, &md_opts(false)).is_ok());
 }
