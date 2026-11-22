@@ -20,7 +20,7 @@
 //! - Đường tải tệp/nhật ký dùng `ChatControl::bytes`.
 //! - `/health` lấy số tài khoản từ `ChatControl::handle("GET", "/api/accounts", …)` (`{"tai_khoan":[{status}]}`); lỗi = 0.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
@@ -60,8 +60,12 @@ struct Ctx {
     token: String,
     ui_auth: Arc<UiAuth>,
     limit: usize,
-    hits: Mutex<VecDeque<Instant>>,
-    snapshot_hits: Mutex<VecDeque<Instant>>,
+    /// Hạn mức THEO TỪNG NGƯỜI GỌI (khoá = «bearer» hoặc «cookie:<12 ký tự đầu của phiên>»): trước đây MỘT xô chung cho cả gateway nên
+    /// Home Assistant (hỏi mỗi 1,5 s) + giao diện web cộng dồn vượt 120/phút làm giao diện báo «Quá 120 request/phút cho token này» và khoá (22/11).
+    hits: Mutex<HashMap<String, VecDeque<Instant>>>,
+    snapshot_hits: Mutex<HashMap<String, VecDeque<Instant>>>,
+    /// Tải tệp (avatar, ảnh, thumb): mỗi trang tải hàng chục tệp nhỏ nên có xô riêng, rộng hơn xô điều khiển.
+    media_hits: Mutex<HashMap<String, VecDeque<Instant>>>,
     version: String,
     started: Instant,
     audio_slots: tokio::sync::Semaphore,
@@ -69,9 +73,13 @@ struct Ctx {
 
 impl Ctx {
     /// `_rate_limited` của routes.py: bỏ mốc cũ hơn 60 giây; đủ hạn mức thì từ chối (không ghi thêm mốc).
-    fn rate_limited(hits: &Mutex<VecDeque<Instant>>, limit: usize) -> bool {
+    fn rate_limited(hits: &Mutex<HashMap<String, VecDeque<Instant>>>, key: &str, limit: usize) -> bool {
         let now = Instant::now();
-        let mut dq = hits.lock().unwrap_or_else(|p| p.into_inner());
+        let mut map = hits.lock().unwrap_or_else(|p| p.into_inner());
+        if map.len() > 256 {
+            map.retain(|_, dq| dq.back().is_some_and(|t| now.duration_since(*t) <= Duration::from_secs(60)));
+        }
+        let dq = map.entry(key.to_owned()).or_default();
         while dq.front().is_some_and(|t| now.duration_since(*t) > Duration::from_secs(60)) {
             dq.pop_front();
         }
@@ -84,9 +92,10 @@ impl Ctx {
 
     /// `_auth` của routes.py.
     async fn auth(&self, parts: &axum::http::request::Parts, kind: Kind) -> Result<Option<String>, GwError> {
-        let refreshed_cookie = if self.bearer(&parts.headers).is_ok() {
-            None
+        let (refreshed_cookie, principal) = if self.bearer(&parts.headers).is_ok() {
+            (None, "bearer".to_owned())
         } else if let Some(token) = cookie_token(&parts.headers) {
+            let principal = format!("cookie:{}", token.chars().take(12).collect::<String>());
             if matches!(parts.method, Method::POST | Method::PUT | Method::DELETE | Method::PATCH)
                 && !csrf_valid(&parts.headers, self.ui_auth.secure_cookie() || parts.uri.scheme_str() == Some("https")) {
                 return Err(GwError::new(403, "CSRF_FORBIDDEN", "Yêu cầu ghi bằng cookie thiếu kiểm tra CSRF."));
@@ -95,19 +104,29 @@ impl Ctx {
             let auth = self.ui_auth.clone();
             let session = tokio::task::spawn_blocking(move || auth.validate_session(&token, secure))
                 .await.map_err(|_| auth_task_error())?.map_err(auth_error)?;
-            session.refreshed_cookie
+            (session.refreshed_cookie, principal)
         } else {
             return Err(unauthorized());
+        };
+        let limited = |message: String| {
+            let mut error = GwError::new(429, "RATE_LIMITED", message);
+            error.retry_after_seconds = Some(5);
+            error
         };
         if matches!(kind, Kind::AudioIn) {
             // Audio PCM keeps its existing per-call rate limit rather than consuming the control budget.
         } else if matches!(kind, Kind::Snapshot) {
             let limit = self.limit.saturating_mul(3);
-            if Self::rate_limited(&self.snapshot_hits, limit) {
-                return Err(GwError::new(429, "RATE_LIMITED", format!("Quá {limit} yêu cầu ảnh/phút cho token này.")));
+            if Self::rate_limited(&self.snapshot_hits, &principal, limit) {
+                return Err(limited(format!("Quá {limit} yêu cầu ảnh/phút cho token này.")));
             }
-        } else if Self::rate_limited(&self.hits, self.limit) {
-            return Err(GwError::new(429, "RATE_LIMITED", "Quá 120 request/phút cho token này."));
+        } else if matches!(kind, Kind::ChatBytes) {
+            let limit = self.limit.saturating_mul(5);
+            if Self::rate_limited(&self.media_hits, &principal, limit) {
+                return Err(limited(format!("Quá {limit} yêu cầu tệp/phút cho token này.")));
+            }
+        } else if Self::rate_limited(&self.hits, &principal, self.limit) {
+            return Err(limited(format!("Quá {} request/phút cho token này.", self.limit)));
         }
         Ok(refreshed_cookie)
     }
@@ -219,7 +238,13 @@ fn error_resp(e: &GwError) -> Response {
     let status = StatusCode::from_u16(e.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     let mut error = json!({"code": e.code, "message": e.message});
     if let Some(seconds) = e.retry_after_seconds { error["retry_after_seconds"] = json!(seconds); }
-    json_resp(status, &json!({"error": error}))
+    let mut response = json_resp(status, &json!({"error": error}));
+    if status == StatusCode::TOO_MANY_REQUESTS {
+        if let Some(value) = e.retry_after_seconds.and_then(|seconds| seconds.to_string().parse().ok()) {
+            response.headers_mut().insert(header::RETRY_AFTER, value);
+        }
+    }
+    response
 }
 
 async fn not_found() -> Response {
@@ -706,8 +731,8 @@ pub fn router(call: Arc<dyn CallControl>, chat: Arc<dyn ChatControl>, cfg: RestC
 pub fn router_with_ui_auth(call: Arc<dyn CallControl>, chat: Arc<dyn ChatControl>, cfg: RestConfig, ui_auth: Arc<UiAuth>) -> Router {
     router_with(Arc::new(Ctx {
         call, chat, events: None, accounts: false, token: cfg.token, ui_auth,
-        limit: cfg.rate_limit_per_minute, hits: Mutex::new(VecDeque::new()),
-        snapshot_hits: Mutex::new(VecDeque::new()), version: cfg.version,
+        limit: cfg.rate_limit_per_minute, hits: Mutex::new(HashMap::new()), media_hits: Mutex::new(HashMap::new()),
+        snapshot_hits: Mutex::new(HashMap::new()), version: cfg.version,
         started: Instant::now(), audio_slots: tokio::sync::Semaphore::new(8),
     }))
 }
@@ -715,8 +740,8 @@ pub fn router_with_ui_auth(call: Arc<dyn CallControl>, chat: Arc<dyn ChatControl
 pub(crate) fn router_accounts_with_ui_auth(accounts: Arc<crate::account_router::Accounts>, cfg: RestConfig, ui_auth: Arc<UiAuth>) -> Router {
     router_with(Arc::new(Ctx {
         call: accounts.clone(), chat: accounts, events: None, accounts: true, token: cfg.token,
-        ui_auth, limit: cfg.rate_limit_per_minute, hits: Mutex::new(VecDeque::new()),
-        snapshot_hits: Mutex::new(VecDeque::new()), version: cfg.version,
+        ui_auth, limit: cfg.rate_limit_per_minute, hits: Mutex::new(HashMap::new()), media_hits: Mutex::new(HashMap::new()),
+        snapshot_hits: Mutex::new(HashMap::new()), version: cfg.version,
         started: Instant::now(), audio_slots: tokio::sync::Semaphore::new(8),
     }))
 }
@@ -737,8 +762,8 @@ pub(crate) fn router_with_events(call: Arc<dyn CallControl>, chat: Arc<dyn ChatC
         token: cfg.token,
         ui_auth,
         limit: cfg.rate_limit_per_minute,
-        hits: Mutex::new(VecDeque::new()),
-        snapshot_hits: Mutex::new(VecDeque::new()),
+        hits: Mutex::new(HashMap::new()), media_hits: Mutex::new(HashMap::new()),
+        snapshot_hits: Mutex::new(HashMap::new()),
         version: cfg.version,
         started: Instant::now(),
         audio_slots: tokio::sync::Semaphore::new(8),
@@ -1052,18 +1077,31 @@ mod tests {
             events: None,
             accounts: false,
             call: fake.clone(), chat: fake, token: TOK.into(), ui_auth: Arc::new(UiAuth::in_memory(TOK)), limit: 2,
-            hits: Mutex::new(VecDeque::from([
+            hits: Mutex::new(HashMap::from([("bearer".to_owned(), VecDeque::from([
                 Instant::now() - Duration::from_secs(61), Instant::now(),
-            ])),
-            snapshot_hits: Mutex::new(VecDeque::new()),
+            ]))])), media_hits: Mutex::new(HashMap::new()),
+            snapshot_hits: Mutex::new(HashMap::new()),
             version: "thu".into(), started: Instant::now(),
             audio_slots: tokio::sync::Semaphore::new(8),
         };
-        assert!(!Ctx::rate_limited(&ctx.hits, ctx.limit));
+        assert!(!Ctx::rate_limited(&ctx.hits, "bearer", ctx.limit));
         let before = ctx.hits.lock().unwrap().clone();
-        assert_eq!(before.len(), 2);
-        assert!(Ctx::rate_limited(&ctx.hits, ctx.limit));
+        assert_eq!(before["bearer"].len(), 2);
+        assert!(Ctx::rate_limited(&ctx.hits, "bearer", ctx.limit));
         assert_eq!(*ctx.hits.lock().unwrap(), before);
+    }
+
+    #[test]
+    fn han_muc_tinh_rieng_cho_tung_nguoi_goi_va_xo_tep_khong_chiem_xo_dieu_khien() {
+        // 22/11: một xô chung cho cả gateway ⇒ HA + giao diện web cộng dồn vượt 120/phút ⇒ giao diện báo «Quá 120 request/phút» và khoá.
+        let hits = Mutex::new(HashMap::new());
+        for _ in 0..3 { assert!(!Ctx::rate_limited(&hits, "bearer", 3)); }
+        assert!(Ctx::rate_limited(&hits, "bearer", 3), "người gọi bearer hết hạn mức");
+        assert!(!Ctx::rate_limited(&hits, "cookie:abc", 3), "phiên cookie KHÔNG bị ảnh hưởng bởi bearer");
+        let (control, media) = (Mutex::new(HashMap::new()), Mutex::new(HashMap::new()));
+        for _ in 0..2 { assert!(!Ctx::rate_limited(&control, "cookie:abc", 2)); }
+        assert!(Ctx::rate_limited(&control, "cookie:abc", 2));
+        assert!(!Ctx::rate_limited(&media, "cookie:abc", 10), "tải tệp có xô riêng, không dùng chung xô điều khiển");
     }
 
     #[tokio::test]

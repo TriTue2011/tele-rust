@@ -1225,10 +1225,17 @@
   async function api(method, path, body, raw) {
     const h = { "X-Requested-With": "fetch" };
     if (body !== undefined && !raw) h["Content-Type"] = "application/json";
-    let res;
-    try { res = await fetch(accountPath(path), { method: method, credentials: "same-origin", headers: h, body: raw ? body : (body === undefined ? undefined : JSON.stringify(body)) }); }
-    catch (e) { throw new Error("Không gọi được gateway (mất mạng?)."); }
-    let data = null; try { data = await res.json(); } catch (e) { data = null; }
+    let res, data;
+    // 429 (vượt hạn mức) là tình trạng TẠM THỜI: đợi đúng thời gian gateway báo (Retry-After / retry_after_seconds) rồi gọi lại, tối đa 3 lần,
+    // thay vì báo lỗi và khoá giao diện (chủ máy gặp «Quá 120 request/phút cho token này» 22/11). Yêu cầu bị 429 chưa được xử lý nên thử lại an toàn.
+    for (let attempt = 0; ; attempt++) {
+      try { res = await fetch(accountPath(path), { method: method, credentials: "same-origin", headers: h, body: raw ? body : (body === undefined ? undefined : JSON.stringify(body)) }); }
+      catch (e) { throw new Error("Không gọi được gateway (mất mạng?)."); }
+      data = null; try { data = await res.json(); } catch (e) { data = null; }
+      if (res.status !== 429 || attempt >= 3) break;
+      const wait = Math.min(15, Number((data && data.error && data.error.retry_after_seconds) || res.headers.get("Retry-After") || 5));
+      await new Promise((resolve) => setTimeout(resolve, Math.max(1, wait) * 1000));
+    }
     if (!res.ok) { const er = data && (data.error || (data.detail && data.detail.error)); const err = new Error(er && er.message ? er.message : "Lỗi HTTP " + res.status); err.status = res.status; err.code = er && er.code; throw err; }
     return data || {};
   }
@@ -2414,7 +2421,8 @@
           let r;
           try { r = await fetchFeed(cursor, wait, controller.signal); }
           finally { clearTimeout(deadline); controller = null; }
-          if (r.reset) { await loadChats(); await reloadCurrent(); }
+          // reset = gateway đã khởi động lại: số file id của TDLib được ĐÁNH LẠI, nên mọi ảnh đã nhớ theo số cũ sẽ hiện nhầm (avatar bị hoán đổi, 22/11). Bỏ hết rồi tải lại.
+          if (r.reset) { blobs.clear(); await loadChats(); await reloadCurrent(); }
           else if (!initial) r.items.forEach(onFeed);
           // Lượt đầu chỉ lấy mốc để không phát lại các sự kiện cũ.
           initial = false;
@@ -3420,7 +3428,7 @@
       if (e.status === 401) {
         try { const auth = await api("GET", "/ui/api/auth/status"); showGate("Phiên đăng nhập đã hết hạn.", auth.da_thiet_lap, false); }
         catch (_) { showGate(e.message, true, false); }
-      } else if (e.code === "ACCOUNT_OFFLINE" || e.status === 502 || e.status === 503 || e.status === 504 || !e.status) {
+      } else if (e.code === "ACCOUNT_OFFLINE" || e.status === 429 || e.status === 502 || e.status === 503 || e.status === 504 || !e.status) {
         // Tình trạng TẠM THỜI (tài khoản chớp offline, gateway vừa khởi động lại, mạng chập chờn): tự thử lại có lùi thời gian
         // thay vì khoá giao diện và bắt người dùng về «Tài khoản» rồi mở lại bằng tay.
         startRetryCount++;
