@@ -8,11 +8,11 @@ Gateway **Telegram viết bằng Rust** (tài khoản người dùng: nhắn tin
 
 > **Tuyên bố miễn trừ trách nhiệm:** Đây là **dự án không chính thức, không liên kết, không được tài trợ hay xác nhận bởi Telegram**. Phần mềm tương tác với mạng Telegram thông qua TDLib (`libtdjson` 1.8.69, nạp động lúc chạy) và NTgCalls (`3.0.7`, liên kết tĩnh). Người dùng tự chịu trách nhiệm khi triển khai và sử dụng với tài khoản của mình.
 
-- **Phiên bản hiện tại:** `v0.7.1` (`Cargo.toml` và `addon/tele-rs/config.yaml`)
-- **Ảnh Docker (`linux/amd64`):** `ghcr.io/tritue2011/tele-rust:latest` (cùng thẻ `:v0.7.1`, `:0.7.1`, `:sha-<commit>`)
+- **Phiên bản hiện tại:** `v0.7.2` (`Cargo.toml` và `addon/tele-rs/config.yaml`)
+- **Ảnh Docker (`linux/amd64`):** `ghcr.io/tritue2011/tele-rust:latest` (cùng thẻ `:v0.7.2`, `:0.7.2`, `:sha-<commit>`)
 - **Kiến trúc:** `src/contract.rs` định nghĩa hợp đồng `TdLink`, `CallControl`, `ChatControl` tách biệt tầng TDLib (`src/td/`), cuộc gọi WebRTC/NTgCalls (`src/calls/`), dịch vụ chat/danh bạ/lưu trữ (`src/chat/`, `src/storage.rs`), quản lý đa tài khoản (`src/account_router.rs`), xác thực web (`src/ui_auth.rs`) và máy chủ Axum REST (`src/rest.rs`).
 
-## Tính năng thật của v0.7.1
+## Tính năng thật của v0.7.2
 
 ### 1. Xác thực web và quản lý đa tài khoản
 - **Đăng nhập web bằng tên + mật khẩu:** Thiết lập lần đầu bằng token gateway một lần (`POST /ui/api/auth/setup`) hoặc khởi tạo tự động qua `TG_UI_USER` + `TG_UI_PASSWORD`; hỗ trợ «Ghi nhớ trên trình duyệt này» tối đa 90 ngày, đổi mật khẩu tại giao diện hoặc khôi phục qua CLI `tggw passwd`, đăng xuất phiên hiện tại và đăng xuất mọi nơi.

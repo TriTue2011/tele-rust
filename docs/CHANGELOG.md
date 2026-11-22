@@ -16,7 +16,13 @@
 ### Đã xoá / Dọn kho
 - Xoá tệp nội bộ `HOAN-TAT.md.SAI-212357` lọt vào kho công khai và bổ sung quy tắc bỏ qua tệp nội bộ vào `.gitignore`.
 
-## [0.7.1] — Phiên bản hiện tại trong cây mã
+## [0.7.2] — Phiên bản hiện tại trong cây mã
+
+- **Định dạng chữ tự động khi gửi qua API/automation:** tham số tuỳ chọn `format` (markdown nhẹ), `auto_emphasis` (in đậm số kèm đơn vị), `ai_markup` (đánh dấu do trợ lý đề xuất, máy chủ kiểm chữ gốc không đổi); mặc định tắt nên tin cũ không đổi. Trần đầu vào thô 16384 đơn vị UTF-16 kiểm TRƯỚC khi phân tích để chặn chi phí bậc hai.
+- **Đóng gói:** Dockerfile đa tầng, workflow CI/ảnh/phát hành/add-on, add-on Home Assistant `addon/tele-rs`, README và tài liệu đầy đủ kèm bài kiểm «README khớp mã».
+- Gỡ tệp nội bộ bị theo dõi nhầm; `deploy/phat-hanh.py` nay tăng phiên bản add-on cùng Cargo.toml.
+
+## [0.7.1]
 
 > **Ghi chú lịch sử thẻ `v0.2.0` → `v0.7.0`:** Trong môi trường hộp cát biệt lập không truy cập được kho `.git` gốc (`gitdir` trỏ ra ngoài hộp cát), không thể đọc trực tiếp danh sách commit/tag lịch sử từ `git log`/`git tag`. Phần tổng hợp dưới đây phản ánh chính xác các năng lực đang có trong mã nguồn tại mốc `v0.7.1`; khi ở môi trường có đầy đủ `.git`, có thể bổ sung chi tiết từng mốc `v0.2.0` → `v0.7.1` bằng lệnh `git tag -l -n9` và `git log --oneline`.
 

@@ -154,12 +154,22 @@ def main():
     txt = open(path, encoding="utf-8").read()
     moi = re.sub(r'(?m)^version\s*=\s*"\d+\.\d+\.\d+"', 'version = "%s"' % ver, txt, count=1)
     open(path, "w", encoding="utf-8").write(moi)
+    # Add-on HA khai cùng số phiên bản: tests/contract/kiem_addon_ci.py bắt buộc addon/tele-rs/config.yaml == Cargo.toml (CI job add-on đỏ nếu lệch).
+    apath = os.path.join(REPO, "addon", "tele-rs", "config.yaml")
+    atxt = open(apath, encoding="utf-8").read()
+    amoi = re.sub(r'(?m)^version:\s*"\d+\.\d+\.\d+"', 'version: "%s"' % ver, atxt, count=1)
+    if amoi == atxt and 'version: "%s"' % ver not in atxt:
+        die("không cập nhật được version trong addon/tele-rs/config.yaml")
+    open(apath, "w", encoding="utf-8").write(amoi)
+    k = subprocess.run([sys.executable, "tests/contract/kiem_addon_ci.py"], cwd=REPO, capture_output=True, text=True)
+    if k.returncode:
+        die("kiểm add-on không đạt sau khi tăng phiên bản: " + (k.stdout + k.stderr)[-300:])
     trailer = os.environ.get("PHAT_HANH_TRAILER", "").strip()
     msg = ("release: v%s\n\nLớp việc: đánh dấu một bản phát hành của gateway Tele Rust.\n"
-           "Cùng lớp: phiên bản chỉ đổi ở Cargo.toml (`grep -n '^version' Cargo.toml`), `tggw version` và `/health` đọc từ đó.\n"
+           "Cùng lớp: phiên bản đổi ở Cargo.toml và addon/tele-rs/config.yaml cùng lúc (`grep -n '^version' Cargo.toml addon/tele-rs/config.yaml`), `tggw version` và `/health` đọc từ đó.\n"
            "Nguyên tắc: phiên bản do deploy/phat-hanh.py tăng sau khi `./build.sh test` đạt, không sửa tay.\n"
            % ver) + (("\n" + trailer + "\n") if trailer else "")
-    git("add", "Cargo.toml")
+    git("add", "Cargo.toml", "addon/tele-rs/config.yaml")
     git("commit", "-q", "-m", msg)
     git("tag", "-a", "v" + ver, "-m", "Tele Rust v" + ver)
     print("== đẩy main + thẻ v" + ver)
