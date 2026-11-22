@@ -1,10 +1,20 @@
 //! Tải tệp từ đúng phiên đã chọn, giữ giới hạn đọc và chống đi theo symlink.
-use std::{fs::File,io::{self,Read},path::{Component,Path,PathBuf},sync::Arc};
+use std::{fs::{File, FileTimes},io::{self,Read},path::{Component,Path,PathBuf},sync::Arc,time::SystemTime};
 use rustix::fs::{open,openat,Mode,OFlags};
 use serde_json::json;
 use crate::contract::{Binary,GwError,TdLink};
 
 pub(crate) async fn download(td:Arc<dyn TdLink>,session:PathBuf,id:i64,stream:bool)->Result<Binary,GwError> {
+    download_with(td, session, id, stream, |file| {
+        // Đặt atime rõ ràng cả trên mount relatime/noatime. TDLib dùng max(atime, mtime).
+        file.set_times(FileTimes::new().set_accessed(SystemTime::now()))
+    }).await
+}
+
+async fn download_with<F>(td:Arc<dyn TdLink>,session:PathBuf,id:i64,stream:bool,touch:F)->Result<Binary,GwError>
+where
+    F: FnOnce(&File) -> io::Result<()> + Send + 'static,
+{
     let missing=||GwError::not_found("Tệp chưa tải xong.");
     if !(1..=i64::from(i32::MAX)).contains(&id) {return Err(missing());}
     let file=td.request(json!({"@type":"downloadFile","file_id":id,"priority":16,"offset":0,"limit":0,"synchronous":true})).await.map_err(|mut error| {
@@ -34,9 +44,9 @@ pub(crate) async fn download(td:Arc<dyn TdLink>,session:PathBuf,id:i64,stream:bo
         const LIMIT:u64=64*1024*1024;
         let mut bytes=Vec::new();(&file).take(LIMIT+1).read_to_end(&mut bytes).map_err(|_|missing())?;
         if stream {
-            // Đặt atime rõ ràng cả trên mount relatime/noatime. TDLib dùng max(atime, mtime).
-            file.set_times(std::fs::FileTimes::new().set_accessed(std::time::SystemTime::now()))
-                .map_err(|_| GwError::new(500,"STORAGE_ACCESS_TIME","Không ghi được lần truy cập tệp."))?;
+            if let Err(err) = touch(&file) {
+                log::warn!("Không cập nhật được thời gian truy cập tệp ({:?}).", err.kind());
+            }
         }
         if bytes.len() as u64>LIMIT {return Err(GwError::new(413,"FILE_TOO_LARGE","Tệp vượt 64 MB."));}
         Ok(bytes)
@@ -85,6 +95,20 @@ mod tests {
         let td=Arc::new(Fake(Err(TdError::telegram(400,"/private/session/path"))));
         let error=download(td,a,1,false).await.unwrap_err();
         assert_eq!(error.status,400);assert!(!error.message.contains("/private/session/path"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn stream_download_returns_file_even_when_updating_access_time_fails() {
+        let root=PathBuf::from(format!("target/account-files-touch-{}",std::process::id()));
+        let session=root.join("a");
+        std::fs::create_dir_all(session.join("files/documents")).unwrap();
+        let path=session.join("files/documents/test.txt");
+        std::fs::write(&path,b"stream bytes").unwrap();
+        let td=Arc::new(Fake(Ok(json!({"local":{"path":std::path::absolute(path).unwrap(),"is_downloading_completed":true}}))));
+        let file=download_with(td,session,1,true,|_| Err(io::Error::from(io::ErrorKind::PermissionDenied))).await.unwrap();
+        assert_eq!(file.bytes,b"stream bytes");
+        assert_eq!(file.cache_control,"no-store");
         std::fs::remove_dir_all(root).unwrap();
     }
 }

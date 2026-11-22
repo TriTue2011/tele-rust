@@ -33,7 +33,10 @@ test('TC-7: lưu chế độ, sửa thời hạn và ngoại lệ, xác nhận x
       if (options.method === 'POST') {
         const data = JSON.parse(options.body);
         window.storageTestWrites.push([url.pathname, data, options.headers['X-Requested-With'], url.searchParams.get('account')]);
-        if (url.pathname === '/api/settings/storage') payload = data;
+        if (url.pathname === '/api/settings/storage') {
+          const { confirm, ...saved } = data;
+          payload = saved;
+        }
       }
       if (url.pathname === '/api/feed') await new Promise((resolve) => setTimeout(resolve, 500));
       return new Response(JSON.stringify(payload));
@@ -99,10 +102,22 @@ test('TC-7: lưu chế độ, sửa thời hạn và ngoại lệ, xác nhận x
   await until('document.getElementById("storage-save").disabled === false');
   await click('storage-stream');
   assert.ok(await evaluate('document.getElementById("storage-local-settings").hidden'));
+  assert.ok(await evaluate('!document.getElementById("storage-exceptions").closest("section").hidden'));
   await click('storage-save');
+  await until('document.getElementById("storage-mode-confirm").open === true');
+  assert.match(await evaluate('document.getElementById("storage-mode-confirm-summary").textContent'), /tệp cục bộ sẽ bị dọn sau 10 phút/);
+  assert.equal((await writes()).length, 0);
+  await click('storage-mode-cancel');
+  assert.equal(await evaluate('document.getElementById("storage-mode-confirm").open'), false);
+  assert.equal((await writes()).length, 0);
+  await click('storage-save');
+  await until('document.getElementById("storage-mode-confirm").open === true');
+  await click('storage-mode-confirm-ok');
   await until('document.getElementById("storage-status").textContent.includes("Đã lưu")');
+  assert.equal(await evaluate('document.getElementById("storage-mode-confirm").open'), false);
   const [stream] = await writes();
   assert.equal(stream[1].mode, 'stream');
+  assert.equal(stream[1].confirm, true);
   assert.deepEqual(stream.slice(2), ['fetch', 'test-storage-account']);
   await click('storage-local');
   await evaluate(`{
@@ -115,6 +130,7 @@ test('TC-7: lưu chế độ, sửa thời hạn và ngoại lệ, xác nhận x
   await until('document.getElementById("storage-save").disabled === false');
   const [, local] = await writes();
   assert.equal(local[1].keep.private, 86400);
+  assert.equal(local[1].confirm, undefined);
   assert.deepEqual(local[1].exceptions, [{ chat_id: 42, keep: null }]);
   for (const width of [390, 700]) {
     await dimension(width);

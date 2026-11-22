@@ -9,6 +9,8 @@ pub(crate) struct Entry {
     pub client: Arc<TdClient>,
     session: PathBuf,
     storage_lock: tokio::sync::RwLock<()>,
+    sweep_lock: tokio::sync::Mutex<()>,
+    settings_lock: tokio::sync::Mutex<()>,
     storage_changed: Arc<tokio::sync::Notify>,
     storage_report: Mutex<crate::storage::Report>,
     chat: Arc<ChatService>,
@@ -28,7 +30,30 @@ impl Drop for Entry {
 
 impl Entry {
     async fn storage_sweep(&self, scope: Option<crate::storage::Clear>) -> Result<Value, GwError> {
-        let _exclusive = self.storage_lock.write().await;
+        if !self.ready.load(Ordering::Acquire) || self.client.auth_state() != "authorizationStateReady" {
+            return Err(offline());
+        }
+        if scope.is_none() {
+            match crate::storage::settings(&self.session).await {
+                Ok(policy) => {
+                    if crate::storage::policy_is_noop(&policy)? {
+                        let mut report = crate::storage::Report::new();
+                        report.finish();
+                        let value = report.json();
+                        *self.storage_report.lock().unwrap() = report;
+                        return Ok(value);
+                    }
+                }
+                Err(err) => {
+                    let mut report = crate::storage::Report::new();
+                    report.failed(&err.code);
+                    report.finish();
+                    *self.storage_report.lock().unwrap() = report;
+                    return Err(err);
+                }
+            }
+        }
+        let _sweep = self.sweep_lock.lock().await;
         if !self.ready.load(Ordering::Acquire) || self.client.auth_state() != "authorizationStateReady" {
             return Err(offline());
         }
@@ -43,14 +68,20 @@ impl Entry {
         }
         let result = async {
             crate::storage::check_cache_paths(&self.session).await?;
+            if self.calls.has_active_call().await? {
+                return Err(GwError::new(409, "STORAGE_BUSY", "Bộ nhớ đệm đang được bảo vệ trong lúc gọi."));
+            }
             if let Some(scope) = scope {
                 crate::storage::clear(self.client.as_ref(), scope, &mut report).await
             } else {
                 let policy = crate::storage::settings(&self.session).await?;
+                if crate::storage::policy_is_noop(&policy)? {
+                    return Ok(());
+                }
                 crate::storage::run(self.client.as_ref(), &policy, &mut report).await
             }
         }.await;
-        if result.is_err() { report.failed("STORAGE_CLEANUP"); }
+        if let Err(ref err) = result { report.failed(&err.code); }
         report.finish();
         let value = report.json();
         *self.storage_report.lock().unwrap() = report;
@@ -169,7 +200,8 @@ impl Accounts {
         });
         let entry = Arc::new(Entry { client, session, chat: Arc::new(ChatService::with_events(td, phone, service_dir, Some(events.sink.clone())).follow_calls(calls.events())),
             calls, ready: AtomicBool::new(ready), events: tokio::sync::Mutex::new(Some(events)), call_events,
-            storage_lock: tokio::sync::RwLock::new(()), storage_changed: Arc::new(tokio::sync::Notify::new()),
+            storage_lock: tokio::sync::RwLock::new(()), sweep_lock: tokio::sync::Mutex::new(()),
+            settings_lock: tokio::sync::Mutex::new(()), storage_changed: Arc::new(tokio::sync::Notify::new()),
             storage_report: Mutex::new(crate::storage::Report::new()), storage_task: std::sync::OnceLock::new() });
         let task_entry = Arc::downgrade(&entry);
         let mut updates = entry.client.updates();
@@ -239,6 +271,7 @@ impl Accounts {
         let entry=self.entries.read().unwrap().get(phone).cloned();
         if let Some(e)=entry {
             e.stop_storage();
+            let _sweep = e.sweep_lock.lock().await;
             let _storage = e.storage_lock.write().await;
             let _=e.calls.shutdown(Duration::from_secs(10)).await;
             e.client.close(Duration::from_secs(10)).await;
@@ -281,6 +314,13 @@ impl Accounts {
         Ok((p,e))
     }
 
+    fn select_storage(&self, phone: &str) -> Result<(String, Arc<Entry>), GwError> {
+        if phone.is_empty() && (self.all().len() > 1 || self.store.lock().unwrap().rows().len() > 1) {
+            return Err(GwError::bad_request("Có nhiều tài khoản; cần chỉ định tham số account."));
+        }
+        self.select(phone)
+    }
+
     async fn select_call(&self,body:&Value)->Result<(String,Arc<Entry>),GwError> {
         let selected=body["account"].as_str().unwrap_or_default();
         if selected.is_empty() {
@@ -301,6 +341,7 @@ impl Accounts {
         self.logins.get().unwrap().shutdown().await;
         for (_,e) in self.all() {
             e.stop_storage();
+            let _sweep = e.sweep_lock.lock().await;
             let _storage = e.storage_lock.write().await;
             let _ = e.calls.shutdown(Duration::from_secs(10)).await;
             e.client.close(Duration::from_secs(10)).await;
@@ -373,36 +414,46 @@ impl Accounts {
         let selected = param(query,"account").filter(|s| !s.is_empty()).unwrap_or_else(||body["account"].as_str().unwrap_or_default().into());
         if path == "/api/storage/clear" {
             let scope = crate::storage::Clear::parse(&body)?;
-            let entry = self.select(&selected)?.1;
+            let entry = self.select_storage(&selected)?.1;
             return tokio::spawn(async move { entry.storage_sweep(Some(scope)).await })
                 .await.map_err(|_| offline())?;
         }
-        let (phone,e) = self.select(&selected)?;
-        if path == "/api/storage/janitor" {
-            return Ok(e.storage_report.lock().unwrap().json());
-        }
-        if path == "/api/storage/usage" {
-            let _access = e.storage_lock.read().await;
-            return crate::storage::usage(e.client.as_ref()).await;
-        }
-        if path == "/api/settings/storage" {
+        if matches!(path, "/api/storage/janitor" | "/api/storage/usage" | "/api/settings/storage") {
+            let (_, e) = self.select_storage(&selected)?;
+            if path == "/api/storage/janitor" {
+                return Ok(e.storage_report.lock().unwrap().json());
+            }
+            if path == "/api/storage/usage" {
+                let _access = e.storage_lock.read().await;
+                return crate::storage::usage(e.client.as_ref()).await;
+            }
             if method == "POST" {
-                crate::storage_settings::validate(&body)?;
+                let (clean, confirmed) = crate::storage_settings::parse_update(body)?;
                 let entry = e.clone();
                 return tokio::spawn(async move {
-                    let _access = entry.storage_lock.write().await;
+                    let _access = entry.storage_lock.read().await;
+                    let _write = entry.settings_lock.lock().await;
                     if !entry.ready.load(Ordering::Acquire) { return Err(offline()); }
                     let dir = entry.session.clone();
                     let saved = tokio::task::spawn_blocking(move || {
-                        crate::storage_settings::save(&dir, &body).map_err(|_| crate::storage::settings_error())?;
-                        Ok(body)
+                        let current = crate::storage_settings::load(&dir)
+                            .map_err(|_| crate::storage::settings_error())?;
+                        if current["mode"] == "local" && clean["mode"] == "stream" && !confirmed {
+                            return Err(GwError::bad_request(
+                                "Chuyển sang chế độ xem trực tuyến cần confirm=true vì tệp cục bộ sẽ bị dọn sau thời hạn.",
+                            ));
+                        }
+                        crate::storage_settings::save(&dir, &clean)
+                            .map_err(|_| crate::storage::settings_error())?;
+                        Ok(clean)
                     }).await.map_err(|_| crate::storage::settings_error())?;
                     if saved.is_ok() { entry.storage_changed.notify_one(); }
                     saved
                 }).await.map_err(|_| crate::storage::settings_error())?;
             }
-            return crate::storage::settings(&e.session).await;
+            return Ok(crate::storage::settings_read_only(&e.session).await);
         }
+        let (phone,e) = self.select(&selected)?;
         if path == "/api/live/settings" { return e.calls.settings(Value::Null).await; }
         if path == "/api/live/devices" { return e.calls.devices(Value::Null).await; }
         let _=phone;
@@ -440,7 +491,7 @@ impl ChatControl for Accounts {
                 return tokio::spawn(async move {
                     let _access = entry.storage_lock.read().await;
                     if !entry.ready.load(Ordering::Acquire) { return Err(offline()); }
-                    let stream = crate::storage::settings(&entry.session).await?["mode"] == "stream";
+                    let stream = crate::storage::settings_read_only(&entry.session).await["mode"] == "stream";
                     crate::account_files::download(entry.client.clone(), entry.session.clone(), id, stream).await
                 }).await.map_err(|_| offline())?;
             }

@@ -109,7 +109,8 @@ async fn storage_settings_validate_before_replacing_the_account_file() {
     let second = "test-storage-second";
     f.ready(first).await;
     f.ready(second).await;
-    let endpoint = "/api/settings/storage";
+    assert_eq!(f.send("GET", "/api/settings/storage", Value::Null).await.0, 400);
+    let endpoint = "/api/settings/storage?account=test-storage-first";
     let (status, mut settings) = f.send("GET", endpoint, Value::Null).await;
     assert_eq!(status, 200);
     assert_eq!(settings["mode"], "local");
@@ -136,7 +137,11 @@ async fn storage_settings_validate_before_replacing_the_account_file() {
         assert!(error["error"]["code"].is_string());
         assert_eq!(std::fs::read(&file).unwrap(), previous);
     }
-    assert_eq!(f.send("POST", endpoint, settings.clone()).await, (200, settings.clone()));
+    assert_eq!(f.send("POST", endpoint, settings.clone()).await.0, 400);
+    assert_eq!(std::fs::read(&file).unwrap(), previous);
+    let mut confirmed = settings.clone();
+    confirmed["confirm"] = json!(true);
+    assert_eq!(f.send("POST", endpoint, confirmed).await, (200, settings.clone()));
     assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
     assert_eq!(std::fs::metadata(&first_dir).unwrap().permissions().mode() & 0o777, 0o700);
     assert_ne!(std::fs::read(&file).unwrap(), std::fs::read(second_dir.join("storage_settings.json")).unwrap());
@@ -241,12 +246,31 @@ async fn local_janitor_sweeps_timed_chats_and_separate_exceptions_with_a_budget(
     *f.api.storage_chats.lock().unwrap() = chats.iter().map(|(id, _, kind)| (*id, kind.clone())).collect();
     let stats = chats.iter().map(|(id, bytes, _)| json!({"chat_id":id,"size":bytes,"count":1})).collect::<Vec<_>>();
     *f.api.storage_stats.lock().unwrap() = json!({"@type":"storageStatistics","size":too_large + 35,"count":6,"by_chat":stats});
+    *f.api.optimize_reply.lock().unwrap() = Some(Box::new(move |req| {
+        let bytes: u64 = req["chat_ids"].as_array().unwrap().iter().filter_map(Value::as_i64)
+            .map(|id| if id == 45 { too_large } else { 7 }).sum();
+        let count = req["chat_ids"].as_array().unwrap().len();
+        json!({"@type":"storageStatistics","size":bytes,"count":count,"by_chat":[]})
+    }));
     let mut report = crate::storage::Report::new();
     crate::storage::run(entry.client.as_ref(), &policy, &mut report).await.unwrap();
     let requests = f.api.sent.lock().unwrap().iter().filter(|(_, req)| req["@type"] == "optimizeStorage")
         .map(|(_, req)| json!([req["chat_ids"],req["exclude_chat_ids"],req["ttl"]])).collect::<Vec<_>>();
-    assert_eq!(requests, vec![json!([[40],[42,43],86400]),json!([[41],[42,43],604800]),json!([[42],[],2678400])]);
+    assert_eq!(requests, vec![json!([[40],[42,43],86400]),json!([[45],[42,43],86400])]);
     assert_eq!(report.json()["limited"], true);
+    assert_eq!(report.json()["freed_bytes"], too_large + 7);
+    assert_eq!(report.json()["remaining_bytes"], 14);
+
+    // Lượt sau tiếp tục các nhóm còn lại khi không còn chat 40 và 45.
+    f.api.sent.lock().unwrap().clear();
+    let remaining_stats = chats[1..5].iter().map(|(id, bytes, _)| json!({"chat_id":id,"size":bytes,"count":1})).collect::<Vec<_>>();
+    *f.api.storage_stats.lock().unwrap() = json!({"@type":"storageStatistics","size":28,"count":4,"by_chat":remaining_stats});
+    let mut next_report = crate::storage::Report::new();
+    crate::storage::run(entry.client.as_ref(), &policy, &mut next_report).await.unwrap();
+    let next_requests = f.api.sent.lock().unwrap().iter().filter(|(_, req)| req["@type"] == "optimizeStorage")
+        .map(|(_, req)| json!([req["chat_ids"],req["exclude_chat_ids"],req["ttl"]])).collect::<Vec<_>>();
+    assert_eq!(next_requests, vec![json!([[41],[42,43],604800]),json!([[42],[],2678400])]);
+    assert_eq!(next_report.json()["limited"], false);
     f.finish().await;
 }
 
@@ -583,5 +607,294 @@ async fn account_name_is_saved_once_and_repeated_polls_preserve_ledger_metadata(
         assert_eq!(std::fs::read(&path).unwrap(),bytes);
     }
     assert_eq!(AccountStore::open(&f.dir,"").unwrap().rows()[0].display_name,"Tên đổi");
+    f.finish().await;
+}
+
+#[tokio::test]
+async fn switching_local_to_stream_requires_confirm_and_delays_janitor_until_confirmed() {
+    let f = Fixture::new("storage-mode-confirm").await;
+    let phone = "test-storage-confirm";
+    f.ready(phone).await;
+    *f.api.storage_stats.lock().unwrap() = json!({
+        "@type":"storageStatistics","size":8,"count":1,
+        "by_chat":[{"chat_id":7,"size":8,"count":1,"by_file_type":[]}]
+    });
+    let (_, mut settings) = f.send("GET", "/api/settings/storage", Value::Null).await;
+    assert_eq!(settings["mode"], "local");
+    let file = f.hub.store.lock().unwrap().session_dir(phone).join("storage_settings.json");
+
+    settings["mode"] = json!("stream");
+    assert_eq!(f.send("POST", "/api/settings/storage", settings.clone()).await.0, 400);
+    let mut unconfirmed = settings.clone();
+    unconfirmed["confirm"] = json!(false);
+    assert_eq!(f.send("POST", "/api/settings/storage", unconfirmed).await.0, 400);
+    assert_eq!(crate::storage_settings::load(&file.parent().unwrap()).unwrap()["mode"], "local");
+
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    assert!(!f.api.sent.lock().unwrap().iter().any(|(_, req)| req["@type"] == "optimizeStorage"));
+
+    let mut confirmed = settings.clone();
+    confirmed["confirm"] = json!(true);
+    let (status, saved) = f.send("POST", "/api/settings/storage", confirmed).await;
+    assert_eq!((status, saved.clone()), (200, settings.clone()));
+    assert!(saved.get("confirm").is_none());
+    assert!(crate::storage_settings::load(file.parent().unwrap()).unwrap().get("confirm").is_none());
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        if f.api.sent.lock().unwrap().iter().any(|(_, req)| req["@type"] == "optimizeStorage" && req["ttl"] == 600) {
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline);
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    settings["stream_ttl_s"] = json!(300);
+    assert_eq!(f.send("POST", "/api/settings/storage", settings.clone()).await.0, 200);
+    settings["mode"] = json!("local");
+    assert_eq!(f.send("POST", "/api/settings/storage", settings).await.0, 200);
+    f.finish().await;
+}
+
+#[tokio::test]
+async fn corrupted_storage_settings_fail_writes_and_janitor_but_allow_file_view_and_safe_read() {
+    let f = Fixture::new("storage-corrupt").await;
+    let phone = "test-storage-corrupt";
+    f.ready(phone).await;
+    let (_, entry) = f.hub.select(phone).unwrap();
+    std::fs::create_dir_all(entry.session.join("files/photos")).unwrap();
+    let pic = entry.session.join("files/photos/pic.jpg");
+    std::fs::write(&pic, b"pic-bytes").unwrap();
+    f.api.downloads.lock().unwrap().insert(1, pic.to_string_lossy().into_owned());
+    let file = entry.session.join("storage_settings.json");
+
+    for raw in [b"{corrupt".as_slice(), b"{\"mode\":\"unknown\"}".as_slice()] {
+        std::fs::write(&file, raw).unwrap();
+        let response = f.router.clone().oneshot(
+            Request::builder().uri("/api/file/1").header("Authorization", "Bearer test-token")
+                .body(Body::empty()).unwrap(),
+        ).await.unwrap();
+        assert_eq!(response.status(), 200);
+        assert_eq!(response.headers()[axum::http::header::CACHE_CONTROL], "private, max-age=86400");
+        assert_eq!(to_bytes(response.into_body(), 1024).await.unwrap().as_ref(), b"pic-bytes");
+
+        let (status, read_back) = f.send("GET", "/api/settings/storage", Value::Null).await;
+        assert_eq!(status, 200);
+        assert_eq!(read_back["mode"], "local");
+        assert_eq!(read_back["keep"], json!({"private":null,"groups":null,"channels":null}));
+        assert_eq!(read_back["max_cache_bytes"], Value::Null);
+
+        let (status, err) = f.send("POST", "/api/settings/storage", crate::storage_settings::safe_default()).await;
+        assert_eq!(status, 500);
+        assert_eq!(err["error"]["code"], "STORAGE_SETTINGS_IO");
+        assert_eq!(std::fs::read(&file).unwrap(), raw);
+
+        let sweep_err = entry.storage_sweep(None).await.unwrap_err();
+        assert_eq!((sweep_err.status, sweep_err.code.as_str()), (500, "STORAGE_SETTINGS_IO"));
+        assert_eq!(f.send("GET", "/api/storage/janitor", Value::Null).await.1["error"], "STORAGE_SETTINGS_IO");
+        assert!(!f.api.sent.lock().unwrap().iter().any(|(_, req)| req["@type"] == "optimizeStorage"));
+    }
+    f.finish().await;
+}
+
+#[tokio::test]
+async fn long_storage_sweep_does_not_block_concurrent_api_and_noop_skips_scan() {
+    let f = Fixture::new("storage-t4").await;
+    let phone = "test-storage-t4";
+    f.ready(phone).await;
+    let (_, entry) = f.hub.select(phone).unwrap();
+    let files_dir = entry.session.join("files");
+    std::fs::create_dir_all(files_dir.join("documents")).unwrap();
+    let doc = files_dir.join("documents/doc.txt");
+    std::fs::write(&doc, b"doc-bytes").unwrap();
+    f.api.downloads.lock().unwrap().insert(1, doc.to_string_lossy().into_owned());
+
+    // Chính sách không làm gì (no-op) không quét cây tệp và không gọi TDLib.
+    crate::storage_settings::save(&entry.session, &crate::storage_settings::safe_default()).unwrap();
+    let sym = files_dir.join("documents/sym");
+    std::os::unix::fs::symlink(&doc, &sym).unwrap();
+    f.api.sent.lock().unwrap().clear();
+    entry.storage_sweep(None).await.unwrap();
+    assert!(!f.api.sent.lock().unwrap().iter().any(|(_, req)| matches!(req["@type"].as_str(), Some("getStorageStatistics" | "optimizeStorage"))));
+    std::fs::remove_file(sym).unwrap();
+
+    // Lượt dọn dài (quét cây + optimizeStorage chậm) không giữ khoá ghi chặn API hay xem tệp.
+    let mut stream = crate::storage_settings::safe_default();
+    stream["mode"] = json!("stream");
+    crate::storage_settings::save(&entry.session, &stream).unwrap();
+    *f.api.storage_stats.lock().unwrap() = json!({
+        "@type":"storageStatistics","size":100,"count":1,
+        "by_chat":[{"chat_id":7,"size":100,"count":1,"by_file_type":[]}]
+    });
+    *f.api.optimize_delay.lock().unwrap() = Some(Duration::from_millis(350));
+    f.api.sent.lock().unwrap().clear();
+
+    let sweep_entry = entry.clone();
+    let sweep = tokio::spawn(async move { sweep_entry.storage_sweep(None).await });
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    while !f.api.sent.lock().unwrap().iter().any(|(_, req)| req["@type"] == "optimizeStorage") {
+        assert!(tokio::time::Instant::now() < deadline);
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+
+    let started = std::time::Instant::now();
+    assert_eq!(f.send("GET", "/api/me", Value::Null).await.0, 200);
+    assert_eq!(f.send("GET", "/api/storage/usage", Value::Null).await.0, 200);
+    assert_eq!(f.send("GET", "/api/settings/storage", Value::Null).await.0, 200);
+    let file_resp = f.router.clone().oneshot(
+        Request::builder().uri("/api/file/1").header("Authorization", "Bearer test-token")
+            .body(Body::empty()).unwrap(),
+    ).await.unwrap();
+    assert_eq!(file_resp.status(), 200);
+    assert!(started.elapsed() < Duration::from_millis(150), "elapsed {:?}", started.elapsed());
+
+    sweep.await.unwrap().unwrap();
+    f.finish().await;
+}
+
+#[tokio::test]
+async fn storage_routes_enforce_auth_and_cookie_csrf() {
+    let dir = std::env::temp_dir().join(format!("tggw-storage-csrf-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (api, factory) = crate::td::fake::Fake::factory();
+    let cfg = LoginConfig { data_dir: dir.clone(), api_id: 12345, api_hash: "fake-api-hash".into(), phone: String::new() };
+    let hub = Accounts::with_factory(cfg, "fake".into(), 3399, factory).await.unwrap();
+    let ui_auth = Arc::new(crate::ui_auth::UiAuth::open(&dir, "test-token", None, None, false).unwrap());
+    let router = crate::rest::router_accounts_with_ui_auth(hub.clone(), crate::rest::RestConfig {
+        token: "test-token".into(), rate_limit_per_minute: 1000, version: "test".into(),
+    }, ui_auth);
+
+    let login = send(&router, "POST", "/ui/api/accounts", json!({"phone":"test-storage-csrf"}), true).await.1;
+    let id = login["login_id"].as_str().unwrap();
+    assert_eq!(send(&router, "POST", &format!("/ui/api/accounts/{id}/code"), json!({"code":"22222"}), true).await.0, 200);
+
+    let setup_resp = router.clone().oneshot(
+        Request::builder().method("POST").uri("/ui/api/auth/setup")
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .body(Body::from(json!({"token":"test-token","ten":"nguoi-thu","mat_khau":"mat-khau-thu-dai"}).to_string())).unwrap(),
+    ).await.unwrap();
+    assert_eq!(setup_resp.status(), 200);
+    let cookie = setup_resp.headers()[axum::http::header::SET_COOKIE].to_str().unwrap().split(';').next().unwrap().to_owned();
+
+    // Không có xác thực -> 401.
+    for (method, path) in [
+        ("GET", "/api/settings/storage"), ("POST", "/api/settings/storage"),
+        ("GET", "/api/storage/usage"), ("GET", "/api/storage/janitor"), ("POST", "/api/storage/clear"),
+    ] {
+        assert_eq!(send(&router, method, path, json!({}), false).await.0, 401, "{method} {path}");
+    }
+
+    let (_, settings) = send(&router, "GET", "/api/settings/storage", Value::Null, true).await;
+    let mut next_settings = settings.clone();
+    next_settings["max_cache_bytes"] = json!(500 * 1024 * 1024_u64);
+
+    // Cookie ghi thiếu CSRF hoặc sai Origin -> 403.
+    let send_cookie = |method: &'static str, path: &'static str, body: Value, extra: Vec<(&'static str, &'static str)>| {
+        let router = router.clone();
+        let cookie = cookie.clone();
+        async move {
+            let mut req = Request::builder().method(method).uri(path).header(axum::http::header::COOKIE, cookie);
+            for (k, v) in extra { req = req.header(k, v); }
+            let resp = router.oneshot(req.body(Body::from(serde_json::to_vec(&body).unwrap())).unwrap()).await.unwrap();
+            resp.status().as_u16()
+        }
+    };
+    for (path, body) in [
+        ("/api/settings/storage", next_settings.clone()),
+        ("/api/storage/clear", json!({"scope":"all","confirm":true})),
+    ] {
+        assert_eq!(send_cookie("POST", path, body.clone(), vec![]).await, 403);
+        assert_eq!(send_cookie("POST", path, body, vec![("Host", "gateway.example"), ("Origin", "https://evil.example")]).await, 403);
+    }
+    assert_eq!(send(&router, "GET", "/api/settings/storage", Value::Null, true).await.1, settings);
+    assert!(!api.sent.lock().unwrap().iter().any(|(_, r)| r["@type"] == "optimizeStorage"));
+
+    // Cookie kèm X-Requested-With hoặc khớp Host/Origin -> 200.
+    assert_eq!(send_cookie("GET", "/api/storage/usage", Value::Null, vec![]).await, 200);
+    assert_eq!(send_cookie("POST", "/api/settings/storage", next_settings, vec![("X-Requested-With", "fetch")]).await, 200);
+    assert_eq!(send_cookie("POST", "/api/storage/clear", json!({"scope":"all","confirm":true}), vec![("Host", "gateway.example"), ("Origin", "http://gateway.example")]).await, 200);
+
+    hub.shutdown().await;
+    drop(router);
+    drop(hub);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn legacy_account_serves_avatar_and_thumbnail_and_preserves_them_on_janitor() {
+    let dir = std::env::temp_dir().join(format!("tggw-legacy-media-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("tdlib/files/profile_photos")).unwrap();
+    std::fs::create_dir_all(dir.join("tdlib/files/thumbnails")).unwrap();
+    let avatar = dir.join("tdlib/files/profile_photos/avatar.jpg");
+    let thumb = dir.join("tdlib/files/thumbnails/thumb.jpg");
+    std::fs::write(&avatar, b"avatar-bytes").unwrap();
+    std::fs::write(&thumb, b"thumb-bytes").unwrap();
+    std::fs::write(dir.join("tdlib/khoa"), b"00112233445566778899aabbccddeeff").unwrap();
+
+    let (api, factory) = crate::td::fake::Fake::factory();
+    api.restored.store(true, Ordering::Relaxed);
+    let cfg = LoginConfig { data_dir: dir.clone(), api_id: 12345, api_hash: "fake-api-hash".into(), phone: "test-storage-legacy".into() };
+    let hub = Accounts::with_factory(cfg, "fake".into(), 3399, factory).await.unwrap();
+    let router = rest_router(hub.clone());
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    while send(&router, "GET", "/health", Value::Null, false).await.1["accounts_online"] != 1 {
+        assert!(tokio::time::Instant::now() < deadline);
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    for (path, expected) in [(avatar.clone(), b"avatar-bytes".as_slice()), (thumb.clone(), b"thumb-bytes".as_slice())] {
+        api.downloads.lock().unwrap().insert(1, path.to_string_lossy().into_owned());
+        let resp = router.clone().oneshot(
+            Request::builder().uri("/api/file/1").header("Authorization", "Bearer test-token")
+                .body(Body::empty()).unwrap(),
+        ).await.unwrap();
+        assert_eq!(resp.status(), 200);
+        assert_eq!(resp.headers()[axum::http::header::CONTENT_TYPE], "image/jpeg");
+        assert_eq!(resp.headers()[axum::http::header::CACHE_CONTROL], "private, max-age=86400");
+        assert_eq!(to_bytes(resp.into_body(), 1024).await.unwrap().as_ref(), expected);
+    }
+
+    let (_, settings) = send(&router, "GET", "/api/settings/storage", Value::Null, true).await;
+    assert_eq!(settings["keep"], json!({"private":null,"groups":null,"channels":null}));
+    assert_eq!(settings["max_cache_bytes"], Value::Null);
+
+    let (_, entry) = hub.select("test-storage-legacy").unwrap();
+    entry.storage_sweep(None).await.unwrap();
+    assert!(!api.sent.lock().unwrap().iter().any(|(_, r)| r["@type"] == "optimizeStorage"));
+    assert_eq!(std::fs::read(avatar).unwrap(), b"avatar-bytes");
+    assert_eq!(std::fs::read(thumb).unwrap(), b"thumb-bytes");
+
+    hub.shutdown().await;
+    drop(router);
+    drop(hub);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn multi_account_storage_routes_require_explicit_account_parameter() {
+    let f = Fixture::new("storage-multi-account").await;
+    let first = "test-storage-acc1";
+    let second = "test-storage-acc2";
+    f.ready(first).await;
+    f.ready(second).await;
+
+    for (method, path, body) in [
+        ("GET", "/api/settings/storage", Value::Null),
+        ("POST", "/api/settings/storage", crate::storage_settings::safe_default()),
+        ("GET", "/api/storage/usage", Value::Null),
+        ("GET", "/api/storage/janitor", Value::Null),
+        ("POST", "/api/storage/clear", json!({"scope":"all","confirm":true})),
+        ("POST", "/api/storage/clear", json!({"scope":"all","confirm":true,"account":""})),
+    ] {
+        assert_eq!(f.send(method, path, body).await.0, 400, "{method} {path}");
+    }
+
+    // Kể cả khi một tài khoản offline, vẫn từ chối account bỏ trống.
+    f.hub.select(second).unwrap().1.ready.store(false, Ordering::Release);
+    assert_eq!(f.send("GET", "/api/storage/usage", Value::Null).await.0, 400);
+    assert_eq!(f.send("GET", "/api/storage/usage?account=test-storage-acc1", Value::Null).await.0, 200);
+    assert_eq!(f.send("GET", "/api/storage/usage?account=test-storage-unknown", Value::Null).await.0, 404);
     f.finish().await;
 }

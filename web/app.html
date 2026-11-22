@@ -313,13 +313,16 @@
         <section id="storage-local-settings" aria-labelledby="storage-keep-title">
           <h3 id="storage-keep-title">Giữ phương tiện</h3>
           <div id="storage-keep"></div>
+          <label class="storage-row" for="storage-max">Bộ nhớ đệm tối đa<select id="storage-max"></select></label>
+          <details><summary>Tải tự động</summary><p class="storage-note">Giới hạn kích thước cho mỗi tệp tính bằng MB.</p><div id="storage-auto" class="storage-auto"></div></details>
+        </section>
+        <section aria-labelledby="storage-exception-count">
+          <p class="storage-note">Hội thoại đặt «Mãi mãi» không bao giờ bị dọn, kể cả ở chế độ xem trực tuyến.</p>
           <details><summary id="storage-exception-count">Ngoại lệ (0)</summary>
             <div id="storage-exceptions"></div>
             <label for="storage-exception-chat">Hội thoại</label><select id="storage-exception-chat"></select>
             <button class="ghost" type="button" id="storage-exception-add">Thêm ngoại lệ</button>
           </details>
-          <label class="storage-row" for="storage-max">Bộ nhớ đệm tối đa<select id="storage-max"></select></label>
-          <details><summary>Tải tự động</summary><p class="storage-note">Giới hạn kích thước cho mỗi tệp tính bằng MB.</p><div id="storage-auto" class="storage-auto"></div></details>
         </section>
         <section aria-labelledby="storage-clear-title">
           <h3 id="storage-clear-title">Xoá bộ nhớ đệm</h3>
@@ -331,6 +334,15 @@
     <footer><div style="flex:1 1 160px"><p id="storage-status" role="status" aria-live="polite"></p><p id="storage-error" role="alert"></p></div>
       <button type="submit" id="storage-save" disabled>Lưu cài đặt</button></footer>
   </form>
+</dialog>
+<dialog id="storage-mode-confirm" class="storage-dialog" aria-labelledby="storage-mode-confirm-title">
+  <header><h2 id="storage-mode-confirm-title">Xác nhận chuyển sang xem trực tuyến</h2></header>
+  <div class="storage-body">
+    <p id="storage-mode-confirm-summary"></p>
+    <p class="storage-note">Hội thoại đặt ngoại lệ «Mãi mãi» vẫn được giữ lại. Tin nhắn vẫn còn trên Telegram.</p>
+    <p id="storage-mode-error" role="alert"></p>
+  </div>
+  <footer><button id="storage-mode-cancel" class="ghost" type="button" autofocus>Huỷ</button><button id="storage-mode-confirm-ok" class="storage-danger" type="button">Chuyển sang xem trực tuyến</button></footer>
 </dialog>
 <dialog id="storage-confirm" class="storage-dialog" aria-labelledby="storage-confirm-title">
   <header><h2 id="storage-confirm-title">Xác nhận xoá bộ nhớ đệm</h2></header>
@@ -1494,7 +1506,7 @@
   const storageKinds = [["photo", "Ảnh", "#2a7de1"], ["video", "Video", "#a46ac2"], ["file", "Tệp", "#208650"], ["music", "Nhạc", "#bc710e"], ["other", "Khác", "#748598"]];
   const storageKeep = [[86400, "1 ngày"], [604800, "7 ngày"], [2678400, "1 tháng"], ["", "Mãi mãi"]];
   const storageMiB = 1024 * 1024;
-  let storageDraft, storageUsage, storageClear;
+  let storageDraft, storageUsage, storageClear, storageSavedMode = "local";
 
   function storageOptions(select, values, current) {
     select.replaceChildren();
@@ -1591,11 +1603,27 @@
     $("storage-clear-open").disabled = !usage.total_bytes;
   }
 
+  async function storageSave(extra) {
+    $("storage-error").textContent = ""; $("storage-mode-error").textContent = "";
+    $("storage-fields").disabled = true; $("storage-save").disabled = true;
+    try {
+      const payload = extra ? Object.assign({}, storageDraft, extra) : storageDraft;
+      storageDraft = await api("POST", "/api/settings/storage", payload);
+      storageSavedMode = storageDraft.mode;
+      $("storage-status").textContent = "Đã lưu cài đặt cho tài khoản này.";
+      return true;
+    } catch (error) {
+      if ($("storage-mode-confirm").open) $("storage-mode-error").textContent = error.message;
+      else $("storage-error").textContent = error.message;
+      return false;
+    } finally { $("storage-fields").disabled = false; $("storage-save").disabled = false; }
+  }
+
   $("storage-open").addEventListener("click", async () => {
     $("storage-account").textContent = $("account").selectedOptions[0]?.textContent || "Tài khoản đang dùng";
     $("storage-fields").disabled = true; $("storage-save").disabled = true;
     $("storage-clear-open").disabled = true;
-    $("storage-error").textContent = ""; $("storage-status").textContent = "Đang tải cài đặt…";
+    $("storage-error").textContent = ""; $("storage-mode-error").textContent = ""; $("storage-status").textContent = "Đang tải cài đặt…";
     $("storage-usage").textContent = "Đang lấy dung lượng…";
     $("storage-meter").replaceChildren(); $("storage-legend").replaceChildren(); $("storage-janitor").textContent = "";
     $("storage-dialog").showModal();
@@ -1604,6 +1632,7 @@
       if (usage.status === "rejected") $("storage-usage").textContent = "Chưa lấy được dung lượng bộ nhớ đệm.";
       if (settings.status === "rejected") throw settings.reason;
       storageDraft = settings.value;
+      storageSavedMode = storageDraft.mode;
       storageRender(); $("storage-fields").disabled = false; $("storage-save").disabled = false;
     } catch (error) { $("storage-error").textContent = error.message; }
     finally { $("storage-status").textContent = ""; }
@@ -1618,12 +1647,21 @@
   });
   $("storage-form").addEventListener("submit", async (event) => {
     event.preventDefault();
-    $("storage-error").textContent = ""; $("storage-fields").disabled = true; $("storage-save").disabled = true;
+    if (storageSavedMode === "local" && storageDraft.mode === "stream") {
+      const minutes = Math.max(1, Math.round((storageDraft.stream_ttl_s || 600) / 60));
+      $("storage-mode-error").textContent = "";
+      $("storage-mode-confirm-summary").textContent = "Khi chuyển sang chế độ xem trực tuyến, các tệp cục bộ sẽ bị dọn sau " + minutes + " phút không truy cập.";
+      $("storage-mode-confirm").showModal();
+      return;
+    }
+    await storageSave();
+  });
+  $("storage-mode-cancel").addEventListener("click", () => $("storage-mode-confirm").close());
+  $("storage-mode-confirm-ok").addEventListener("click", async () => {
+    $("storage-mode-confirm-ok").disabled = true; $("storage-mode-cancel").disabled = true;
     try {
-      storageDraft = await api("POST", "/api/settings/storage", storageDraft);
-      $("storage-status").textContent = "Đã lưu cài đặt cho tài khoản này.";
-    } catch (error) { $("storage-error").textContent = error.message; }
-    finally { $("storage-fields").disabled = false; $("storage-save").disabled = false; }
+      if (await storageSave({ confirm: true })) $("storage-mode-confirm").close();
+    } finally { $("storage-mode-confirm-ok").disabled = false; $("storage-mode-cancel").disabled = false; }
   });
   $("storage-clear-open").addEventListener("click", () => {
     const select = $("storage-clear-scope"), [scope, key] = select.value.split(":");
@@ -1641,7 +1679,8 @@
     try {
       const result = await api("POST", "/api/storage/clear", storageClear);
       $("storage-confirm").close();
-      $("storage-status").textContent = "Đã giải phóng " + storageBytes(result.freed_bytes) + (result.limited ? ". Còn tệp vượt giới hạn mỗi lượt dọn." : ".");
+      const remain = result.limited ? ". Còn " + storageBytes(result.remaining_bytes || 0) + " (" + (result.remaining_files || 0) + " tệp) vượt giới hạn mỗi lượt dọn." : ".";
+      $("storage-status").textContent = "Đã giải phóng " + storageBytes(result.freed_bytes) + remain;
       try { await storageRefresh(); } catch (error) { $("storage-error").textContent = error.message; }
     } catch (error) { $("storage-clear-error").textContent = error.message; }
     finally { $("storage-confirm-clear").disabled = false; $("storage-cancel").disabled = false; }

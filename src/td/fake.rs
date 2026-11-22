@@ -5,8 +5,8 @@ use std::{collections::VecDeque,sync::{Condvar,atomic::AtomicI32}};
 #[derive(Default)]
 pub(crate) struct Fake {
     next:AtomicI32,
-    inbox:Mutex<VecDeque<Value>>,
-    cv:Condvar,
+    inbox:Arc<Mutex<VecDeque<Value>>>,
+    cv:Arc<Condvar>,
     states:Mutex<HashMap<i32,Value>>,
     pub sent:Mutex<Vec<(i32,Value)>>,
     pub restored:AtomicBool,
@@ -14,6 +14,8 @@ pub(crate) struct Fake {
     pub profiles:Mutex<HashMap<i32,Value>>,
     pub storage_stats:Mutex<Value>,
     pub storage_chats:Mutex<HashMap<i64, Value>>,
+    pub optimize_reply:Mutex<Option<Box<dyn Fn(&Value)->Value+Send+Sync>>>,
+    pub optimize_delay:Mutex<Option<Duration>>,
 }
 impl Fake {
     pub fn push(&self,mut v:Value,id:i32) {
@@ -74,7 +76,24 @@ impl TdApi for Fake {
                 let kind = self.storage_chats.lock().unwrap().get(&r["chat_id"].as_i64().unwrap()).cloned();
                 json!({"@type":"chat","type":kind})
             }
-            "optimizeStorage"=>json!({"@type":"storageStatistics","size":0,"count":0,"by_chat":[]}),
+            "optimizeStorage"=>{
+                let reply = self.optimize_reply.lock().unwrap().as_ref().map(|f| f(r))
+                    .unwrap_or_else(|| json!({"@type":"storageStatistics","size":0,"count":0,"by_chat":[]}));
+                if let Some(delay) = *self.optimize_delay.lock().unwrap() {
+                    let mut answer = reply;
+                    answer["@extra"] = r["@extra"].clone();
+                    answer["@client_id"] = json!(id);
+                    let inbox = self.inbox.clone();
+                    let cv = self.cv.clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(delay);
+                        inbox.lock().unwrap().push_back(answer);
+                        cv.notify_one();
+                    });
+                    return;
+                }
+                reply
+            }
             "downloadFile"=>json!({"@type":"file","local":{"is_downloading_completed":true,
                 "path":self.downloads.lock().unwrap().get(&id).cloned().unwrap_or_default()}}),
             "getUser"=>json!({"@type":"user","id":r["user_id"],"first_name":"Peer"}),

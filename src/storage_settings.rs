@@ -45,6 +45,24 @@ pub(crate) fn load(session: &Path) -> io::Result<Value> {
     }
 }
 
+pub(crate) fn safe_default() -> Value {
+    defaults(true)
+}
+
+pub(crate) fn parse_update(mut body: Value) -> Result<(Value, bool), GwError> {
+    let invalid = || GwError::new(422, "INVALID_STORAGE_SETTINGS", "Cấu hình lưu trữ không hợp lệ.");
+    let Some(map) = body.as_object_mut() else {
+        return Err(invalid());
+    };
+    let confirmed = match map.remove("confirm") {
+        None => false,
+        Some(Value::Bool(v)) => v,
+        Some(_) => return Err(invalid()),
+    };
+    validate(&body)?;
+    Ok((body, confirmed))
+}
+
 pub(crate) fn validate(settings: &Value) -> Result<(), GwError> {
     let keep = |v: &Value| v.is_null() || matches!(v.as_u64(), Some(86400 | 604800 | 2678400));
     let bytes = |v: &Value| v.as_u64().is_some_and(|n| n <= MAX_INT53);
