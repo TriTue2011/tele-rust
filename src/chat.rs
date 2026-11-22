@@ -16,7 +16,6 @@ use serde_json::{json, Value};
 use crate::contract::{Binary, BoxFut, ChatControl, GwError, TdLink};
 use crate::events::EventSink;
 use feed::State;
-#[cfg(test)]
 use shape::message;
 use shape::{summarize_with_ctx, user_name};
 
