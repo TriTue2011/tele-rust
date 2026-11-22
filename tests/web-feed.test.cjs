@@ -12,7 +12,7 @@ const response = (cursor, items = [], reset = false) => ({ ok: true, json: async
 async function start(reply, source = feedCode) {
   const document = Object.assign(new EventTarget(), { hidden: false });
   const window = new EventTarget();
-  const calls = [], appended = [], refreshed = [], timers = new Map();
+  const calls = [], appended = [], refreshed = [], timers = new Map(), blobs = new Map([['avatar:cu', Promise.resolve('blob:cu')]]);
   let now = 0, nextTimer = 0, active = 0, peak = 0;
   async function fetch(path, { signal, credentials, headers = {} }) {
     const url = new URL(path, 'http://localhost');
@@ -31,11 +31,11 @@ async function start(reply, source = feedCode) {
     setTimeout: (fn, delay) => { timers.set(++nextTimer, { fn, time: now + delay }); return nextTimer; },
     clearTimeout: (id) => timers.delete(id),
     appendMessages: (list, prepend) => { assert.equal(prepend, false); appended.push(...list); },
-    scheduleChats() {}, loadChats: async () => refreshed.push('chats'), reloadCurrent: async () => refreshed.push('current'),
+    blobs, scheduleChats() {}, loadChats: async () => refreshed.push('chats'), reloadCurrent: async () => refreshed.push('current'),
   });
   await flush();
   return {
-    document, window, calls, appended, refreshed, peak: () => peak,
+    document, window, calls, appended, refreshed, blobs, peak: () => peak,
     async tick(ms) {
       const end = now + ms;
       for (;;) {
@@ -105,6 +105,7 @@ test('TC-A3: reset reloads the list and open conversation once and resumes from 
   app.window.dispatchEvent(new Event('pageshow'));
   await flush();
   assert.deepEqual(app.refreshed, ['chats', 'current']);
+  assert.equal(app.blobs.size, 0, 'reset phải bỏ ảnh đã nhớ theo file id cũ');
   assert.deepEqual([app.calls.at(-1).since, app.calls.at(-1).wait], [99, 20]);
 });
 
