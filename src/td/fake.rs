@@ -15,6 +15,14 @@ pub(crate) struct Fake {
     pub user_full_info:Mutex<HashMap<i64,Value>>,
     pub storage_stats:Mutex<Value>,
     pub storage_chats:Mutex<HashMap<i64, Value>>,
+    pub chats:Mutex<HashMap<i64, Value>>,
+    pub strict_chats:AtomicBool,
+    pub users:Mutex<HashMap<i64, Value>>,
+    pub basic_groups:Mutex<HashMap<i64, Value>>,
+    pub basic_group_full_info:Mutex<HashMap<i64, Value>>,
+    pub supergroups:Mutex<HashMap<i64, Value>>,
+    pub supergroup_full_info:Mutex<HashMap<i64, Value>>,
+    pub supergroup_members:Mutex<HashMap<i64, Value>>,
     pub optimize_reply:Mutex<Option<Box<dyn Fn(&Value)->Value+std::marker::Send+std::marker::Sync>>>,
     pub optimize_delay:Mutex<Option<Duration>>,
 }
@@ -75,9 +83,29 @@ impl TdApi for Fake {
             "createCall"=>json!({"@type":"callId","id":71}),
             "getStorageStatistics"=>self.storage_stats.lock().unwrap().as_object().cloned().map(Value::Object)
                 .unwrap_or_else(||json!({"@type":"storageStatistics","size":0,"count":0,"by_chat":[]})),
+            "getChat" if r["chat_id"].as_i64().is_some_and(|cid| self.chats.lock().unwrap().contains_key(&cid)) => {
+                self.chats.lock().unwrap().get(&r["chat_id"].as_i64().unwrap()).cloned().unwrap()
+            }
             "getChat" if r["chat_id"].as_i64().is_some_and(|id| self.storage_chats.lock().unwrap().contains_key(&id)) => {
                 let kind = self.storage_chats.lock().unwrap().get(&r["chat_id"].as_i64().unwrap()).cloned();
                 json!({"@type":"chat","type":kind})
+            }
+            "getChat" if self.strict_chats.load(Ordering::Relaxed) => {
+                json!({"@type":"error","code":404,"message":"Chat not found"})
+            }
+            "getBasicGroup" => self.basic_groups.lock().unwrap().get(&r["basic_group_id"].as_i64().unwrap_or_default()).cloned()
+                .unwrap_or_else(|| json!({"@type":"basicGroup","id":r["basic_group_id"],"member_count":0,"status":{"@type":"chatMemberStatusMember"}})),
+            "getBasicGroupFullInfo" => self.basic_group_full_info.lock().unwrap().get(&r["basic_group_id"].as_i64().unwrap_or_default()).cloned()
+                .unwrap_or_else(|| json!({"@type":"basicGroupFullInfo","description":"","members":[]})),
+            "getSupergroup" => self.supergroups.lock().unwrap().get(&r["supergroup_id"].as_i64().unwrap_or_default()).cloned()
+                .unwrap_or_else(|| json!({"@type":"supergroup","id":r["supergroup_id"],"member_count":0,"status":{"@type":"chatMemberStatusMember"}})),
+            "getSupergroupFullInfo" => self.supergroup_full_info.lock().unwrap().get(&r["supergroup_id"].as_i64().unwrap_or_default()).cloned()
+                .unwrap_or_else(|| json!({"@type":"supergroupFullInfo","description":"","member_count":0,"can_get_members":true})),
+            "getSupergroupMembers" => self.supergroup_members.lock().unwrap().get(&r["supergroup_id"].as_i64().unwrap_or_default()).cloned()
+                .unwrap_or_else(|| json!({"@type":"chatMembers","total_count":0,"members":[]})),
+            "deleteChatHistory" | "leaveChat" if self.strict_chats.load(Ordering::Relaxed)
+                && !r["chat_id"].as_i64().is_some_and(|cid| self.chats.lock().unwrap().contains_key(&cid)) => {
+                json!({"@type":"error","code":404,"message":"Chat not found"})
             }
             "optimizeStorage"=>{
                 let reply = self.optimize_reply.lock().unwrap().as_ref().map(|f| f(r))
@@ -99,7 +127,8 @@ impl TdApi for Fake {
             }
             "downloadFile"=>json!({"@type":"file","local":{"is_downloading_completed":true,
                 "path":self.downloads.lock().unwrap().get(&id).cloned().unwrap_or_default()}}),
-            "getUser"=>json!({"@type":"user","id":r["user_id"],"first_name":"Peer"}),
+            "getUser"=>self.users.lock().unwrap().get(&r["user_id"].as_i64().unwrap_or_default()).cloned()
+                .unwrap_or_else(||json!({"@type":"user","id":r["user_id"],"first_name":"Peer"})),
             _=>json!({"@type":"ok"}),
         };
         if let Some(next)=next {self.auth(id,json!({"@type":next}));}

@@ -625,6 +625,8 @@ fn router_with(ctx: Arc<Ctx>) -> Router {
         .route("/api/profile", add(route(get, s(ChatGet)), post, s(ChatPost)))
         .route("/api/events", route(get, s(Events)))
         .route("/api/chats/:chat_id/messages", route(get, s_id(ChatGet, "chat_id")))
+        .route("/api/chats/:chat_id/info", route(get, s_id(ChatGet, "chat_id")))
+        .route("/api/chats/:chat_id/members", route(get, s_id(ChatGet, "chat_id")))
         .route("/api/file/:file_id", route(get, s_id(ChatBytes, "file_id")))
         .route("/api/calltrace/:call_id", route(get, s(ChatBytes)));
     // Ghi, thân JSON → ChatControl.
@@ -634,7 +636,8 @@ fn router_with(ctx: Arc<Ctx>) -> Router {
               "/api/do/:name", "/api/storage/clear"] {
         r = r.route(p, route(post, s(ChatPost)));
     }
-    for p in ["/api/chats/:chat_id/send", "/api/chats/:chat_id/send_album", "/api/chats/:chat_id/read"] {
+    for p in ["/api/chats/:chat_id/send", "/api/chats/:chat_id/send_album", "/api/chats/:chat_id/read",
+              "/api/chats/:chat_id/settings", "/api/chats/:chat_id/clear_history", "/api/chats/:chat_id/leave"] {
         r = r.route(p, route(post, s_id(ChatPost, "chat_id")));
     }
     r = r.route("/api/chats/:chat_id/send_file", route(post, s_id(SendFile, "chat_id")));
@@ -1345,6 +1348,29 @@ mod tests {
             assert_eq!(send(&app, ok("POST", path, r#"{"k":1}"#)).await.0, 200, "{path}");
             assert_eq!(chat.last(), ("POST".into(), path.into(), "".into(), json!({"k": 1})));
         }
+        assert_eq!(call.count(), 0);
+    }
+
+    #[tokio::test]
+    async fn chat_info_routes_enforce_auth_methods_int_param_and_forward_to_chat() {
+        let (app, call, chat) = app();
+        for (method, path, bad_method, bad_id_path) in [
+            ("GET", "/api/chats/42/info", "POST", "/api/chats/abc/info"),
+            ("GET", "/api/chats/-1001/members", "DELETE", "/api/chats/abc/members"),
+            ("POST", "/api/chats/42/settings", "GET", "/api/chats/abc/settings"),
+            ("POST", "/api/chats/42/clear_history", "GET", "/api/chats/abc/clear_history"),
+            ("POST", "/api/chats/-1001/leave", "GET", "/api/chats/abc/leave"),
+        ] {
+            assert_eq!(send(&app, req(method, bad_id_path, None, Body::empty())).await.0, 422, "{method} {bad_id_path}");
+            assert_eq!(send(&app, req(method, path, None, "{}")).await.0, 401, "{method} {path}");
+            assert_eq!(send(&app, ok(bad_method, path, "{}")).await.0, 405, "{bad_method} {path}");
+            let body = if method == "POST" { r#"{"confirm":true}"# } else { "" };
+            assert_eq!(send(&app, ok(method, path, body)).await.0, 200, "{method} {path}");
+            let expected_body = if method == "POST" { json!({"confirm": true}) } else { Value::Null };
+            assert_eq!(chat.last(), (method.into(), path.into(), "".into(), expected_body));
+        }
+        assert_eq!(send(&app, ok("GET", "/api/chats/-1001/members?q=an&limit=10", Body::empty())).await.0, 200);
+        assert_eq!(chat.last(), ("GET".into(), "/api/chats/-1001/members".into(), "q=an&limit=10".into(), Value::Null));
         assert_eq!(call.count(), 0);
     }
 

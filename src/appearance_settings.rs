@@ -10,6 +10,7 @@ pub(crate) const FONTS: [&str; 4] = ["system", "sans", "serif", "mono"];
 pub(crate) const THEMES: [&str; 3] = ["system", "light", "dark"];
 pub(crate) const BUBBLES: [&str; 3] = ["classic", "rounded", "compact"];
 pub(crate) const ACCENTS: [&str; 6] = ["blue", "green", "purple", "orange", "pink", "teal"];
+pub(crate) const LINE_HEIGHTS: [&str; 3] = ["compact", "normal", "relaxed"];
 pub(crate) const MIN_FONT_SIZE: u64 = 12;
 pub(crate) const MAX_FONT_SIZE: u64 = 20;
 
@@ -24,10 +25,16 @@ pub(crate) fn defaults() -> Value {
 }
 
 pub(crate) fn validate(settings: &Value) -> Result<(), GwError> {
-    let fields = ["font_family", "font_size", "theme", "bubble_style", "accent"];
-    let valid_fields = settings.as_object()
-        .is_some_and(|m| m.len() == fields.len() && fields.iter().all(|k| m.contains_key(*k)));
+    let required = ["font_family", "font_size", "theme", "bubble_style", "accent"];
+    let valid_fields = settings.as_object().is_some_and(|m| {
+        required.iter().all(|k| m.contains_key(*k))
+            && m.keys().all(|k| required.contains(&k.as_str()) || k == "line_height")
+    });
+    let valid_line_height = settings.get("line_height").map_or(true, |v| {
+        v.as_str().is_some_and(|s| LINE_HEIGHTS.contains(&s))
+    });
     let valid = valid_fields
+        && valid_line_height
         && settings["font_family"].as_str().is_some_and(|v| FONTS.contains(&v))
         && settings["font_size"].as_u64().is_some_and(|n| (MIN_FONT_SIZE..=MAX_FONT_SIZE).contains(&n))
         && settings["theme"].as_str().is_some_and(|v| THEMES.contains(&v))
@@ -102,9 +109,18 @@ mod tests {
             json!({"font_family":"system","font_size":15,"theme":"system","bubble_style":"pill","accent":"blue"}),
             json!({"font_family":"system","font_size":15,"theme":"system","bubble_style":"classic","accent":"red"}),
             json!({"font_family":"system","font_size":15,"theme":"system","bubble_style":"classic","accent":"blue","extra":1}),
+            json!({"font_family":"system","font_size":15,"theme":"system","bubble_style":"classic","accent":"blue","line_height":"huge"}),
+            json!({"font_family":"system","font_size":15,"theme":"system","bubble_style":"classic","accent":"blue","line_height":1.5}),
+            json!({"font_family":"system","font_size":15,"theme":"system","bubble_style":"classic","accent":"blue","line_height":true}),
         ] {
             let err = validate(&bad).unwrap_err();
             assert_eq!((err.status, err.code.as_str()), (422, "INVALID_APPEARANCE_SETTINGS"));
+        }
+
+        for lh in ["compact", "normal", "relaxed"] {
+            assert!(validate(&json!({
+                "font_family":"system","font_size":15,"theme":"system","bubble_style":"classic","accent":"blue","line_height":lh
+            })).is_ok());
         }
     }
 

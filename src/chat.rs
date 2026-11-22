@@ -1,6 +1,7 @@
 //! HTTP chat cho một tài khoản TDLib đã đăng nhập.
 mod feed;
 mod files;
+mod info;
 mod services;
 mod shape;
 mod write;
@@ -269,6 +270,12 @@ impl ChatService {
             ("GET", ["", "api", "chats"]) => self.chats(q.int("limit", 60)?.clamp(1, 200)).await,
             ("GET", ["", "api", "chats", id, "messages"]) => self.history(
                 path_id(id)?, q.int("before", 0)?, q.int("limit", 30)?.clamp(1, 100) as usize).await,
+            ("GET", ["", "api", "chats", id, "info"]) => self.chat_info(path_id(id)?).await,
+            ("GET", ["", "api", "chats", id, "members"]) => self.chat_members(
+                path_id(id)?, &q.get("q").unwrap_or_default(), q.int("limit", 50)?).await,
+            ("POST", ["", "api", "chats", id, "settings"]) => self.update_chat_settings(path_id(id)?, &body).await,
+            ("POST", ["", "api", "chats", id, "clear_history"]) => self.clear_chat_history(path_id(id)?, &body).await,
+            ("POST", ["", "api", "chats", id, "leave"]) => self.leave_chat(path_id(id)?, &body).await,
             ("GET", ["", "api", "contacts"]) => self.contacts().await,
             ("POST", ["", "api", "contacts", "open"]) => self.open_private(int(&body["user_id"], "user_id")?).await,
             ("GET", ["", "api", "search"]) => {

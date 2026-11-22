@@ -7,6 +7,7 @@ use crate::contract::TdError;
 type FakeReply = (Value, Result<Value, TdError>);
 
 mod catalog;
+mod info;
 mod writing;
 
 struct FakeTd {

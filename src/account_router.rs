@@ -500,6 +500,27 @@ impl Accounts {
             }
             return Ok(result);
         }
+        if is_chat_info_route(path) {
+            let mut clean_body = body;
+            let q_acc = param(query, "account").filter(|s| !s.is_empty());
+            if let Some(map) = clean_body.as_object_mut() {
+                if let Some(val) = map.remove("account") {
+                    if !val.is_null() {
+                        let Some(b_acc) = val.as_str() else {
+                            return Err(GwError::bad_request("Tham số account phải là chuỗi."));
+                        };
+                        if let (Some(q), b) = (q_acc.as_deref(), b_acc) {
+                            if !b.is_empty() && q != b {
+                                return Err(GwError::bad_request("Tham số account trong query và thân JSON không khớp."));
+                            }
+                        }
+                    }
+                }
+            }
+            let (_, e) = self.select_account_scoped(&selected)?;
+            let _access = e.storage_lock.read().await;
+            return e.chat.handle(method, path, query, clean_body).await;
+        }
         let (phone,e) = self.select(&selected)?;
         if path == "/api/live/settings" { return e.calls.settings(Value::Null).await; }
         if path == "/api/live/devices" { return e.calls.devices(Value::Null).await; }
@@ -507,6 +528,14 @@ impl Accounts {
         let _access = e.storage_lock.read().await;
         e.chat.handle(method,path,query,body).await
     }
+}
+
+fn is_chat_info_route(path: &str) -> bool {
+    let mut parts = path.split('/');
+    matches!(
+        (parts.next(), parts.next(), parts.next(), parts.next(), parts.next(), parts.next()),
+        (Some(""), Some("api"), Some("chats"), Some(_), Some("info" | "settings" | "clear_history" | "leave" | "members"), None)
+    )
 }
 
 pub(crate) fn param(query: &str, name: &str) -> Option<String> {

@@ -7,7 +7,7 @@
 <style>
   :root { color-scheme: light dark; --bg:#eef1f5; --panel:#fff; --fg:#17212b; --mut:#5a6877; --line:#e1e6ec;
           --acc:#1d68c4; --btn-bg:#1d68c4; --in:#fff; --out:#d6eafd; --badge:#1d68c4; --mute:#9aa7b4; --err:#c62828; --ok:#1e8e4e;
-          --chat-font:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; --chat-font-size:15px;
+          --chat-font:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; --chat-font-size:15px; --chat-line-height:1.45;
           --bubble-radius:12px; --bubble-pad:6px 10px 4px; --msg-gap:4px; }
   :root[data-theme="light"] { color-scheme: light; }
   :root[data-theme="dark"] { color-scheme: dark; --bg:#0e1621; --panel:#17212b; --fg:#e8eef4; --mut:#95a6b8;
@@ -39,7 +39,7 @@
   body { background:var(--bg); color:var(--fg); font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
   #app { display:flex; height:100%; max-width:1280px; margin:0 auto; background:var(--panel); }
   aside { width:340px; border-right:1px solid var(--line); display:flex; flex-direction:column; min-width:0; }
-  main { flex:1; display:flex; flex-direction:column; min-width:0; background:var(--bg); }
+  main { flex:1; display:flex; flex-direction:column; min-width:0; background:var(--bg); position:relative; }
   .bar { display:flex; align-items:center; gap:8px; padding:10px 12px; border-bottom:1px solid var(--line); background:var(--panel); }
   .bar h1 { font-size:16px; margin:0; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .bar small { color:var(--mut); display:block; font-weight:400; font-size:12px; }
@@ -67,9 +67,9 @@
   .p { color:var(--mut); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-family:var(--chat-font); font-size:calc(var(--chat-font-size) - 1px); }
   .badge { background:var(--badge); color:#fff; border-radius:99px; padding:0 7px; font-size:12px; min-width:20px; text-align:center; flex:none; }
   .badge.mute { background:var(--mute); }
-  #msgs { flex:1; overflow-y:auto; padding:12px 14px; display:flex; flex-direction:column; gap:var(--msg-gap); font-family:var(--chat-font); font-size:var(--chat-font-size); }
+  #msgs { flex:1; overflow-y:auto; padding:12px 14px; display:flex; flex-direction:column; gap:var(--msg-gap); font-family:var(--chat-font); font-size:var(--chat-font-size); line-height:var(--chat-line-height); }
   .day { align-self:center; color:var(--mut); font-size:12px; background:var(--panel); border-radius:99px; padding:2px 10px; margin:8px 0; }
-  .m { max-width:min(78%,560px); padding:var(--bubble-pad); border-radius:var(--bubble-radius); background:var(--in); word-wrap:break-word; overflow-wrap:anywhere; position:relative; font-family:var(--chat-font); font-size:var(--chat-font-size); }
+  .m { max-width:min(78%,560px); padding:var(--bubble-pad); border-radius:var(--bubble-radius); background:var(--in); word-wrap:break-word; overflow-wrap:anywhere; position:relative; font-family:var(--chat-font); font-size:var(--chat-font-size); line-height:var(--chat-line-height); }
   .m.out { align-self:flex-end; background:var(--out); }
   :root[data-bubble="rounded"] .m:not(.out) { border-bottom-left-radius:5px; }
   :root[data-bubble="rounded"] .m.out { border-bottom-right-radius:5px; }
@@ -172,7 +172,7 @@
   .range-row { display:flex; align-items:center; gap:8px; }
   .range-row button { min-width:44px; min-height:44px; padding:0 12px; background:var(--panel); color:var(--fg); border:1px solid var(--line); }
   .range-row output { min-width:46px; text-align:right; font-weight:600; font-variant-numeric:tabular-nums; }
-  #appearance-preview { padding:12px; border-radius:12px; border:1px solid var(--line); background:var(--bg); display:flex; flex-direction:column; gap:8px; font-family:var(--chat-font); font-size:var(--chat-font-size); }
+  #appearance-preview { padding:12px; border-radius:12px; border:1px solid var(--line); background:var(--bg); display:flex; flex-direction:column; gap:8px; font-family:var(--chat-font); font-size:var(--chat-font-size); line-height:var(--chat-line-height); }
   #appearance-preview .preview-chat { display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:10px; background:var(--panel); border:1px solid var(--line); }
   #appearance-preview .preview-chat .av { width:36px; height:36px; font-size:13px; background:var(--btn-bg); }
   #appearance-preview .preview-msgs { display:flex; flex-direction:column; gap:var(--msg-gap); }
@@ -256,6 +256,53 @@
     .back { display:inline-block; }
     .m { max-width:88%; }
   }
+  .head-btn { min-width:44px; min-height:44px; padding:6px 8px; flex:none; display:inline-flex; align-items:center; justify-content:center; }
+  button#font-open { font-size:15px; font-weight:700; color:var(--fg); }
+  .chat-head-title { cursor:pointer; min-height:44px; display:flex; align-items:center; border-radius:8px; padding:0 4px; }
+  .chat-head-title:hover { background:var(--bg); }
+  .chat-head-title:focus-visible { outline:2px solid var(--acc); outline-offset:1px; }
+  .font-popover { position:absolute; top:58px; right:8px; z-index:6; width:min(320px, calc(100vw - 16px)); max-width:calc(100% - 16px); padding:14px; border-radius:14px; border:1px solid var(--line); background:var(--panel); color:var(--fg); box-shadow:0 12px 32px rgba(0,0,0,.22); display:flex; flex-direction:column; gap:10px; }
+  .font-pop-head { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+  .font-pop-head h2 { margin:0; font-size:15px; }
+  .font-popover label { display:block; font-weight:600; font-size:12px; margin-bottom:4px; color:var(--mut); }
+  .font-popover button, .font-popover select { min-height:44px; max-width:100%; }
+  .font-popover input[type=range] { min-height:44px; flex:1; min-width:0; accent-color:var(--acc); }
+  .chat-info-drawer { width:340px; flex:none; border-left:1px solid var(--line); display:flex; flex-direction:column; min-width:0; background:var(--panel); color:var(--fg); overflow:hidden; }
+  .chat-info-top { display:flex; align-items:center; gap:8px; padding:10px 14px; border-bottom:1px solid var(--line); flex:none; }
+  .chat-info-top h2 { margin:0; font-size:16px; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .chat-info-body { flex:1; min-height:0; overflow-y:auto; overflow-x:hidden; padding:14px; display:flex; flex-direction:column; gap:12px; overflow-wrap:anywhere; }
+  .chat-info-drawer button, .chat-info-drawer select, .chat-info-drawer input[type=text] { min-height:44px; max-width:100%; }
+  .ci-profile { display:flex; flex-direction:column; align-items:center; text-align:center; gap:6px; padding:12px; border-radius:12px; background:var(--bg); border:1px solid var(--line); }
+  .ci-profile .av { width:64px; height:64px; font-size:22px; background:var(--btn-bg); }
+  .ci-profile h3 { margin:2px 0 0; font-size:17px; overflow-wrap:anywhere; }
+  .ci-meta-row { display:flex; flex-wrap:wrap; justify-content:center; gap:6px; align-items:center; font-size:12px; color:var(--mut); }
+  .ci-bio { font-size:13px; color:var(--fg); white-space:pre-wrap; overflow-wrap:anywhere; width:100%; text-align:left; background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:8px 10px; }
+  .ci-card { padding:12px; border:1px solid var(--line); border-radius:12px; background:var(--bg); display:flex; flex-direction:column; gap:8px; }
+  .ci-card h4 { margin:0; font-size:14px; }
+  .ci-card label { font-size:13px; font-weight:600; }
+  .ci-card select, .ci-card input[type=text] { background:var(--panel); }
+  .ci-switch { display:flex; align-items:center; justify-content:space-between; gap:10px; min-height:44px; cursor:pointer; font-weight:500 !important; }
+  .ci-switch input[type=checkbox] { width:20px; height:20px; flex:none; accent-color:var(--acc); }
+  .ci-actions { display:flex; flex-direction:column; gap:8px; }
+  .ci-btn-outline { background:var(--panel); color:var(--fg); border:1px solid var(--line); text-align:left; }
+  .ci-btn-outline[aria-pressed="true"] { border-color:var(--acc); color:var(--acc); font-weight:600; }
+  .ci-perms { margin:0; padding-left:18px; display:flex; flex-direction:column; gap:4px; font-size:13px; color:var(--mut); }
+  .ci-invite-box { display:flex; flex-direction:column; gap:6px; padding:8px 10px; border-radius:8px; background:var(--panel); border:1px solid var(--line); }
+  .ci-invite-box code { font-size:12px; word-break:break-all; color:var(--acc); }
+  .ci-members-list { display:flex; flex-direction:column; gap:6px; max-height:300px; overflow-y:auto; }
+  .ci-member-row { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:8px 10px; border-radius:9px; background:var(--panel); border:1px solid var(--line); }
+  .ci-member-info { min-width:0; flex:1; }
+  .ci-member-info strong { display:block; font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .ci-member-info small { display:block; font-size:12px; color:var(--mut); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .role-badge { display:inline-block; padding:2px 8px; border-radius:99px; font-size:11px; font-weight:600; background:color-mix(in srgb, var(--acc) 14%, transparent); color:var(--acc); flex:none; }
+  .role-badge.creator { background:var(--btn-bg); color:#fff; }
+  @media (max-width:1059px) {
+    .chat-info-drawer { position:fixed; top:0; right:0; bottom:0; width:min(340px, 50vw); z-index:7; box-shadow:-8px 0 28px rgba(0,0,0,.18); }
+  }
+  @media (max-width:699px) {
+    #head { gap:4px; padding:6px 8px; }
+    .chat-info-drawer { width:100%; height:100dvh; border-left:0; box-shadow:none; }
+  }
 </style>
 </head>
 <body>
@@ -268,7 +315,44 @@
     <div id="list" role="list"></div>
   </aside>
   <main>
-    <div class="bar" id="head" hidden><button class="icon back" id="back" aria-label="Quay lại">←</button><h1 id="title"></h1><button class="icon" id="call-a" aria-label="Gọi thoại" title="Gọi thoại">📞</button><button class="icon" id="call-v" aria-label="Gọi video" title="Gọi video">🎥</button></div>
+    <div class="bar" id="head" hidden><button class="icon back head-btn" id="back" aria-label="Quay lại">←</button><h1 id="title" class="chat-head-title" role="button" tabindex="0" aria-label="Thông tin hội thoại" title="Xem thông tin hội thoại"></h1><button class="icon head-btn" id="font-open" type="button" aria-label="Phông chữ khung chat" aria-haspopup="dialog" aria-expanded="false" aria-controls="font-popover" title="Kiểu chữ và cỡ chữ">Aa</button><button class="icon head-btn" id="chat-info-open" type="button" aria-label="Thông tin hội thoại" aria-expanded="false" aria-controls="chat-info-drawer" title="Thông tin hội thoại">ⓘ</button><button class="icon head-btn" id="call-a" aria-label="Gọi thoại" title="Gọi thoại">📞</button><button class="icon head-btn" id="call-v" aria-label="Gọi video" title="Gọi video">🎥</button></div>
+    <section id="font-popover" class="font-popover" role="dialog" aria-label="Phông chữ khung chat" hidden>
+      <div class="font-pop-head">
+        <h2>Phông chữ khung chat</h2>
+        <button id="font-pop-close" type="button" class="icon" aria-label="Đóng bảng phông chữ">✕</button>
+      </div>
+      <div>
+        <label for="font-pop-family">Kiểu chữ</label>
+        <select id="font-pop-family">
+          <option value="system">Mặc định hệ thống</option>
+          <option value="sans">Không chân (Sans)</option>
+          <option value="serif">Có chân (Serif)</option>
+          <option value="mono">Đơn cách (Monospace)</option>
+        </select>
+      </div>
+      <div>
+        <label for="font-pop-size">Cỡ chữ (12–20 px)</label>
+        <div class="range-row">
+          <button type="button" id="font-pop-size-dec" aria-label="Giảm cỡ chữ">−</button>
+          <input id="font-pop-size" type="range" min="12" max="20" step="1" value="15">
+          <button type="button" id="font-pop-size-inc" aria-label="Tăng cỡ chữ">+</button>
+          <output id="font-pop-size-val" for="font-pop-size">15 px</output>
+        </div>
+      </div>
+      <div>
+        <label>Giãn dòng</label>
+        <div class="choice-row">
+          <button type="button" id="font-pop-lh-compact" class="choice-btn" data-lh="compact" aria-pressed="false">Gọn</button>
+          <button type="button" id="font-pop-lh-normal" class="choice-btn" data-lh="normal" aria-pressed="true">Chuẩn</button>
+          <button type="button" id="font-pop-lh-relaxed" class="choice-btn" data-lh="relaxed" aria-pressed="false">Thoáng</button>
+        </div>
+      </div>
+      <p id="font-pop-status" class="settings-status" role="status" aria-live="polite"></p>
+      <p id="font-pop-error" class="settings-error" role="alert"></p>
+      <div class="settings-actions">
+        <button type="button" id="font-pop-reset" class="ghost">Đặt lại</button>
+      </div>
+    </section>
     <div id="gate">
       <h1 style="font-size:18px">Telegram Gateway</h1>
       <form id="gate-setup" hidden>
@@ -317,6 +401,106 @@
       </div>
     </div>
   </main>
+  <section id="chat-info-drawer" class="chat-info-drawer" role="region" aria-label="Thông tin hội thoại" hidden>
+    <header class="chat-info-top">
+      <h2>Thông tin hội thoại</h2>
+      <button id="chat-info-close" type="button" class="icon" aria-label="Đóng thông tin hội thoại">✕</button>
+    </header>
+    <div class="chat-info-body">
+      <p id="chat-info-status" class="settings-status" role="status" aria-live="polite"></p>
+      <p id="chat-info-error" class="settings-error" role="alert"></p>
+      <section id="chat-info-header" class="ci-profile">
+        <div id="chat-info-avatar" class="av" aria-hidden="true">?</div>
+        <h3 id="chat-info-title">Hội thoại</h3>
+        <div class="ci-meta-row">
+          <span id="chat-info-kind" class="soon-badge"></span>
+          <span id="chat-info-username" hidden></span>
+          <span id="chat-info-members-count" hidden></span>
+        </div>
+        <small id="chat-info-sub" hidden></small>
+        <p id="chat-info-bio" class="ci-bio" hidden></p>
+      </section>
+      <section id="chat-info-notif" class="ci-card">
+        <h4>Thông báo riêng</h4>
+        <label for="ci-mute">Trạng thái thông báo</label>
+        <select id="ci-mute">
+          <option value="default">Dùng mặc định</option>
+          <option value="unmuted">Bật thông báo</option>
+          <option value="3600">Tắt tiếng 1 giờ</option>
+          <option value="28800">Tắt tiếng 8 giờ</option>
+          <option value="172800">Tắt tiếng 2 ngày</option>
+          <option value="2147483647">Tắt tiếng mãi mãi</option>
+        </select>
+        <label class="ci-switch" for="ci-preview">
+          <span>Xem trước nội dung tin nhắn</span>
+          <input id="ci-preview" type="checkbox">
+        </label>
+      </section>
+      <section id="chat-info-autodelete" class="ci-card">
+        <h4>Tự xoá tin nhắn</h4>
+        <label for="ci-autodelete">Thời gian tự xoá</label>
+        <select id="ci-autodelete">
+          <option value="0">Tắt</option>
+          <option value="86400">1 ngày</option>
+          <option value="604800">1 tuần</option>
+          <option value="2678400">1 tháng</option>
+        </select>
+        <small class="storage-note">Đổi tự xoá yêu cầu xác nhận vì tin nhắn sẽ bị xoá thật ở cả hai bên.</small>
+      </section>
+      <section id="chat-info-actions" class="ci-card">
+        <h4>Tác vụ hội thoại</h4>
+        <div class="ci-actions">
+          <button type="button" id="ci-pin" class="ci-btn-outline" aria-pressed="false">Ghim hội thoại</button>
+          <button type="button" id="ci-archive" class="ci-btn-outline" aria-pressed="false">Lưu trữ hội thoại</button>
+          <button type="button" id="ci-unread" class="ci-btn-outline" aria-pressed="false">Đánh dấu chưa đọc</button>
+        </div>
+      </section>
+      <section id="chat-info-cache" class="ci-card">
+        <h4>Bộ nhớ đệm của hội thoại này</h4>
+        <p id="ci-cache-usage" class="storage-note">Đang tải dung lượng…</p>
+        <label class="ci-switch" for="ci-cache-forever">
+          <span>Ngoại lệ: giữ bộ nhớ đệm «Mãi mãi»</span>
+          <input id="ci-cache-forever" type="checkbox">
+        </label>
+        <label for="ci-cache-keep">Thời hạn giữ tệp riêng</label>
+        <select id="ci-cache-keep">
+          <option value="default">Theo mặc định loại hội thoại</option>
+          <option value="86400">1 ngày</option>
+          <option value="604800">7 ngày</option>
+          <option value="2678400">1 tháng</option>
+          <option value="forever">Mãi mãi (không dọn)</option>
+        </select>
+        <p id="ci-cache-status" class="storage-note"></p>
+      </section>
+      <section id="chat-info-private" class="ci-card" hidden>
+        <h4>Quản lý liên hệ</h4>
+        <div class="ci-actions">
+          <button type="button" id="ci-block" class="ci-btn-outline">Chặn người dùng</button>
+          <button type="button" id="ci-add-contact" class="ci-btn-outline" hidden>Thêm vào danh bạ</button>
+          <button type="button" id="ci-clear-history" class="storage-danger">Xoá lịch sử trò chuyện</button>
+        </div>
+      </section>
+      <section id="chat-info-group" class="ci-card" hidden>
+        <h4>Nhóm và kênh</h4>
+        <div>
+          <strong id="ci-my-role">Quyền của tôi</strong>
+          <ul id="ci-my-perms" class="ci-perms"></ul>
+        </div>
+        <div id="ci-invite-box" class="ci-invite-box" hidden>
+          <label>Liên kết mời (chỉ quản trị viên)</label>
+          <code id="ci-invite-link"></code>
+          <button type="button" id="ci-invite-copy" class="ci-btn-outline">Sao chép liên kết mời</button>
+        </div>
+        <div id="ci-members-section">
+          <label for="ci-member-search">Thành viên (tối đa 50)</label>
+          <input id="ci-member-search" type="text" placeholder="Tìm theo tên hoặc @username…" autocomplete="off">
+          <p id="ci-members-status" class="storage-note"></p>
+          <div id="ci-members-list" class="ci-members-list"></div>
+        </div>
+        <button type="button" id="ci-leave" class="storage-danger">Rời nhóm</button>
+      </section>
+    </div>
+  </section>
 </div>
 <section id="call-overlay" hidden>
   <div id="call-window" role="dialog" aria-modal="true" aria-labelledby="call-name" aria-describedby="call-state" tabindex="-1">
@@ -474,6 +658,14 @@
             </div>
           </div>
           <div>
+            <label>Giãn dòng</label>
+            <div class="choice-row">
+              <button type="button" id="lh-compact" class="choice-btn" data-lh="compact" aria-pressed="false">Gọn</button>
+              <button type="button" id="lh-normal" class="choice-btn" data-lh="normal" aria-pressed="true">Chuẩn</button>
+              <button type="button" id="lh-relaxed" class="choice-btn" data-lh="relaxed" aria-pressed="false">Thoáng</button>
+            </div>
+          </div>
+          <div>
             <label>Kiểu bong bóng</label>
             <div class="choice-row">
               <button type="button" id="bubble-classic" class="choice-btn" data-bubble="classic" aria-pressed="true">Cổ điển</button>
@@ -548,6 +740,21 @@
   <footer>
     <button id="profile-confirm-cancel" class="ghost" type="button" autofocus>Huỷ</button>
     <button id="profile-confirm-ok" type="button">Xác nhận lưu</button>
+  </footer>
+</dialog>
+<dialog id="ci-confirm-dialog" class="storage-dialog" aria-labelledby="ci-confirm-title">
+  <header><h2 id="ci-confirm-title">Xác nhận thao tác</h2></header>
+  <div class="storage-body">
+    <p id="ci-confirm-summary"></p>
+    <label id="ci-confirm-revoke-wrap" class="ci-switch" for="ci-confirm-revoke" hidden>
+      <span>Xoá cho cả hai bên (nếu Telegram hỗ trợ)</span>
+      <input id="ci-confirm-revoke" type="checkbox">
+    </label>
+    <p id="ci-confirm-error" role="alert"></p>
+  </div>
+  <footer>
+    <button id="ci-confirm-cancel" class="ghost" type="button" autofocus>Huỷ</button>
+    <button id="ci-confirm-ok" class="storage-danger" type="button">Xác nhận</button>
   </footer>
 </dialog>
 <dialog id="storage-dialog" class="storage-dialog" aria-labelledby="storage-title">
@@ -850,6 +1057,7 @@
       appendMessages(msgs, false); box.scrollTop = box.scrollHeight;
       markRead(c.id, msgs);
     } catch (e) { toast(e.message); }
+    if (typeof onChatOpened === "function") onChatOpened(c);
     updateComposePreview();
     $("text").focus();
   }
@@ -1132,7 +1340,7 @@
     else { $("list").textContent = "Đang tải…"; try { contacts = (await api("GET", "/api/contacts")).contacts || []; renderList(contacts, true); } catch (e) { toast(e.message); } }
   }
   $("t-chats").addEventListener("click", () => showTab("chats")); $("t-contacts").addEventListener("click", () => showTab("contacts"));
-  $("back").addEventListener("click", () => { $("app").classList.remove("chatting"); cur = null; renderList(chats, false); });
+  $("back").addEventListener("click", () => { $("app").classList.remove("chatting"); cur = null; if (typeof closeChatOverlays === "function") closeChatOverlays(); renderList(chats, false); });
 
   // ---- cuộc gọi thoại / video --------------------------------------------------------------------------
   let callInfo = null, acceptedId = null, missingSnapshotId = null, callFocus = null;
@@ -1417,6 +1625,7 @@
       $("call-settings").close();
       if ($("settings-dialog").open) $("settings-dialog").close();
       if ($("profile-confirm").open) $("profile-confirm").close();
+      if (typeof closeChatOverlays === "function") closeChatOverlays();
       callFocus = document.activeElement;
       $("app").inert = true;
       $("call-overlay").hidden = false;
@@ -1866,6 +2075,7 @@
     settingsDialog.close();
     if ($("settings-dialog").open) $("settings-dialog").close();
     if ($("profile-confirm").open) $("profile-confirm").close();
+    if (typeof closeChatOverlays === "function") closeChatOverlays();
     $("app").classList.add("locked"); $("placeholder").hidden = true; $("gate").hidden = false;
     $("msgs").hidden = $("composer").hidden = $("head").hidden = $("typing").hidden = true;
     $("gate-setup").hidden = configured !== false;
@@ -1925,6 +2135,7 @@
     serif: 'Georgia,"Liberation Serif","Times New Roman",serif',
     mono: 'ui-monospace,"SFMono-Regular","Liberation Mono",Consolas,monospace',
   };
+  const LINE_HEIGHTS = { compact: "1.3", normal: "1.45", relaxed: "1.7" };
   const SETTINGS_LABELS = {
     profile: "Hồ sơ", appearance: "Giao diện", storage: "Dữ liệu và lưu trữ", calls: "Cuộc gọi", accounts: "Tài khoản",
     notifications: "Thông báo và âm thanh", privacy: "Quyền riêng tư và bảo mật", folders: "Thư mục hội thoại", devices: "Thiết bị",
@@ -1954,13 +2165,17 @@
   function normalizeAppearance(raw) {
     const src = raw && typeof raw === "object" ? raw : {};
     const size = Number(src.font_size);
-    return {
+    const out = {
       font_family: Object.hasOwn(FONT_STACKS, src.font_family) ? src.font_family : APPEARANCE_DEFAULTS.font_family,
       font_size: Number.isFinite(size) ? Math.min(20, Math.max(12, Math.round(size))) : APPEARANCE_DEFAULTS.font_size,
       theme: ["system", "light", "dark"].includes(src.theme) ? src.theme : APPEARANCE_DEFAULTS.theme,
       bubble_style: ["classic", "rounded", "compact"].includes(src.bubble_style) ? src.bubble_style : APPEARANCE_DEFAULTS.bubble_style,
       accent: ["blue", "green", "purple", "orange", "pink", "teal"].includes(src.accent) ? src.accent : APPEARANCE_DEFAULTS.accent,
     };
+    if (src.line_height === "compact" || src.line_height === "relaxed") {
+      out.line_height = src.line_height;
+    }
+    return out;
   }
 
   function applyAppearance(raw) {
@@ -1975,6 +2190,7 @@
       if (root.style && typeof root.style.setProperty === "function") {
         root.style.setProperty("--chat-font", FONT_STACKS[cfg.font_family]);
         root.style.setProperty("--chat-font-size", cfg.font_size + "px");
+        root.style.setProperty("--chat-line-height", LINE_HEIGHTS[cfg.line_height || "normal"]);
       }
     }
     return cfg;
@@ -2027,6 +2243,26 @@
     for (const accent of ["blue", "green", "purple", "orange", "pink", "teal"]) {
       $("accent-" + accent).setAttribute("aria-pressed", String(appearanceDraft.accent === accent));
     }
+    const lh = appearanceDraft.line_height || "normal";
+    for (const key of ["compact", "normal", "relaxed"]) {
+      $("lh-" + key).setAttribute("aria-pressed", String(lh === key));
+    }
+    if (typeof syncFontPopover === "function") syncFontPopover();
+  }
+
+  async function persistAppearancePatch(patch) {
+    const next = normalizeAppearance({ ...appearanceDraft, ...patch });
+    appearanceDraft = applyAppearance(next);
+    appearanceDirty = false;
+    syncAppearanceControls();
+    $("appearance-status").textContent = "";
+    $("appearance-error").textContent = "";
+    const saved = await api("POST", "/api/settings/appearance", next);
+    savedAppearance = normalizeAppearance(saved);
+    appearanceDraft = normalizeAppearance(savedAppearance);
+    applyAppearance(savedAppearance);
+    syncAppearanceControls();
+    return savedAppearance;
   }
 
   function previewAppearance(patch) {
@@ -2251,7 +2487,10 @@
   $("appearance-size").addEventListener("input", (e) => previewAppearance({ font_size: Number(e.target.value) }));
   $("appearance-size-dec").addEventListener("click", () => previewAppearance({ font_size: Math.max(12, appearanceDraft.font_size - 1) }));
   $("appearance-size-inc").addEventListener("click", () => previewAppearance({ font_size: Math.min(20, appearanceDraft.font_size + 1) }));
-  $("appearance-reset").addEventListener("click", () => previewAppearance(APPEARANCE_DEFAULTS));
+  for (const lh of ["compact", "normal", "relaxed"]) {
+    $("lh-" + lh).addEventListener("click", () => previewAppearance({ line_height: lh }));
+  }
+  $("appearance-reset").addEventListener("click", () => previewAppearance({ ...APPEARANCE_DEFAULTS, line_height: "normal" }));
   $("appearance-form").addEventListener("submit", async (e) => {
     e.preventDefault();
     $("appearance-error").textContent = "";
@@ -2509,6 +2748,625 @@
   });
 
   $("account").addEventListener("change", () => { const url = new URL(location.href); url.searchParams.set("account", $("account").value); location.assign(url); });
+
+  // ---- thông tin hội thoại và phông khung chat --------------------------------------------------
+  const CHAT_KIND_LABELS = { private: "Cá nhân", secret: "Bí mật", group: "Nhóm", channel: "Kênh", other: "Hội thoại" };
+  const USER_STATUS_LABELS = { online: "Đang trực tuyến", recently: "Hoạt động gần đây", lastweek: "Hoạt động tuần trước", lastmonth: "Hoạt động tháng trước", offline: "Ngoại tuyến" };
+  const AUTO_DELETE_LABELS = { 0: "Tắt", 86400: "1 ngày", 604800: "1 tuần", 2678400: "1 tháng" };
+  const PERM_LABELS = {
+    can_send_basic_messages: "Gửi tin nhắn văn bản",
+    can_send_photos: "Gửi ảnh",
+    can_send_videos: "Gửi video",
+    can_send_other_messages: "Gửi nhãn dán / GIF",
+    can_add_link_previews: "Kèm xem trước liên kết",
+    can_change_info: "Sửa thông tin nhóm/kênh",
+    can_invite_users: "Mời thành viên",
+    can_pin_messages: "Ghim tin nhắn",
+    can_delete_messages: "Xoá tin nhắn",
+    can_ban_users: "Chặn thành viên",
+    can_restrict_members: "Hạn chế thành viên",
+    can_promote_members: "Bổ nhiệm quản trị",
+    can_manage_video_chats: "Quản lý cuộc gọi nhóm",
+  };
+  const ROLE_LABELS = { creator: "Chủ", admin: "Quản trị", restricted: "Hạn chế", member: "Thành viên", left: "Đã rời", banned: "Bị chặn" };
+
+  let fontSaveTimer = null;
+  let fontSizePending = false;
+  let chatInfo = null;
+  let chatInfoSeq = 0;
+  let storagePolicyCache = null;
+  let memberSearchTimer = null;
+  let pendingCiConfirm = null;
+
+  function formatCacheBytes(bytes) {
+    const n = Number(bytes) || 0;
+    const units = [[1024 ** 3, "GB"], [1024 ** 2, "MB"], [1024, "KB"], [1, "B"]];
+    const [factor, unit] = units.find(([f]) => n >= f) || units[3];
+    return (n / factor).toLocaleString("vi-VN", { maximumFractionDigits: 1 }) + " " + unit;
+  }
+
+  function syncFontPopover() {
+    const family = $("font-pop-family"), size = $("font-pop-size"), val = $("font-pop-size-val");
+    if (!family || !size || !val) return;
+    family.value = appearanceDraft.font_family;
+    size.value = String(appearanceDraft.font_size);
+    val.textContent = appearanceDraft.font_size + " px";
+    $("font-pop-size-dec").disabled = appearanceDraft.font_size <= 12;
+    $("font-pop-size-inc").disabled = appearanceDraft.font_size >= 20;
+    const lh = appearanceDraft.line_height || "normal";
+    for (const key of ["compact", "normal", "relaxed"]) {
+      $("font-pop-lh-" + key).setAttribute("aria-pressed", String(lh === key));
+    }
+  }
+
+  async function saveFontPatch(patch) {
+    fontSizePending = false;
+    $("font-pop-error").textContent = "";
+    $("font-pop-status").textContent = "Đang lưu…";
+    try {
+      await persistAppearancePatch(patch);
+      $("font-pop-status").textContent = "Đã lưu và đồng bộ giao diện.";
+    } catch (err) {
+      $("font-pop-status").textContent = "";
+      $("font-pop-error").textContent = err.message;
+    }
+  }
+
+  function openFontPopover() {
+    syncFontPopover();
+    $("font-pop-status").textContent = "";
+    $("font-pop-error").textContent = "";
+    $("font-popover").hidden = false;
+    $("font-open").setAttribute("aria-expanded", "true");
+    $("font-pop-family").focus();
+  }
+
+  function closeFontPopover() {
+    const pop = $("font-popover");
+    if (!pop || pop.hidden) return;
+    if (fontSizePending) {
+      clearTimeout(fontSaveTimer);
+      saveFontPatch({ font_size: appearanceDraft.font_size });
+    }
+    pop.hidden = true;
+    $("font-open").setAttribute("aria-expanded", "false");
+  }
+
+  function closeChatInfo() {
+    chatInfoSeq++;
+    clearTimeout(memberSearchTimer);
+    if ($("ci-confirm-dialog")?.open) $("ci-confirm-dialog").close();
+    $("chat-info-drawer").hidden = true;
+    $("chat-info-open").setAttribute("aria-expanded", "false");
+  }
+
+  function closeChatOverlays() {
+    closeFontPopover();
+    closeChatInfo();
+  }
+
+  function onChatOpened(c) {
+    closeFontPopover();
+    if (!$("chat-info-drawer").hidden && c?.id) {
+      loadChatInfo(c.id);
+    }
+  }
+
+  function setSelectWithFallback(select, value, labelBuilder) {
+    const strVal = String(value);
+    for (const opt of Array.from(select.options || [])) {
+      if (opt.dataset && opt.dataset.dynamic === "1") opt.remove?.();
+    }
+    const exists = Array.from(select.options || []).some((opt) => String(opt.value) === strVal);
+    if (!exists) {
+      const opt = el("option", "", labelBuilder(value));
+      opt.value = strVal;
+      opt.dataset.dynamic = "1";
+      select.appendChild(opt);
+    }
+    select.value = strVal;
+  }
+
+  function openCiConfirm({ title, summary, showRevoke, okLabel, onConfirm, onCancel }) {
+    pendingCiConfirm = { onConfirm, onCancel };
+    $("ci-confirm-title").textContent = title;
+    $("ci-confirm-summary").textContent = summary;
+    $("ci-confirm-revoke-wrap").hidden = !showRevoke;
+    $("ci-confirm-revoke").checked = false;
+    $("ci-confirm-error").textContent = "";
+    $("ci-confirm-ok").textContent = okLabel || "Xác nhận";
+    $("ci-confirm-dialog").showModal();
+  }
+
+  const ciConfirmAutoDelete = (nextSeconds, prevSeconds) => {
+    const label = AUTO_DELETE_LABELS[nextSeconds] || (nextSeconds + " giây");
+    openCiConfirm({
+      title: "Xác nhận tự xoá tin nhắn",
+      summary: "Đặt tự xoá tin nhắn thành «" + label + "»? Lưu ý: tin nhắn sẽ bị xoá thật ở cả hai bên và không lấy lại được sau khi hết hạn.",
+      showRevoke: false,
+      okLabel: "Áp dụng tự xoá",
+      onCancel: () => {
+        if (chatInfo) setSelectWithFallback($("ci-autodelete"), prevSeconds, (s) => s + " giây");
+      },
+      onConfirm: async () => {
+        if (!chatInfo) return;
+        await saveChatSettings({ auto_delete: { seconds: nextSeconds, confirm: true } });
+        chatInfo.auto_delete_seconds = nextSeconds;
+        setSelectWithFallback($("ci-autodelete"), nextSeconds, (s) => s + " giây");
+      },
+    });
+  };
+
+  const ciConfirmClearHistory = () => {
+    openCiConfirm({
+      title: "Xác nhận xoá lịch sử",
+      summary: "Toàn bộ tin nhắn trong hội thoại «" + (chatInfo.title || "") + "» sẽ bị xoá vĩnh viễn và không thể khôi phục.",
+      showRevoke: true,
+      okLabel: "Xoá lịch sử",
+      onConfirm: async () => {
+        const chatId = chatInfo.chat_id;
+        const revoke = Boolean($("ci-confirm-revoke").checked);
+        await api("POST", "/api/chats/" + chatId + "/clear_history", { confirm: true, revoke });
+        if (cur === chatId) {
+          const box = $("msgs");
+          if (box) box.textContent = "";
+          if (typeof reloadCurrent === "function") reloadCurrent();
+        }
+        if (typeof scheduleChats === "function") scheduleChats();
+        $("chat-info-status").textContent = "Đã xoá lịch sử hội thoại.";
+      },
+    });
+  };
+
+  const ciConfirmLeaveChat = () => {
+    const isChannel = chatInfo.kind === "channel";
+    openCiConfirm({
+      title: isChannel ? "Xác nhận rời kênh" : "Xác nhận rời nhóm",
+      summary: "Bạn chắc chắn muốn rời khỏi " + (isChannel ? "kênh" : "nhóm") + " «" + (chatInfo.title || "") + "»? Bạn sẽ không còn nhận tin mới từ hội thoại này.",
+      showRevoke: false,
+      okLabel: isChannel ? "Rời kênh" : "Rời nhóm",
+      onConfirm: async () => {
+        const chatId = chatInfo.chat_id;
+        await api("POST", "/api/chats/" + chatId + "/leave", { confirm: true });
+        closeChatInfo();
+        if (cur === chatId) {
+          cur = null;
+          if ($("app")?.classList) $("app").classList.remove("chatting");
+          if ($("head")) $("head").hidden = true;
+          if ($("msgs")) $("msgs").hidden = true;
+          if ($("composer")) $("composer").hidden = true;
+          if ($("placeholder")) $("placeholder").hidden = false;
+        }
+        if (typeof loadChats === "function") await loadChats();
+        if (typeof toast === "function") toast("Đã rời hội thoại.");
+      },
+    });
+  };
+
+  async function saveChatSettings(body) {
+    if (!chatInfo) return;
+    $("chat-info-error").textContent = "";
+    $("chat-info-status").textContent = "Đang lưu…";
+    try {
+      const res = await api("POST", "/api/chats/" + chatInfo.chat_id + "/settings", body);
+      if (res.notification) chatInfo.notification = res.notification;
+      if (res.auto_delete_seconds !== undefined) chatInfo.auto_delete_seconds = res.auto_delete_seconds;
+      if (res.pinned !== undefined) chatInfo.pinned = res.pinned;
+      if (res.archived !== undefined) chatInfo.archived = res.archived;
+      if (res.marked_unread !== undefined) chatInfo.marked_unread = res.marked_unread;
+      renderChatActionButtons(chatInfo);
+      if (typeof scheduleChats === "function") scheduleChats();
+      $("chat-info-status").textContent = "Đã cập nhật cài đặt hội thoại.";
+      return res;
+    } catch (err) {
+      $("chat-info-status").textContent = "";
+      $("chat-info-error").textContent = err.message;
+      throw err;
+    }
+  }
+
+  function renderChatActionButtons(info) {
+    const pin = $("ci-pin"), archive = $("ci-archive"), unread = $("ci-unread");
+    pin.textContent = info.pinned ? "Bỏ ghim hội thoại" : "Ghim hội thoại";
+    pin.setAttribute("aria-pressed", String(Boolean(info.pinned)));
+    archive.textContent = info.archived ? "Bỏ lưu trữ hội thoại" : "Lưu trữ hội thoại";
+    archive.setAttribute("aria-pressed", String(Boolean(info.archived)));
+    unread.textContent = info.marked_unread ? "Đánh dấu đã đọc" : "Đánh dấu chưa đọc";
+    unread.setAttribute("aria-pressed", String(Boolean(info.marked_unread)));
+  }
+
+  function renderChatInfo(info) {
+    chatInfo = info;
+    const title = info.title || "Hội thoại";
+    const av = $("chat-info-avatar");
+    av.textContent = typeof initials === "function" ? initials(title) : title.slice(0, 1).toUpperCase();
+    const palette = typeof COLORS !== "undefined" ? COLORS : ["#1d68c4"];
+    if (av.style) av.style.background = palette[Math.abs(Number(info.chat_id) || 0) % palette.length];
+    if (typeof loadAvatar === "function" && info.avatar_file) loadAvatar(av, info.avatar_file);
+
+    $("chat-info-title").textContent = title;
+    $("chat-info-kind").textContent = CHAT_KIND_LABELS[info.kind] || info.kind || "Hội thoại";
+    const uname = (info.username || "").replace(/^@+/, "");
+    $("chat-info-username").textContent = uname ? "@" + uname : "";
+    $("chat-info-username").hidden = !uname;
+
+    const isGroup = info.kind === "group" || info.kind === "channel";
+    const mCount = Number(info.member_count || 0);
+    $("chat-info-members-count").textContent = isGroup && mCount > 0 ? mCount.toLocaleString("vi-VN") + " thành viên" : "";
+    $("chat-info-members-count").hidden = !(isGroup && mCount > 0);
+
+    const subParts = [];
+    if (info.phone_masked) subParts.push(info.phone_masked);
+    if (info.status) subParts.push(USER_STATUS_LABELS[info.status] || info.status);
+    $("chat-info-sub").textContent = subParts.join(" · ");
+    $("chat-info-sub").hidden = !subParts.length;
+
+    $("chat-info-bio").textContent = info.bio || "";
+    $("chat-info-bio").hidden = !info.bio;
+
+    const notif = info.notification || {};
+    const muteVal = notif.use_default_mute_for ? "default" : Number(notif.mute_for || 0) === 0 ? "unmuted" : Number(notif.mute_for);
+    setSelectWithFallback($("ci-mute"), muteVal, (s) => "Tắt tiếng (" + s + " giây)");
+    $("ci-preview").checked = Boolean(notif.show_preview ?? true);
+
+    setSelectWithFallback($("ci-autodelete"), Number(info.auto_delete_seconds || 0), (s) => s + " giây");
+    renderChatActionButtons(info);
+
+    const isPrivate = info.kind === "private" || info.kind === "secret";
+    $("chat-info-private").hidden = !isPrivate;
+    $("chat-info-group").hidden = !isGroup;
+
+    if (isPrivate) {
+      $("ci-block").textContent = info.is_blocked ? "Bỏ chặn người dùng" : "Chặn người dùng";
+      $("ci-block").disabled = !info.user_id;
+      $("ci-add-contact").hidden = Boolean(info.is_contact || !info.user_id);
+    }
+
+    if (isGroup) {
+      $("ci-my-role").textContent = "Quyền của tôi (" + (ROLE_LABELS[info.my_role] || info.my_role || "Thành viên") + ")";
+      const permList = $("ci-my-perms");
+      permList.replaceChildren();
+      const entries = Object.entries(info.my_permissions || {});
+      if (!entries.length) {
+        permList.appendChild(el("li", "", "Không có dữ liệu quyền chi tiết."));
+      } else {
+        for (const [key, allowed] of entries) {
+          permList.appendChild(el("li", "", (PERM_LABELS[key] || key) + ": " + (allowed ? "Có" : "Không")));
+        }
+      }
+      const canShowInvite = Boolean(info.is_admin && info.invite_link);
+      $("ci-invite-box").hidden = !canShowInvite;
+      $("ci-invite-link").textContent = canShowInvite ? info.invite_link : "";
+      $("ci-members-section").hidden = info.can_get_members === false;
+      $("ci-leave").textContent = info.kind === "channel" ? "Rời kênh" : "Rời nhóm";
+    }
+  }
+
+  function renderCacheControls(chatId, policy) {
+    const ex = (policy?.exceptions || []).find((row) => row.chat_id === chatId);
+    const forever = Boolean(ex && ex.keep === null);
+    $("ci-cache-forever").checked = forever;
+    if (!ex) {
+      $("ci-cache-keep").value = "default";
+    } else if (ex.keep === null) {
+      $("ci-cache-keep").value = "forever";
+    } else {
+      setSelectWithFallback($("ci-cache-keep"), ex.keep, (s) => s + " giây");
+    }
+    $("ci-cache-forever").disabled = $("ci-cache-keep").disabled = !policy;
+  }
+
+  async function loadChatCache(chatId, seq) {
+    $("ci-cache-usage").textContent = "Đang tải dung lượng…";
+    $("ci-cache-status").textContent = "";
+    $("ci-cache-forever").disabled = $("ci-cache-keep").disabled = true;
+    try {
+      const [usageRes, policyRes] = await Promise.allSettled([
+        api("GET", "/api/storage/usage"),
+        api("GET", "/api/settings/storage"),
+      ]);
+      if (seq !== chatInfoSeq) return;
+      if (usageRes.status === "fulfilled") {
+        const found = (usageRes.value.top_chats || []).find((row) => row.chat_id === chatId);
+        $("ci-cache-usage").textContent = found
+          ? "Đang dùng trong bộ nhớ đệm: " + formatCacheBytes(found.bytes)
+          : "Đang dùng trong bộ nhớ đệm: 0 B (hoặc dưới nhóm lớn nhất)";
+      } else {
+        $("ci-cache-usage").textContent = "Chưa lấy được dung lượng bộ nhớ đệm.";
+      }
+      if (policyRes.status === "fulfilled") {
+        storagePolicyCache = policyRes.value;
+        renderCacheControls(chatId, storagePolicyCache);
+      } else {
+        storagePolicyCache = null;
+        $("ci-cache-status").textContent = "Chưa tải được chính sách lưu trữ.";
+      }
+    } catch (_) {
+      if (seq === chatInfoSeq) $("ci-cache-usage").textContent = "Chưa lấy được dung lượng bộ nhớ đệm.";
+    }
+  }
+
+  async function saveChatCache(chatId, keep) {
+    if (!storagePolicyCache) return;
+    $("ci-cache-forever").disabled = $("ci-cache-keep").disabled = true;
+    $("ci-cache-status").textContent = "Đang cập nhật chính sách bộ nhớ đệm…";
+    try {
+      const nextExceptions = (storagePolicyCache.exceptions || []).filter((row) => row.chat_id !== chatId);
+      if (keep !== undefined) nextExceptions.push({ chat_id: chatId, keep });
+      const payload = { ...storagePolicyCache, exceptions: nextExceptions };
+      storagePolicyCache = await api("POST", "/api/settings/storage", payload);
+      renderCacheControls(chatId, storagePolicyCache);
+      $("ci-cache-status").textContent = "Đã lưu ngoại lệ bộ nhớ đệm cho hội thoại này.";
+    } catch (err) {
+      $("ci-cache-status").textContent = err.message;
+      renderCacheControls(chatId, storagePolicyCache);
+    }
+  }
+
+  async function loadChatMembers(chatId, query, seq) {
+    const listBox = $("ci-members-list");
+    $("ci-members-status").textContent = "Đang tải thành viên…";
+    listBox.replaceChildren();
+    try {
+      const params = [];
+      if (query && query.trim()) params.push("q=" + encodeURIComponent(query.trim()));
+      params.push("limit=50");
+      const res = await api("GET", "/api/chats/" + chatId + "/members?" + params.join("&"));
+      if (seq !== chatInfoSeq) return;
+      const members = res.members || [];
+      $("ci-members-status").textContent = members.length
+        ? "Hiển thị " + members.length + (res.total_count > members.length ? " / " + res.total_count : "") + " thành viên"
+        : "Không có thành viên phù hợp.";
+      for (const m of members) {
+        const row = el("div", "ci-member-row");
+        const meta = el("div", "ci-member-info");
+        meta.appendChild(el("strong", "", m.name || String(m.user_id)));
+        const sub = [m.username ? "@" + m.username : "", m.custom_title || "", USER_STATUS_LABELS[m.status] || ""].filter(Boolean).join(" · ");
+        if (sub) meta.appendChild(el("small", "", sub));
+        row.appendChild(meta);
+        if (m.role === "creator" || m.role === "admin" || m.role === "restricted") {
+          row.appendChild(el("span", "role-badge" + (m.role === "creator" ? " creator" : ""), ROLE_LABELS[m.role] || m.role));
+        }
+        listBox.appendChild(row);
+      }
+    } catch (err) {
+      if (seq === chatInfoSeq) $("ci-members-status").textContent = err.message;
+    }
+  }
+
+  async function loadChatInfo(chatId) {
+    const seq = ++chatInfoSeq;
+    $("chat-info-error").textContent = "";
+    $("chat-info-status").textContent = "Đang tải thông tin…";
+    $("ci-member-search").value = "";
+    $("ci-members-list").replaceChildren();
+    $("ci-invite-box").hidden = true;
+    $("ci-invite-link").textContent = "";
+    loadChatCache(chatId, seq);
+    try {
+      const info = await api("GET", "/api/chats/" + chatId + "/info");
+      if (seq !== chatInfoSeq) return;
+      $("chat-info-status").textContent = "";
+      renderChatInfo(info);
+      if ((info.kind === "group" || info.kind === "channel") && info.can_get_members !== false) {
+        loadChatMembers(chatId, "", seq);
+      }
+    } catch (err) {
+      if (seq === chatInfoSeq) {
+        $("chat-info-status").textContent = "";
+        $("chat-info-error").textContent = err.message;
+      }
+    }
+  }
+
+  async function openChatInfo() {
+    if (!cur) return;
+    closeFontPopover();
+    $("chat-info-drawer").hidden = false;
+    $("chat-info-open").setAttribute("aria-expanded", "true");
+    await loadChatInfo(cur);
+  }
+
+  function toggleChatInfo() {
+    if ($("chat-info-drawer").hidden) openChatInfo();
+    else closeChatInfo();
+  }
+
+  $("font-open").addEventListener("click", () => {
+    if ($("font-popover").hidden) openFontPopover();
+    else closeFontPopover();
+  });
+  $("font-pop-close").addEventListener("click", closeFontPopover);
+  $("font-pop-family").addEventListener("change", () => saveFontPatch({ font_family: $("font-pop-family").value }));
+  $("font-pop-size").addEventListener("input", () => {
+    const nextSize = Number($("font-pop-size").value);
+    fontSizePending = true;
+    appearanceDraft = applyAppearance({ ...appearanceDraft, font_size: nextSize });
+    syncAppearanceControls();
+    clearTimeout(fontSaveTimer);
+    fontSaveTimer = setTimeout(() => { saveFontPatch({ font_size: nextSize }); }, 120);
+  });
+  $("font-pop-size").addEventListener("change", () => {
+    clearTimeout(fontSaveTimer);
+    saveFontPatch({ font_size: Number($("font-pop-size").value) });
+  });
+  $("font-pop-size-dec").addEventListener("click", () => {
+    clearTimeout(fontSaveTimer);
+    saveFontPatch({ font_size: Math.max(12, Number(appearanceDraft.font_size || 15) - 1) });
+  });
+  $("font-pop-size-inc").addEventListener("click", () => {
+    clearTimeout(fontSaveTimer);
+    saveFontPatch({ font_size: Math.min(20, Number(appearanceDraft.font_size || 15) + 1) });
+  });
+  for (const key of ["compact", "normal", "relaxed"]) {
+    $("font-pop-lh-" + key).addEventListener("click", () => saveFontPatch({ line_height: key }));
+  }
+  $("font-pop-reset").addEventListener("click", () => {
+    clearTimeout(fontSaveTimer);
+    saveFontPatch({ font_family: "system", font_size: 15, line_height: "normal" });
+  });
+
+  $("title").addEventListener("click", toggleChatInfo);
+  $("title").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleChatInfo(); }
+  });
+  $("chat-info-open").addEventListener("click", toggleChatInfo);
+  $("chat-info-close").addEventListener("click", closeChatInfo);
+
+  $("ci-mute").addEventListener("change", async () => {
+    if (!chatInfo) return;
+    const val = $("ci-mute").value;
+    const notif = val === "default"
+      ? { use_default_mute_for: true, mute_for: 0 }
+      : val === "unmuted"
+        ? { use_default_mute_for: false, mute_for: 0 }
+        : { use_default_mute_for: false, mute_for: Number(val) };
+    await saveChatSettings({ notification: notif }).catch(() => {});
+  });
+  $("ci-preview").addEventListener("change", async () => {
+    if (!chatInfo) return;
+    await saveChatSettings({ notification: { use_default_show_preview: false, show_preview: Boolean($("ci-preview").checked) } }).catch(() => {});
+  });
+  $("ci-autodelete").addEventListener("change", () => {
+    if (!chatInfo) return;
+    const prev = Number(chatInfo.auto_delete_seconds || 0);
+    const seconds = Number($("ci-autodelete").value);
+    if (seconds === prev) return;
+    ciConfirmAutoDelete(seconds, prev);
+  });
+  $("ci-pin").addEventListener("click", () => {
+    if (!chatInfo) return;
+    saveChatSettings({ pin: !chatInfo.pinned }).catch(() => {});
+  });
+  $("ci-archive").addEventListener("click", () => {
+    if (!chatInfo) return;
+    saveChatSettings({ archive: !chatInfo.archived }).catch(() => {});
+  });
+  $("ci-unread").addEventListener("click", () => {
+    if (!chatInfo) return;
+    saveChatSettings({ mark_unread: !chatInfo.marked_unread }).catch(() => {});
+  });
+
+  $("ci-cache-forever").addEventListener("change", () => {
+    if (!chatInfo) return;
+    const keep = $("ci-cache-forever").checked ? null : undefined;
+    $("ci-cache-keep").value = keep === null ? "forever" : "default";
+    saveChatCache(chatInfo.chat_id, keep);
+  });
+  $("ci-cache-keep").addEventListener("change", () => {
+    if (!chatInfo) return;
+    const val = $("ci-cache-keep").value;
+    const keep = val === "default" ? undefined : val === "forever" ? null : Number(val);
+    $("ci-cache-forever").checked = keep === null;
+    saveChatCache(chatInfo.chat_id, keep);
+  });
+
+  $("ci-block").addEventListener("click", async () => {
+    if (!chatInfo || !chatInfo.user_id) return;
+    $("ci-block").disabled = true;
+    $("chat-info-error").textContent = "";
+    try {
+      const action = chatInfo.is_blocked ? "unblock_user" : "block_user";
+      await api("POST", "/api/do/" + action, { user_id: chatInfo.user_id });
+      chatInfo.is_blocked = !chatInfo.is_blocked;
+      $("ci-block").textContent = chatInfo.is_blocked ? "Bỏ chặn người dùng" : "Chặn người dùng";
+      $("chat-info-status").textContent = chatInfo.is_blocked ? "Đã chặn người dùng." : "Đã bỏ chặn người dùng.";
+    } catch (err) {
+      $("chat-info-error").textContent = err.message;
+    } finally {
+      $("ci-block").disabled = false;
+    }
+  });
+
+  $("ci-add-contact").addEventListener("click", async () => {
+    if (!chatInfo || !chatInfo.user_id) return;
+    $("ci-add-contact").disabled = true;
+    $("chat-info-error").textContent = "";
+    try {
+      await api("POST", "/api/do/add_contact", {
+        user_id: chatInfo.user_id,
+        first_name: chatInfo.first_name || chatInfo.title || "Liên hệ",
+        last_name: chatInfo.last_name || "",
+      });
+      chatInfo.is_contact = true;
+      $("ci-add-contact").hidden = true;
+      $("chat-info-status").textContent = "Đã thêm vào danh bạ.";
+    } catch (err) {
+      $("chat-info-error").textContent = err.message;
+    } finally {
+      $("ci-add-contact").disabled = false;
+    }
+  });
+
+  $("ci-clear-history").addEventListener("click", () => {
+    if (!chatInfo) return;
+    ciConfirmClearHistory();
+  });
+
+  $("ci-leave").addEventListener("click", () => {
+    if (!chatInfo) return;
+    ciConfirmLeaveChat();
+  });
+
+  $("ci-invite-copy").addEventListener("click", async () => {
+    const link = $("ci-invite-link").textContent;
+    if (!link) return;
+    try {
+      if (navigator?.clipboard?.writeText) await navigator.clipboard.writeText(link);
+      $("chat-info-status").textContent = "Đã sao chép liên kết mời.";
+      if (typeof toast === "function") toast("Đã sao chép liên kết mời");
+    } catch (_) {
+      $("chat-info-error").textContent = "Không sao chép được vào bộ nhớ tạm.";
+    }
+  });
+
+  $("ci-member-search").addEventListener("input", () => {
+    if (!chatInfo) return;
+    const chatId = chatInfo.chat_id;
+    const seq = chatInfoSeq;
+    const q = $("ci-member-search").value;
+    clearTimeout(memberSearchTimer);
+    memberSearchTimer = setTimeout(() => { loadChatMembers(chatId, q, seq); }, 220);
+  });
+
+  $("ci-confirm-cancel").addEventListener("click", () => {
+    const pending = pendingCiConfirm;
+    pendingCiConfirm = null;
+    $("ci-confirm-dialog").close();
+    pending?.onCancel?.();
+  });
+  $("ci-confirm-dialog").addEventListener("cancel", (e) => {
+    e.preventDefault();
+    if (!$("ci-confirm-ok").disabled) $("ci-confirm-cancel").click();
+  });
+  $("ci-confirm-ok").addEventListener("click", async () => {
+    if (!pendingCiConfirm) return;
+    const pending = pendingCiConfirm;
+    const okBtn = $("ci-confirm-ok"), cancelBtn = $("ci-confirm-cancel");
+    okBtn.disabled = cancelBtn.disabled = true;
+    $("ci-confirm-error").textContent = "";
+    try {
+      await pending.onConfirm();
+      pendingCiConfirm = null;
+      $("ci-confirm-dialog").close();
+    } catch (err) {
+      $("ci-confirm-error").textContent = err.message;
+    } finally {
+      okBtn.disabled = cancelBtn.disabled = false;
+    }
+  });
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !$("font-popover").hidden) closeFontPopover();
+  });
+  document.addEventListener("click", (e) => {
+    const pop = $("font-popover");
+    if (!pop || pop.hidden) return;
+    if (e.target === pop || pop.contains?.(e.target)) return;
+    if (e.target === $("font-open") || $("font-open").contains?.(e.target)) return;
+    closeFontPopover();
+  });
+
   start();
 })();
 </script>

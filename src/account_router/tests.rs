@@ -1015,3 +1015,198 @@ async fn appearance_and_profile_enforce_auth_csrf_account_isolation_and_0600_sto
     drop(hub);
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[tokio::test]
+async fn chat_info_routes_enforce_auth_csrf_multi_account_confirm_and_404() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = std::env::temp_dir().join(format!("tggw-chat-info-auth-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (api, factory) = crate::td::fake::Fake::factory();
+    let cfg = LoginConfig { data_dir: dir.clone(), api_id: 12345, api_hash: "fake-api-hash".into(), phone: String::new() };
+    let hub = Accounts::with_factory(cfg, "fake".into(), 3399, factory).await.unwrap();
+    let ui_auth = Arc::new(crate::ui_auth::UiAuth::open(&dir, "test-token", None, None, false).unwrap());
+    let router = crate::rest::router_accounts_with_ui_auth(hub.clone(), crate::rest::RestConfig {
+        token: "test-token".into(), rate_limit_per_minute: 1000, version: "test".into(),
+    }, ui_auth);
+
+    let first = "+84900000001";
+    let second = "+84900000002";
+    for phone in [first, second] {
+        let login = send(&router, "POST", "/ui/api/accounts", json!({"phone":phone}), true).await.1;
+        let id = login["login_id"].as_str().unwrap();
+        assert_eq!(send(&router, "POST", &format!("/ui/api/accounts/{id}/code"), json!({"code":"22222"}), true).await.0, 200);
+    }
+
+    let setup_resp = router.clone().oneshot(
+        Request::builder().method("POST").uri("/ui/api/auth/setup")
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .body(Body::from(json!({"token":"test-token","ten":"nguoi-thu","mat_khau":"mat-khau-thu-dai"}).to_string())).unwrap(),
+    ).await.unwrap();
+    assert_eq!(setup_resp.status(), 200);
+    let cookie = setup_resp.headers()[axum::http::header::SET_COOKIE].to_str().unwrap().split(';').next().unwrap().to_owned();
+
+    // 1. Không xác thực -> 401.
+    for (method, path) in [
+        ("GET", "/api/chats/42/info?account=%2B84900000001"),
+        ("GET", "/api/chats/-1001/members?account=%2B84900000001"),
+        ("POST", "/api/chats/42/settings?account=%2B84900000001"),
+        ("POST", "/api/chats/42/clear_history?account=%2B84900000001"),
+        ("POST", "/api/chats/-1001/leave?account=%2B84900000001"),
+    ] {
+        assert_eq!(send(&router, method, path, json!({}), false).await.0, 401, "{method} {path}");
+    }
+
+    let send_cookie = |method: &'static str, path: &'static str, body: Value, extra: Vec<(&'static str, &'static str)>| {
+        let router = router.clone();
+        let cookie = cookie.clone();
+        async move {
+            let mut req = Request::builder().method(method).uri(path).header(axum::http::header::COOKIE, cookie);
+            for (k, v) in extra { req = req.header(k, v); }
+            let resp = router.oneshot(req.body(Body::from(serde_json::to_vec(&body).unwrap())).unwrap()).await.unwrap();
+            let status = resp.status().as_u16();
+            let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+            (status, serde_json::from_slice::<Value>(&bytes).unwrap_or(Value::Null))
+        }
+    };
+
+    // 2. Cookie POST thiếu CSRF hoặc sai Origin -> 403, không gọi TDLib.
+    api.sent.lock().unwrap().clear();
+    for (path, body) in [
+        ("/api/chats/42/settings?account=%2B84900000001", json!({"pin": true})),
+        ("/api/chats/42/clear_history?account=%2B84900000001", json!({"confirm": true})),
+        ("/api/chats/-1001/leave?account=%2B84900000001", json!({"confirm": true})),
+    ] {
+        assert_eq!(send_cookie("POST", path, body.clone(), vec![]).await.0, 403);
+        assert_eq!(send_cookie("POST", path, body, vec![("Host", "gateway.example"), ("Origin", "https://evil.example")]).await.0, 403);
+    }
+    assert!(api.sent.lock().unwrap().is_empty());
+
+    // 3. Nhiều tài khoản: thiếu account, rỗng, account sai kiểu hoặc lệch query/body -> 400; account lạ -> 404; không gọi TDLib.
+    for (method, path, body) in [
+        ("GET", "/api/chats/42/info", Value::Null),
+        ("GET", "/api/chats/42/members", Value::Null),
+        ("POST", "/api/chats/42/settings", json!({"pin": true})),
+        ("POST", "/api/chats/42/settings", json!({"pin": true, "account": ""})),
+        ("POST", "/api/chats/42/settings", json!({"pin": true, "account": 123})),
+        ("POST", "/api/chats/42/settings?account=%2B84900000001", json!({"pin": true, "account": "+84900000002"})),
+        ("POST", "/api/chats/42/clear_history", json!({"confirm": true})),
+        ("POST", "/api/chats/-1001/leave", json!({"confirm": true})),
+    ] {
+        assert_eq!(send(&router, method, path, body, true).await.0, 400, "{method} {path}");
+    }
+    for (method, path, body) in [
+        ("GET", "/api/chats/42/info?account=unknown", Value::Null),
+        ("POST", "/api/chats/42/settings?account=unknown", json!({"pin": true})),
+        ("POST", "/api/chats/42/clear_history?account=unknown", json!({"confirm": true})),
+        ("POST", "/api/chats/-1001/leave?account=unknown", json!({"confirm": true})),
+    ] {
+        assert_eq!(send(&router, method, path, body, true).await.0, 404, "{method} {path}");
+    }
+    assert!(api.sent.lock().unwrap().is_empty());
+
+    // 4. Thiếu confirm:true cho auto_delete / clear_history / leave -> 400, không gọi TDLib.
+    for (path, body) in [
+        ("/api/chats/42/settings?account=%2B84900000001", json!({"auto_delete": {"seconds": 86400}})),
+        ("/api/chats/42/clear_history?account=%2B84900000001", json!({"revoke": true})),
+        ("/api/chats/-1001/leave?account=%2B84900000001", json!({})),
+    ] {
+        assert_eq!(send(&router, "POST", path, body, true).await.0, 400);
+    }
+    assert!(api.sent.lock().unwrap().is_empty());
+
+    // 5. Hội thoại không tồn tại -> 404.
+    api.strict_chats.store(true, Ordering::Relaxed);
+    assert_eq!(send(&router, "GET", "/api/chats/9999/info?account=%2B84900000001", Value::Null, true).await.0, 404);
+    assert_eq!(send(&router, "POST", "/api/chats/9999/clear_history?account=%2B84900000001", json!({"confirm": true}), true).await.0, 404);
+    assert_eq!(send(&router, "POST", "/api/chats/9999/leave?account=%2B84900000001", json!({"confirm": true}), true).await.0, 404);
+
+    // 6. Hội thoại hợp lệ: tách biệt hoàn toàn giữa tài khoản 1 và tài khoản 2; lưu line_height vào appearance 0600.
+    api.chats.lock().unwrap().insert(42, json!({
+        "@type": "chat",
+        "id": 42,
+        "title": "<script>alert(1)</script>",
+        "type": {"@type": "chatTypePrivate", "user_id": 77},
+        "positions": [],
+        "notification_settings": {"@type": "chatNotificationSettings", "use_default_mute_for": true, "mute_for": 0, "use_default_show_preview": true, "show_preview": true}
+    }));
+    api.chats.lock().unwrap().insert(-1001, json!({
+        "@type": "chat",
+        "id": -1001,
+        "title": "Nhóm thử",
+        "type": {"@type": "chatTypeSupergroup", "supergroup_id": 1001, "is_channel": false},
+        "positions": [],
+        "notification_settings": {"@type": "chatNotificationSettings", "use_default_mute_for": true, "mute_for": 0, "use_default_show_preview": true, "show_preview": true}
+    }));
+    api.users.lock().unwrap().insert(77, json!({
+        "@type": "user", "id": 77, "first_name": "Peer", "phone_number": "84909999999",
+        "usernames": {"active_usernames": ["peer_u"]}, "status": {"@type": "userStatusOnline"}
+    }));
+    api.supergroups.lock().unwrap().insert(1001, json!({
+        "@type": "supergroup", "id": 1001, "member_count": 2, "status": {"@type": "chatMemberStatusCreator"}
+    }));
+    api.supergroup_full_info.lock().unwrap().insert(1001, json!({
+        "@type": "supergroupFullInfo", "description": "Mô tả", "member_count": 2, "can_get_members": true,
+        "invite_link": {"@type": "chatInviteLink", "invite_link": "https://t.me/+nhom"}
+    }));
+    api.supergroup_members.lock().unwrap().insert(1001, json!({
+        "@type": "chatMembers", "total_count": 1,
+        "members": [{"member_id": {"@type": "messageSenderUser", "user_id": 77}, "status": {"@type": "chatMemberStatusAdministrator", "custom_title": "Mod"}}]
+    }));
+
+    api.sent.lock().unwrap().clear();
+    let (st, info) = send(&router, "GET", "/api/chats/42/info?account=%2B84900000001", Value::Null, true).await;
+    assert_eq!(st, 200);
+    assert_eq!(info["title"], "<script>alert(1)</script>");
+    assert_eq!(info["phone_masked"], "+849•••••999");
+
+    let (st, group_info) = send_cookie("GET", "/api/chats/-1001/info?account=%2B84900000001", Value::Null, vec![]).await;
+    assert_eq!(st, 200);
+    assert_eq!(group_info["invite_link"], "https://t.me/+nhom");
+    let (st, members) = send_cookie("GET", "/api/chats/-1001/members?account=%2B84900000001&limit=50", Value::Null, vec![]).await;
+    assert_eq!(st, 200);
+    assert_eq!(members["members"][0]["role"], "admin");
+
+    assert_eq!(send_cookie(
+        "POST",
+        "/api/chats/42/settings?account=%2B84900000001",
+        json!({"notification": {"use_default_mute_for": false, "mute_for": 3600}, "auto_delete": {"seconds": 86400, "confirm": true}}),
+        vec![("X-Requested-With", "fetch")],
+    ).await.0, 200);
+    assert_eq!(send_cookie(
+        "POST",
+        "/api/chats/42/clear_history?account=%2B84900000001",
+        json!({"confirm": true, "revoke": true}),
+        vec![("Host", "gateway.example"), ("Origin", "http://gateway.example")],
+    ).await.0, 200);
+    assert_eq!(send_cookie(
+        "POST",
+        "/api/chats/-1001/leave?account=%2B84900000001",
+        json!({"confirm": true}),
+        vec![("X-Requested-With", "fetch")],
+    ).await.0, 200);
+
+    let sent = api.sent.lock().unwrap().clone();
+    assert!(sent.iter().any(|(id, req)| *id == 1 && req["@type"] == "setChatMessageAutoDeleteTime" && req["message_auto_delete_time"] == 86400));
+    assert!(sent.iter().any(|(id, req)| *id == 1 && req["@type"] == "deleteChatHistory" && req["revoke"] == true));
+    assert!(sent.iter().any(|(id, req)| *id == 1 && req["@type"] == "leaveChat" && req["chat_id"] == -1001));
+    assert!(!sent.iter().any(|(id, _)| *id == 2));
+
+    let appearance_with_lh = json!({"font_family":"mono","font_size":19,"theme":"dark","bubble_style":"rounded","accent":"teal","line_height":"relaxed"});
+    assert_eq!(send_cookie(
+        "POST",
+        "/api/settings/appearance?account=%2B84900000001",
+        appearance_with_lh.clone(),
+        vec![("X-Requested-With", "fetch")],
+    ).await, (200, appearance_with_lh.clone()));
+    let first_file = hub.store.lock().unwrap().session_dir(first).join(crate::appearance_settings::FILE);
+    assert_eq!(std::fs::metadata(&first_file).unwrap().permissions().mode() & 0o777, 0o600);
+    assert_eq!(send(&router, "GET", "/api/settings/appearance?account=%2B84900000001", Value::Null, true).await, (200, appearance_with_lh));
+    assert_eq!(send(&router, "GET", "/api/settings/appearance?account=%2B84900000002", Value::Null, true).await, (200, crate::appearance_settings::defaults()));
+
+    hub.shutdown().await;
+    drop(router);
+    drop(hub);
+    std::fs::remove_dir_all(dir).unwrap();
+}
