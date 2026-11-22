@@ -155,13 +155,13 @@ pub(crate) fn mask(text: &str) -> String {
     static PATTERNS: OnceLock<Vec<Regex>> = OnceLock::new();
     let patterns = PATTERNS.get_or_init(|| [
         r#"(?i)\b[a-z][a-z0-9+.-]*://[^\s"<>]+"#,
-        r#"(?i)(?:token|api_hash|api_id|password|otp|code|session|key|secret|ufrag|pwd|cookie)["']?\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^"',}\s]+)"#,
+        r#"(?i)(?:token|api_hash|api_id|password|mat_khau|\bcu|\bmoi|tggw_session|otp|code|session|key|secret|ufrag|pwd|cookie)["']?\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^"',}\s]+)"#,
         r"(?i)Bearer\s+\S+", r"\+?\d(?:[ ()-]?\d){8,}", r"[A-Za-z0-9+/=_\-]{40,}",
         r"\b(?:\d{1,3}\.){3}\d{1,3}\b",
     ].iter().map(|p| Regex::new(p).unwrap()).collect());
     let mut text = text.replace(['\r', '\n'], " ");
     for pattern in patterns { text = pattern.replace_all(&text, "<ẩn>").into_owned(); }
-    for name in ["GATEWAY_TOKEN", "TG_API_HASH", "TELEGRAM_API_HASH", "TG_PHONE", "TG_API_ID", "TELEGRAM_API_ID", "HA_WEBHOOK_TOKEN"] {
+    for name in ["GATEWAY_TOKEN", "TG_UI_PASSWORD", "TG_API_HASH", "TELEGRAM_API_HASH", "TG_PHONE", "TG_API_ID", "TELEGRAM_API_ID", "HA_WEBHOOK_TOKEN"] {
         if let Ok(secret) = std::env::var(name) { if !secret.is_empty() { text = text.replace(&secret, "<ẩn>"); } }
     }
     text
@@ -217,6 +217,16 @@ pub(crate) fn list(data_dir: &Path) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn web_password_fields_and_environment_are_redacted() {
+        let text = mask(r#"{"mat_khau":"first-secret", "cu":"old-secret", "moi":"new-secret", "tggw_session":"cookie-secret"}"#);
+        for secret in ["first-secret", "old-secret", "new-secret", "cookie-secret"] { assert!(!text.contains(secret)); }
+        std::env::set_var("TG_UI_PASSWORD", "environment-password-value");
+        let text = mask("unlabelled environment-password-value");
+        std::env::remove_var("TG_UI_PASSWORD");
+        assert!(!text.contains("environment-password-value"));
+    }
 
     #[test]
     fn trace_format_retention_errors_cap_and_redaction() {

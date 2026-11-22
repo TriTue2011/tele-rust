@@ -1,4 +1,5 @@
 //! HTTP chat cho một tài khoản TDLib đã đăng nhập.
+mod contacts;
 mod feed;
 mod files;
 mod info;
@@ -355,19 +356,6 @@ impl ChatService {
         Ok(json!({"messages": out, "total_count": total_count}))
     }
 
-    async fn contacts(&self) -> Reply {
-        let ids = self.request(json!({"@type":"getContacts"})).await?;
-        let mut contacts = Vec::new();
-        for id in array(&ids["user_ids"]).iter().filter_map(Value::as_i64) {
-            if let Ok(u) = self.user(id).await {
-                contacts.push(json!({"id":id,"name":user_name(&u),"phone":field(&u,"phone_number",json!("")),
-                    "username":text(&u["usernames"]["active_usernames"][0])}));
-            }
-        }
-        contacts.sort_by_cached_key(|u| text(&u["name"]).to_lowercase());
-        Ok(json!({"contacts":contacts}))
-    }
-
     async fn open_private(&self, user: i64) -> Reply {
         let chat = self.request(json!({"@type":"createPrivateChat","user_id":user,"force":false})).await?;
         Ok(json!({"chat_id":chat["id"]}))
@@ -407,8 +395,11 @@ impl ChatService {
             ("POST", ["", "api", "chats", id, "clear_history"]) => self.clear_chat_history(path_id(id)?, &body).await,
             ("POST", ["", "api", "chats", id, "delete"]) => self.delete_chat(path_id(id)?, &body).await,
             ("POST", ["", "api", "chats", id, "leave"]) => self.leave_chat(path_id(id)?, &body).await,
-            ("GET", ["", "api", "contacts"]) => self.contacts().await,
+            ("GET", ["", "api", "contacts"]) => self.contacts(q.get("sort").as_deref().unwrap_or("last_seen"), false).await,
+            ("GET", ["", "api", "contacts", "blocked"]) => self.contacts("name", true).await,
             ("POST", ["", "api", "contacts", "open"]) => self.open_private(int(&body["user_id"], "user_id")?).await,
+            ("POST", ["", "api", "contacts", op @ ("add" | "edit" | "remove" | "block" | "unblock")]) =>
+                self.change_contact(op, &body).await,
             ("GET", ["", "api", "search"]) => {
                 let term = q.get("q").unwrap_or_default();
                 if term.trim().is_empty() { return Ok(json!({"chats":[]})); }

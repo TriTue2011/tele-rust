@@ -1,6 +1,7 @@
 """TC-13: exercise both production pages in headless Chrome with a local API fixture."""
 
 import base64
+import io
 import json
 import os
 from pathlib import Path
@@ -9,10 +10,12 @@ import re
 from tempfile import TemporaryDirectory
 import threading
 import time
+import wave
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.request import urlopen
 
 import websocket
+from PIL import Image
 
 
 WEB = Path(__file__).resolve().parents[2] / "web"
@@ -21,6 +24,16 @@ USER = "tai-khoan-gia"
 PASSWORD = "mat-khau-gia-de-thu"
 TOKEN = "token-gia-de-thu"
 SESSION = "tggw_session=phien-gia-de-thu"
+image = io.BytesIO()
+Image.new("RGB", (16, 16), "green").save(image, format="JPEG")
+JPEG = image.getvalue()
+audio = io.BytesIO()
+with wave.open(audio, "wb") as wav:
+    wav.setnchannels(1)
+    wav.setsampwidth(2)
+    wav.setframerate(48_000)
+    wav.writeframes(b"\0\0" * 48_000)
+WAV = audio.getvalue()
 
 
 class Fixture(BaseHTTPRequestHandler):
@@ -39,6 +52,10 @@ class Fixture(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         if kind.startswith("text/html"):
             self.send_header("Content-Security-Policy", CSP)
+        elif kind.startswith(("image/", "audio/", "multipart/")):
+            self.send_header("Content-Security-Policy", "default-src 'none'; sandbox")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Cross-Origin-Resource-Policy", "same-origin")
         if cookie:
             self.send_header("Set-Cookie", cookie)
         self.end_headers()
@@ -51,6 +68,16 @@ class Fixture(BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
         if path in ("/", "/ui/app.html", "/ui/index.html"):
             self.reply((WEB / ("index.html" if path.endswith("index.html") else "app.html")).read_bytes(), "text/html; charset=utf-8")
+        elif path == "/ui/qrcode.min.js":
+            self.reply((WEB / "qrcode.min.js").read_bytes(), "text/javascript; charset=utf-8")
+        elif path == "/security-media.html":
+            self.reply(b'<img id="snapshot" src="/security/snapshot"><img id="view" src="/security/view"><audio id="audio" preload="auto" src="/security/audio"></audio>', "text/html; charset=utf-8")
+        elif path == "/security/snapshot":
+            self.reply(JPEG, "image/jpeg")
+        elif path == "/security/audio":
+            self.reply(WAV, "audio/wav")
+        elif path == "/security/view":
+            self.reply(b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: " + str(len(JPEG)).encode() + b"\r\n\r\n" + JPEG + b"\r\n--frame--\r\n", "multipart/x-mixed-replace; boundary=frame")
         elif path == "/ui/api/auth/status":
             signed_in = self.configured and self.headers.get("Cookie") == SESSION
             self.reply({"da_thiet_lap": self.configured, "dang_nhap": signed_in, "nguoi_dung": USER if signed_in else None})
@@ -124,10 +151,10 @@ class Chrome:
         self.socket = websocket.create_connection(page["webSocketDebuggerUrl"], timeout=10, suppress_origin=True)
         self.next_id = 0
         self.exceptions = []
+        self.requests = []
         self.call("Runtime.enable")
         self.call("Network.enable")
         self.call("Emulation.setDeviceMetricsOverride", width=1280, height=800, deviceScaleFactor=1, mobile=False)
-        self.call("Network.setBlockedURLs", urls=["*cdnjs.cloudflare.com/*"])
         return self
 
     def __exit__(self, *_):
@@ -149,6 +176,8 @@ class Chrome:
                 self.exceptions.append(item["params"]["exceptionDetails"].get("text"))
             if item.get("method") == "Runtime.consoleAPICalled" and item["params"]["type"] in ("error", "warning"):
                 self.exceptions.append(item["params"]["type"])
+            if item.get("method") == "Network.requestWillBeSent":
+                self.requests.append(item["params"]["request"]["url"])
             if item.get("id") == self.next_id:
                 assert "error" not in item, method
                 return item.get("result")
@@ -195,6 +224,8 @@ def main():
         base = f"http://127.0.0.1:{fixture.server_port}"
         with Chrome(profile) as chrome:
             chrome.open(base + "/ui/index.html", "#auth-setup")
+            until(lambda: chrome.evaluate("typeof window.qrcode === 'function'"))
+            assert all(url.startswith((base + "/", "data:", "about:")) for url in chrome.requests), chrome.requests
             chrome.open(base + "/", "#gate-setup")
             for width in (320, 768, 1024, 1440):
                 chrome.call("Emulation.setDeviceMetricsOverride", width=width, height=800, deviceScaleFactor=1, mobile=width < 768)
@@ -256,7 +287,12 @@ def main():
             chrome.visible("#auth-active")
             chrome.open(base + "/", "#app:not(.locked) aside")
             chrome.empty_storage()
+        with TemporaryDirectory(dir=Path.cwd()) as media_profile, Chrome(media_profile) as chrome:
+            chrome.open(base + "/security-media.html", "#snapshot")
+            until(lambda: chrome.evaluate("document.querySelector('#snapshot').naturalWidth === 16 && document.querySelector('#view').naturalWidth === 16 && document.querySelector('#audio').readyState >= 1"))
+            assert not chrome.exceptions, chrome.exceptions
         fixture.shutdown()
+    print("CAO-01 Chrome media PASS — JPEG, MJPEG and WAV decode with CSP sandbox, nosniff and CORP")
     print("TC-13 PASS — both setup forms, profile restart, cookie deletion, password login/change, logout-all, offline guidance, mobile layout and empty storage")
 
 

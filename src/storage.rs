@@ -56,6 +56,13 @@ pub(crate) fn policy_is_noop(policy: &Value) -> Result<bool, GwError> {
         && exceptions.iter().all(|row| row["keep"].is_null()))
 }
 
+pub(crate) fn forever_exceptions(policy: &Value) -> Result<Vec<i64>, GwError> {
+    let exceptions = policy["exceptions"].as_array().ok_or_else(settings_error)?;
+    Ok(exceptions.iter()
+        .filter_map(|row| row["keep"].is_null().then(|| row["chat_id"].as_i64()).flatten())
+        .collect())
+}
+
 pub(crate) async fn check_cache_paths(session: &Path) -> Result<(), GwError> {
     let root = session.join("files");
     let unsafe_path = || GwError::new(409, "STORAGE_CACHE_PATH", "Thư mục bộ nhớ đệm có đường dẫn chuyển hướng hoặc không đọc được.");
@@ -176,12 +183,14 @@ pub(crate) struct Report {
     remaining: Size,
     error: Option<String>,
     limited: bool,
+    policy_changed: bool,
 }
 
 impl Report {
     pub(crate) fn new() -> Self {
-        Self { last_run: None, deleted: Size::default(), remaining: Size::default(), error: None, limited: false }
+        Self { last_run: None, deleted: Size::default(), remaining: Size::default(), error: None, limited: false, policy_changed: false }
     }
+    pub(crate) fn policy_changed(&self) -> bool { self.policy_changed }
     pub(crate) fn json(&self) -> Value {
         json!({
             "last_run": self.last_run,
@@ -191,12 +200,18 @@ impl Report {
             "remaining_files": self.remaining.files,
             "error": self.error,
             "limited": self.limited,
+            "policy_changed": self.policy_changed,
         })
     }
     pub(crate) fn failed(&mut self, code: impl Into<String>) { self.error = Some(code.into()); }
     pub(crate) fn finish(&mut self) {
         self.last_run = Some(SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs());
-        if self.limited {
+        if self.policy_changed {
+            log::info!(
+                "storage dừng lượt dọn do cấu hình thay đổi; đã giải phóng {} byte ({} tệp) failed={}",
+                self.deleted.bytes, self.deleted.files, self.error.is_some()
+            );
+        } else if self.limited {
             log::info!(
                 "storage đã giải phóng {} byte ({} tệp), còn {} byte ({} tệp), sẽ tiếp tục failed={}",
                 self.deleted.bytes, self.deleted.files, self.remaining.bytes, self.remaining.files, self.error.is_some()
@@ -210,9 +225,22 @@ impl Report {
     }
 }
 
-struct Sweep<'a> { td: &'a dyn TdLink, report: &'a mut Report, inventory_started: Instant }
+struct Sweep<'a> {
+    td: &'a dyn TdLink,
+    report: &'a mut Report,
+    inventory_started: Instant,
+    cancelled: &'a (dyn Fn() -> bool + Send + Sync),
+}
 
 impl Sweep<'_> {
+    fn is_cancelled(&mut self) -> bool {
+        if (self.cancelled)() {
+            self.report.policy_changed = true;
+            return true;
+        }
+        false
+    }
+
     fn budget_left(&self) -> Size {
         Size {
             bytes: MAX_BYTES.saturating_sub(self.report.deleted.bytes),
@@ -233,6 +261,7 @@ impl Sweep<'_> {
         size: u64,
         count: i32,
     ) -> Result<Size, GwError> {
+        if self.is_cancelled() { return Ok(Size::default()); }
         // Bảo vệ cả tệp mới hoàn tất trong lúc chụp thống kê hoặc TDLib quét lại.
         let immunity = (self.inventory_started.elapsed() + crate::td::REQUEST_TIMEOUT)
             .as_secs().saturating_add(1).min(i32::MAX as u64);
@@ -264,7 +293,7 @@ impl Sweep<'_> {
         total: Size,
         scope: Size,
     ) -> Result<(), GwError> {
-        if scope.is_empty() { return Ok(()); }
+        if self.is_cancelled() || scope.is_empty() { return Ok(()); }
         let budget = self.budget_left();
         if budget.bytes == 0 || budget.files == 0 {
             self.report.limited = true;
@@ -303,6 +332,7 @@ impl Sweep<'_> {
         deletable: Size,
         limit: u64,
     ) -> Result<(), GwError> {
+        if self.is_cancelled() { return Ok(()); }
         let excess_bytes = total.bytes.saturating_sub(limit);
         if excess_bytes == 0 || deletable.files == 0 { return Ok(()); }
         let budget = self.budget_left();
@@ -334,12 +364,41 @@ impl Sweep<'_> {
 }
 
 pub(crate) async fn clear(td: &dyn TdLink, scope: Clear, report: &mut Report) -> Result<(), GwError> {
+    clear_with_policy(td, scope, &[], report, &|| false).await
+}
+
+pub(crate) async fn clear_with_policy(
+    td: &dyn TdLink,
+    scope: Clear,
+    forever: &[i64],
+    report: &mut Report,
+    cancelled: &(dyn Fn() -> bool + Send + Sync),
+) -> Result<(), GwError> {
+    if cancelled() {
+        report.policy_changed = true;
+        return Ok(());
+    }
     let inventory_started = Instant::now();
     let inventory = stats(td, -1).await?;
+    if cancelled() {
+        report.policy_changed = true;
+        return Ok(());
+    }
     let total = Size::read(&inventory)?;
-    let mut sweep = Sweep { td, report, inventory_started };
+    let mut sweep = Sweep { td, report, inventory_started, cancelled };
     match scope {
-        Clear::All => sweep.clear_scope(&[], &[], TYPES, total, total).await,
+        Clear::All => {
+            let mut excluded_size = Size::default();
+            for chat in inventory["by_chat"].as_array().ok_or_else(unavailable)? {
+                if chat["chat_id"].as_i64().is_some_and(|id| forever.contains(&id)) {
+                    excluded_size = excluded_size.add(Size::read(chat)?);
+                }
+            }
+            if !forever.is_empty() {
+                log::info!("storage xoá thủ công toàn bộ bỏ qua {} hội thoại giữ mãi mãi", forever.len());
+            }
+            sweep.clear_scope(&[], forever, TYPES, total, total.sub(excluded_size)).await
+        }
         Clear::Chat(id) => {
             for chat in inventory["by_chat"].as_array().ok_or_else(unavailable)? {
                 if chat["chat_id"] == id {
@@ -351,13 +410,19 @@ pub(crate) async fn clear(td: &dyn TdLink, scope: Clear, report: &mut Report) ->
         Clear::Types(types) => {
             let mut estimate = Size::default();
             for chat in inventory["by_chat"].as_array().ok_or_else(unavailable)? {
+                if chat["chat_id"].as_i64().is_some_and(|id| forever.contains(&id)) {
+                    continue;
+                }
                 for kind in chat["by_file_type"].as_array().ok_or_else(unavailable)? {
                     if kind["file_type"]["@type"].as_str().is_some_and(|kind| types.contains(&kind)) {
                         estimate = estimate.add(Size::read(kind)?);
                     }
                 }
             }
-            sweep.clear_scope(&[], &[], &types, total, estimate).await
+            if !forever.is_empty() {
+                log::info!("storage xoá thủ công theo loại bỏ qua {} hội thoại giữ mãi mãi", forever.len());
+            }
+            sweep.clear_scope(&[], forever, &types, total, estimate).await
         }
     }
 }
@@ -437,15 +502,32 @@ fn add_remaining(report: &mut Report, groups: &[((i32, bool), Vec<ChatEntry>)], 
 }
 
 pub(crate) async fn run(td: &dyn TdLink, policy: &Value, report: &mut Report) -> Result<(), GwError> {
+    run_cancellable(td, policy, report, &|| false).await
+}
+
+pub(crate) async fn run_cancellable(
+    td: &dyn TdLink,
+    policy: &Value,
+    report: &mut Report,
+    cancelled: &(dyn Fn() -> bool + Send + Sync),
+) -> Result<(), GwError> {
     if policy_is_noop(policy)? { return Ok(()); }
+    if cancelled() {
+        report.policy_changed = true;
+        return Ok(());
+    }
     let max_cache = policy["max_cache_bytes"].as_u64();
     let exceptions = policy["exceptions"].as_array().ok_or_else(settings_error)?;
     let keep = &policy["keep"];
     let inventory_started = Instant::now();
     let inventory = stats(td, -1).await?;
+    if cancelled() {
+        report.policy_changed = true;
+        return Ok(());
+    }
     let total = Size::read(&inventory)?;
     let chats = inventory["by_chat"].as_array().ok_or_else(unavailable)?;
-    let mut sweep = Sweep { td, report, inventory_started };
+    let mut sweep = Sweep { td, report, inventory_started, cancelled };
     let (stream, stream_ttl) = (policy["mode"] == "stream", policy["stream_ttl_s"].as_i64().unwrap_or(600) as i32);
     let explicit: BTreeMap<_, _> = exceptions.iter()
         .filter_map(|row| row["chat_id"].as_i64().map(|id| (id, row["keep"].as_i64())))
@@ -454,6 +536,7 @@ pub(crate) async fn run(td: &dyn TdLink, policy: &Value, report: &mut Report) ->
     let forever: Vec<_> = explicit.iter().filter_map(|(&id, ttl)| ttl.is_none().then_some(id)).collect();
     let mut grouped = BTreeMap::<_, Vec<ChatEntry>>::new();
     for row in chats {
+        if sweep.is_cancelled() { return Ok(()); }
         let id = row["chat_id"].as_i64().ok_or_else(unavailable)?;
         let size = Size::read(row)?;
         let by_type = file_type_sizes(row);
@@ -473,10 +556,12 @@ pub(crate) async fn run(td: &dyn TdLink, policy: &Value, report: &mut Report) ->
     }
     let groups: Vec<_> = grouped.into_iter().collect();
     'groups: for (gi, ((ttl, is_exception), group)) in groups.iter().enumerate() {
+        if sweep.is_cancelled() { return Ok(()); }
         let excluded = if *is_exception { &[][..] } else { &exclude };
         let mut batch = Vec::new();
         let mut batch_size = Size::default();
         for (ci, entry) in group.iter().enumerate() {
+            if sweep.is_cancelled() { return Ok(()); }
             if sweep.budget_exhausted() {
                 add_remaining(sweep.report, &groups, gi, ci);
                 break 'groups;
@@ -487,6 +572,7 @@ pub(crate) async fn run(td: &dyn TdLink, policy: &Value, report: &mut Report) ->
                     sweep.optimize_ttl(&batch, excluded, TYPES, *ttl).await?;
                     batch.clear();
                     batch_size = Size::default();
+                    if sweep.is_cancelled() { return Ok(()); }
                     if sweep.budget_exhausted() {
                         add_remaining(sweep.report, &groups, gi, ci);
                         break 'groups;
@@ -499,6 +585,7 @@ pub(crate) async fn run(td: &dyn TdLink, policy: &Value, report: &mut Report) ->
                     sweep.optimize_ttl(&batch, excluded, TYPES, *ttl).await?;
                     batch.clear();
                     batch_size = Size::default();
+                    if sweep.is_cancelled() { return Ok(()); }
                     if sweep.budget_exhausted() {
                         add_remaining(sweep.report, &groups, gi, ci);
                         break 'groups;
@@ -509,6 +596,7 @@ pub(crate) async fn run(td: &dyn TdLink, policy: &Value, report: &mut Report) ->
                     let mut type_batch = Vec::new();
                     let mut type_size = Size::default();
                     for (ti, &(kind, size)) in entry.by_type.iter().enumerate() {
+                        if sweep.is_cancelled() { return Ok(()); }
                         if sweep.budget_exhausted() {
                             let mut left = Size::default();
                             for &(_, s) in &entry.by_type[ti..] { left = left.add(s); }
@@ -522,6 +610,7 @@ pub(crate) async fn run(td: &dyn TdLink, policy: &Value, report: &mut Report) ->
                             sweep.optimize_ttl(&[entry.id], excluded, &type_batch, *ttl).await?;
                             type_batch.clear();
                             type_size = Size::default();
+                            if sweep.is_cancelled() { return Ok(()); }
                             if sweep.budget_exhausted() {
                                 let mut left = Size::default();
                                 for &(_, s) in &entry.by_type[ti..] { left = left.add(s); }
@@ -535,11 +624,14 @@ pub(crate) async fn run(td: &dyn TdLink, policy: &Value, report: &mut Report) ->
                         type_size = type_size.add(size);
                     }
                     if !type_batch.is_empty() {
+                        if sweep.is_cancelled() { return Ok(()); }
                         sweep.optimize_ttl(&[entry.id], excluded, &type_batch, *ttl).await?;
                     }
                 } else {
+                    if sweep.is_cancelled() { return Ok(()); }
                     sweep.optimize_ttl(&[entry.id], excluded, TYPES, *ttl).await?;
                 }
+                if sweep.is_cancelled() { return Ok(()); }
                 if sweep.budget_exhausted() {
                     add_remaining(sweep.report, &groups, gi, ci + 1);
                     break 'groups;
@@ -547,13 +639,16 @@ pub(crate) async fn run(td: &dyn TdLink, policy: &Value, report: &mut Report) ->
             }
         }
         if !batch.is_empty() {
+            if sweep.is_cancelled() { return Ok(()); }
             sweep.optimize_ttl(&batch, excluded, TYPES, *ttl).await?;
+            if sweep.is_cancelled() { return Ok(()); }
             if sweep.budget_exhausted() {
                 add_remaining(sweep.report, &groups, gi + 1, 0);
                 break 'groups;
             }
         }
     }
+    if sweep.is_cancelled() { return Ok(()); }
     if !stream {
         let remaining_est = total.bytes.saturating_sub(sweep.report.deleted.bytes);
         if let Some(limit) = max_cache.filter(|&limit| remaining_est > limit) {
@@ -562,6 +657,7 @@ pub(crate) async fn run(td: &dyn TdLink, policy: &Value, report: &mut Report) ->
                 sweep.report.remaining.bytes = sweep.report.remaining.bytes.max(remaining_est - limit);
             } else {
                 let inventory = stats(td, -1).await?;
+                if sweep.is_cancelled() { return Ok(()); }
                 let current_total = Size::read(&inventory)?;
                 let mut excluded_size = Size::default();
                 for row in inventory["by_chat"].as_array().ok_or_else(unavailable)? {

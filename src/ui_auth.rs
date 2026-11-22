@@ -1,7 +1,7 @@
 //! Persistent browser login for the web UI. Bearer tokens remain the machine API credential.
 
-use std::{collections::{HashMap, VecDeque}, fs::{self, DirBuilder, File},
-    os::unix::fs::{DirBuilderExt, PermissionsExt}, path::{Path, PathBuf},
+use std::{collections::{HashMap, VecDeque}, fs::{self, DirBuilder, File, OpenOptions}, io::Read,
+    os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt}, path::{Path, PathBuf},
     num::NonZeroU32, sync::{Arc, Mutex, MutexGuard}, time::{SystemTime, UNIX_EPOCH}};
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
@@ -47,6 +47,7 @@ pub struct UiAuth {
     gateway_token: String,
     store: Mutex<Store>,
     failures: Mutex<HashMap<(String, String), VecDeque<u64>>>,
+    hash_slots: Arc<tokio::sync::Semaphore>,
     clock: Clock,
     secure_cookie: bool,
 }
@@ -80,14 +81,10 @@ impl UiAuth {
         DirBuilder::new().mode(0o700).recursive(true).create(data_dir)
             .or_else(|error| if error.kind() == std::io::ErrorKind::AlreadyExists { Ok(()) } else { Err(error) })
             .map_err(|_| "Không tạo được thư mục dữ liệu đăng nhập web.".to_owned())?;
-        fs::set_permissions(data_dir, fs::Permissions::from_mode(0o700))
-            .map_err(|_| "Không bảo vệ được thư mục dữ liệu đăng nhập web.".to_owned())?;
         let path = data_dir.join("ui_auth.json");
         let _disk_lock = lock_dir(data_dir)?;
-        let store = match fs::read(&path) {
+        let store = match read_auth(&path) {
             Ok(bytes) => {
-                fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
-                    .map_err(|_| "Không bảo vệ được tệp đăng nhập web.".to_owned())?;
                 decode_store(&bytes)?
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -95,8 +92,17 @@ impl UiAuth {
                 match (username, password) {
                     (Some(user), Some(pass)) => {
                         validate_credentials(user, pass)?;
-                        store.account = Some(make_account(user, pass)?);
-                        save(&path, &store)?;
+                        drop(_disk_lock);
+                        let account = make_account(user, pass)?;
+                        let _disk_lock = lock_dir(data_dir)?;
+                        match read_auth(&path) {
+                            Ok(bytes) => store = decode_store(&bytes)?,
+                            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                                store.account = Some(account);
+                                save(&path, &store)?;
+                            }
+                            Err(_) => return Err("Không đọc được cấu hình đăng nhập web.".into()),
+                        }
                     }
                     (None, None) => (),
                     _ => return Err("TG_UI_USER và TG_UI_PASSWORD phải được đặt cùng nhau.".into()),
@@ -107,7 +113,7 @@ impl UiAuth {
         };
         Ok(Self {
             path: Some(path), gateway_token: gateway_token.to_owned(), store: Mutex::new(store),
-            failures: Mutex::new(HashMap::new()), clock: Arc::new(now), secure_cookie,
+            failures: Mutex::new(HashMap::new()), hash_slots: Arc::new(tokio::sync::Semaphore::new(2)), clock: Arc::new(now), secure_cookie,
         })
     }
 
@@ -115,11 +121,15 @@ impl UiAuth {
     pub fn in_memory(gateway_token: &str) -> Self {
         Self {
             path: None, gateway_token: gateway_token.to_owned(), store: Mutex::new(Store::default()),
-            failures: Mutex::new(HashMap::new()), clock: Arc::new(now), secure_cookie: false,
+            failures: Mutex::new(HashMap::new()), hash_slots: Arc::new(tokio::sync::Semaphore::new(2)), clock: Arc::new(now), secure_cookie: false,
         }
     }
 
     pub fn secure_cookie(&self) -> bool { self.secure_cookie }
+
+    pub(crate) async fn hash_permit(&self) -> tokio::sync::OwnedSemaphorePermit {
+        self.hash_slots.clone().acquire_owned().await.expect("auth semaphore stays open")
+    }
 
     pub fn status(&self, token: Option<&str>, secure: bool) -> Result<AuthStatus, AuthError> {
         let (_disk_lock, mut store) = self.lock_store()?;
@@ -137,14 +147,19 @@ impl UiAuth {
     }
 
     pub fn setup(&self, token: &str, username: &str, password: &str, secure: bool) -> Result<LoginGrant, AuthError> {
-        let (_disk_lock, mut store) = self.lock_store()?;
-        if store.account.is_some() { return Err(error(409, "ALREADY_CONFIGURED", "Tài khoản đã được thiết lập.")); }
+        {
+            let (_disk_lock, store) = self.lock_store()?;
+            if store.account.is_some() { return Err(error(409, "ALREADY_CONFIGURED", "Tài khoản đã được thiết lập.")); }
+        }
         if self.gateway_token.is_empty() || !ct_eq(token.as_bytes(), self.gateway_token.as_bytes()) {
             return Err(error(401, "UNAUTHORIZED", "Thiếu hoặc sai token khởi tạo."));
         }
         validate_credentials(username, password).map_err(|_| error(400, "BAD_REQUEST", "Tên đăng nhập hoặc mật khẩu không hợp lệ."))?;
+        let account = make_account(username, password).map_err(|_| storage_error())?;
+        let (_disk_lock, mut store) = self.lock_store()?;
+        if store.account.is_some() { return Err(error(409, "ALREADY_CONFIGURED", "Tài khoản đã được thiết lập.")); }
         let mut updated = store.clone();
-        updated.account = Some(make_account(username, password).map_err(|_| error(500, "AUTH_STORAGE", "Không tạo được tài khoản."))?);
+        updated.account = Some(account);
         let grant = create_session(&mut updated, username, true, (self.clock)(), secure || self.secure_cookie)?;
         self.save_store(&updated)?;
         *store = updated;
@@ -152,27 +167,31 @@ impl UiAuth {
     }
 
     pub fn login(&self, username: &str, password: &str, remember: bool, ip: &str, secure: bool) -> Result<LoginGrant, AuthError> {
-        // Keep the limit check, password verification and failure update in one atomic attempt.
-        let (_disk_lock, mut store) = self.lock_store()?;
-        let account = store.account.clone();
+        if username.len() > 128 || password.len() > 4096 || password.chars().count() > 1024 || ip.len() > 64 {
+            return Err(error(401, "INVALID_CREDENTIALS", "Tên hoặc mật khẩu không đúng."));
+        }
         let now = (self.clock)();
         let key = (ip.to_owned(), username.to_owned());
-        if let Some(retry) = self.retry_after(&key, now) {
-            return Err(AuthError { status: 429, code: "LOGIN_RATE_LIMITED", message: "Quá nhiều lần đăng nhập sai.", retry_after: Some(retry) });
-        }
+        // Reload first so a CLI password reset also clears the previous account's lockout.
+        let account = { let (_disk_lock, store) = self.lock_store()?; store.account.clone() };
+        // Reserve the attempt atomically before hashing, without holding the account/disk lock.
+        self.record_failure(key.clone(), now)?;
         let candidate = account.as_ref().filter(|account| account.username == username);
         let (salt, expected) = candidate.map(|account| (account.salt.as_slice(), account.password_hash.as_slice()))
             .unwrap_or((&DUMMY_SALT, &[0; HASH_BYTES]));
         let valid = verify_password(password, salt, expected) && candidate.is_some();
         if !valid {
-            self.record_failure(key, now);
             return Err(error(401, "INVALID_CREDENTIALS", "Tên hoặc mật khẩu không đúng."));
         }
-        self.failures.lock().unwrap_or_else(|p| p.into_inner()).remove(&key);
+        let (_disk_lock, mut store) = self.lock_store()?;
+        if !same_account(account.as_ref(), store.account.as_ref()) {
+            return Err(error(401, "INVALID_CREDENTIALS", "Tên hoặc mật khẩu không đúng."));
+        }
         let mut updated = store.clone();
         let grant = create_session(&mut updated, username, remember, now, secure || self.secure_cookie)?;
         self.save_store(&updated)?;
         *store = updated;
+        self.failures.lock().unwrap_or_else(|p| p.into_inner()).remove(&key);
         Ok(grant)
     }
 
@@ -257,38 +276,37 @@ impl UiAuth {
     }
 
     pub fn reset_password(data_dir: &Path, password: &str) -> Result<(), String> {
-        fs::set_permissions(data_dir, fs::Permissions::from_mode(0o700))
-            .map_err(|_| "Không bảo vệ được thư mục dữ liệu đăng nhập web.".to_owned())?;
-        let _disk_lock = lock_dir(data_dir)?;
         let path = data_dir.join("ui_auth.json");
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
-            .map_err(|error| if error.kind() == std::io::ErrorKind::NotFound {
-                "Chưa có tài khoản web để đặt lại mật khẩu.".to_owned()
-            } else { "Không bảo vệ được tệp đăng nhập web.".to_owned() })?;
-        let bytes = fs::read(&path).map_err(|_| "Chưa có tài khoản web để đặt lại mật khẩu.".to_owned())?;
-        let mut store = decode_store(&bytes)?;
-        let account = store.account.as_ref().ok_or_else(|| "Chưa có tài khoản web để đặt lại mật khẩu.".to_owned())?;
+        let original = {
+            let _disk_lock = lock_dir(data_dir)?;
+            let bytes = read_auth(&path).map_err(|_| "Chưa có tài khoản web để đặt lại mật khẩu.".to_owned())?;
+            decode_store(&bytes)?.account.ok_or_else(|| "Chưa có tài khoản web để đặt lại mật khẩu.".to_owned())?
+        };
+        let account = &original;
         validate_credentials(&account.username, password)?;
         let username = account.username.clone();
-        store.account = Some(make_account(&username, password)?);
+        let updated_account = make_account(&username, password)?;
+        let _disk_lock = lock_dir(data_dir)?;
+        let mut store = decode_store(&read_auth(&path).map_err(|_| "Không đọc được cấu hình đăng nhập web.".to_owned())?)?;
+        if !same_account(Some(&original), store.account.as_ref()) { return Err("Tài khoản vừa thay đổi; hãy chạy lại lệnh passwd.".into()); }
+        store.account = Some(updated_account);
         store.sessions.clear();
         save(&path, &store)
     }
 
-    fn retry_after(&self, key: &(String, String), now: u64) -> Option<u64> {
+    fn record_failure(&self, key: (String, String), now: u64) -> Result<(), AuthError> {
         let mut failures = self.failures.lock().unwrap_or_else(|p| p.into_inner());
-        let attempts = failures.get_mut(key)?;
-        while attempts.front().is_some_and(|attempt| now.saturating_sub(*attempt) >= FAILURE_WINDOW) { attempts.pop_front(); }
-        if attempts.len() >= MAX_FAILURES { attempts.front().map(|first| FAILURE_WINDOW.saturating_sub(now.saturating_sub(*first)).max(1)) }
-        else { None }
-    }
-
-    fn record_failure(&self, key: (String, String), now: u64) {
-        let mut failures = self.failures.lock().unwrap_or_else(|p| p.into_inner());
+        failures.retain(|_, attempts| {
+            while attempts.front().is_some_and(|attempt| now.saturating_sub(*attempt) >= FAILURE_WINDOW) { attempts.pop_front(); }
+            !attempts.is_empty()
+        });
+        if !failures.contains_key(&key) && failures.len() >= 4096 { return Err(login_limited(FAILURE_WINDOW)); }
         let attempts = failures.entry(key).or_default();
-        while attempts.front().is_some_and(|attempt| now.saturating_sub(*attempt) >= FAILURE_WINDOW) { attempts.pop_front(); }
+        if attempts.len() >= MAX_FAILURES {
+            return Err(login_limited(FAILURE_WINDOW.saturating_sub(now.saturating_sub(*attempts.front().unwrap())).max(1)));
+        }
         attempts.push_back(now);
-        failures.retain(|_, attempts| attempts.back().is_some_and(|attempt| now.saturating_sub(*attempt) < FAILURE_WINDOW));
+        Ok(())
     }
 
     fn lock_store(&self) -> Result<(Option<File>, MutexGuard<'_, Store>), AuthError> {
@@ -296,11 +314,15 @@ impl UiAuth {
         let disk_lock = if let Some(path) = &self.path {
             // The directory inode survives atomic replacement of ui_auth.json by either process.
             let lock = lock_dir(path.parent().unwrap()).map_err(|_| storage_error())?;
-            *store = match fs::read(path) {
+            let loaded = match read_auth(path) {
                 Ok(bytes) => decode_store(&bytes).map_err(|_| storage_error())?,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => Store::default(),
                 Err(_) => return Err(storage_error()),
             };
+            if !same_account(store.account.as_ref(), loaded.account.as_ref()) {
+                self.failures.lock().unwrap_or_else(|p| p.into_inner()).clear();
+            }
+            *store = loaded;
             Some(lock)
         } else { None };
         Ok((disk_lock, store))
@@ -314,9 +336,21 @@ impl UiAuth {
 
 fn lock_dir(path: &Path) -> Result<File, String> {
     let unavailable = |_| "Không khoá được thư mục đăng nhập web.".to_owned();
-    let dir = File::open(path).map_err(unavailable)?;
+    let flags = rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::DIRECTORY;
+    let dir = OpenOptions::new().read(true).custom_flags(flags.bits() as i32).open(path).map_err(unavailable)?;
+    dir.set_permissions(fs::Permissions::from_mode(0o700)).map_err(|_| "Không bảo vệ được thư mục đăng nhập web.".to_owned())?;
     flock(&dir, FlockOperation::LockExclusive).map_err(|_| "Không khoá được thư mục đăng nhập web.".to_owned())?;
     Ok(dir)
+}
+
+fn read_auth(path: &Path) -> std::io::Result<Vec<u8>> {
+    let flags = rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::NONBLOCK;
+    let mut file = OpenOptions::new().read(true).custom_flags(flags.bits() as i32).open(path)?;
+    if !file.metadata()?.is_file() { return Err(std::io::ErrorKind::InvalidInput.into()); }
+    file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    Ok(bytes)
 }
 
 fn active_session(store: &Store, hash: &str, now: u64) -> Result<usize, AuthError> {
@@ -350,6 +384,9 @@ fn error(status: u16, code: &'static str, message: &'static str) -> AuthError {
 }
 
 fn unauthorized() -> AuthError { error(401, "UNAUTHORIZED", "Chưa đăng nhập hoặc phiên đã hết hạn.") }
+fn login_limited(retry: u64) -> AuthError {
+    AuthError { status: 429, code: "LOGIN_RATE_LIMITED", message: "Quá nhiều lần đăng nhập sai.", retry_after: Some(retry) }
+}
 fn storage_error() -> AuthError { error(500, "AUTH_STORAGE", "Không lưu được dữ liệu đăng nhập web.") }
 
 fn validate_credentials(username: &str, password: &str) -> Result<(), String> {
@@ -436,6 +473,30 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     #[test]
+    fn trung01_failure_table_is_bounded_and_expired_keys_are_reclaimed() {
+        let auth = UiAuth::in_memory("fake-token");
+        for id in 0..8192 { let _ = auth.record_failure(("192.0.2.10".into(), format!("{id:0128}")), 10_000); }
+        let failures = auth.failures.lock().unwrap();
+        let bytes: usize = failures.capacity() * std::mem::size_of::<((String, String), VecDeque<u64>)>()
+            + failures.iter().map(|((ip, user), times)| ip.capacity() + user.capacity() + times.capacity() * 8).sum::<usize>();
+        assert!(failures.len() <= 4096, "failure table has {} keys", failures.len());
+        assert!(bytes < 2 * 1024 * 1024, "failure table allocation estimate: {bytes}");
+        drop(failures);
+        auth.record_failure(("192.0.2.10".into(), "after-expiry".into()), 10_900).unwrap();
+        assert_eq!(auth.failures.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn trung01_oversized_credentials_are_rejected_before_allocating_failure_keys() {
+        let auth = UiAuth::in_memory("fake-token");
+        for (user, password) in [("u".repeat(129), "fake-password-value".into()),
+            ("fake-user".into(), "p".repeat(4097))] {
+            assert_eq!(auth.login(&user, &password, false, "192.0.2.10", false).err().unwrap().status, 401);
+            assert!(auth.failures.lock().unwrap().is_empty());
+        }
+    }
+
+    #[test]
     fn password_hash_uses_pbkdf2_and_session_storage_keeps_only_hash() {
         let root = std::env::temp_dir().join(format!("tggw-ui-auth-unit-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
@@ -466,7 +527,7 @@ mod tests {
         let clock: Clock = { let now = now.clone(); Arc::new(move || now.load(Ordering::SeqCst)) };
         let auth = UiAuth {
             path: None, gateway_token: "fake-token".into(), store: Mutex::new(Store::default()),
-            failures: Mutex::new(HashMap::new()), clock, secure_cookie: false,
+            failures: Mutex::new(HashMap::new()), hash_slots: Arc::new(tokio::sync::Semaphore::new(2)), clock, secure_cookie: false,
         };
         auth.setup("fake-token", "fake-user", "fake-password-value", false).unwrap();
         for _ in 0..5 { assert_eq!(auth.login("fake-user", "wrong-password-value", false, "192.0.2.10", false).err().unwrap().status, 401); }

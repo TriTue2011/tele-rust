@@ -3,7 +3,7 @@ use axum::{http::header,response::{Html,IntoResponse,Response}};
 fn page(html:&'static str)->Response {
     let mut response=Html(html).into_response();
     for (name,value) in [
-        (header::CONTENT_SECURITY_POLICY,"default-src 'self'; script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'"),
+        (header::CONTENT_SECURITY_POLICY,"default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'"),
         (header::X_CONTENT_TYPE_OPTIONS,"nosniff"),
         (header::REFERRER_POLICY,"no-referrer"),
         (header::CACHE_CONTROL,"no-store"),
@@ -12,6 +12,10 @@ fn page(html:&'static str)->Response {
 }
 pub(crate) async fn app()->Response { page(include_str!("../web/app.html")) }
 pub(crate) async fn accounts()->Response { page(include_str!("../web/index.html")) }
+pub(crate) async fn qrcode()->Response {
+    ([(header::CONTENT_TYPE,"text/javascript; charset=utf-8"), (header::X_CONTENT_TYPE_OPTIONS,"nosniff"),
+        (header::CACHE_CONTROL,"no-cache")], include_str!("../web/qrcode.min.js")).into_response()
+}
 
 #[cfg(test)]
 mod tests {

@@ -142,11 +142,33 @@ test('TC-7: lưu chế độ, sửa thời hạn và ngoại lệ, xác nhận x
     })()`), `${width} px`);
   }
   await click('storage-clear-open');
-  assert.match(await evaluate('document.getElementById("storage-confirm-summary").textContent'), /2 KB/);
+  const clearSummary = await evaluate('document.getElementById("storage-confirm-summary").textContent');
+  assert.match(clearSummary, /2 KB/);
+  assert.match(clearSummary, /1 hội thoại giữ mãi mãi sẽ được bỏ qua/);
   assert.equal((await writes()).length, 2);
   await click('storage-cancel'); assert.equal((await writes()).length, 2);
   await click('storage-clear-open'); await click('storage-confirm-clear');
   await until('document.getElementById("storage-status").textContent.includes("Đã giải phóng")');
   assert.deepEqual((await writes())[2].slice(0, 2), ['/api/storage/clear', { scope: 'all', confirm: true }]);
+
+  // M1: giảm thời hạn giữ ở chế độ local phải qua hộp xác nhận nêu rõ lượt tới.
+  await evaluate(`{
+    const keepGroups = document.querySelectorAll('#storage-keep select')[1];
+    keepGroups.value = '86400';
+    keepGroups.dispatchEvent(new Event('change'));
+  }`);
+  await click('storage-save');
+  await until('document.getElementById("storage-mode-confirm").open === true');
+  assert.match(await evaluate('document.getElementById("storage-mode-confirm-summary").textContent'), /lượt tới/);
+  assert.equal((await writes()).length, 3);
+  await click('storage-mode-cancel');
+  assert.equal((await writes()).length, 3);
+  await click('storage-save');
+  await until('document.getElementById("storage-mode-confirm").open === true');
+  await click('storage-mode-confirm-ok');
+  await until('document.getElementById("storage-mode-confirm").open === false');
+  assert.equal((await writes()).length, 4);
+  assert.equal((await writes())[3][1].confirm, true);
+  assert.equal((await writes())[3][1].keep.groups, 86400);
   assert.deepEqual(errors, []);
 });

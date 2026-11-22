@@ -63,6 +63,76 @@ pub(crate) fn parse_update(mut body: Value) -> Result<(Value, bool), GwError> {
     Ok((body, confirmed))
 }
 
+fn tighter(old: Option<u64>, new: Option<u64>) -> bool {
+    match (old, new) {
+        (None, Some(_)) => true,
+        (Some(a), Some(b)) => b < a,
+        _ => false,
+    }
+}
+
+fn exception_map(settings: &Value) -> std::collections::BTreeMap<i64, Option<u64>> {
+    settings["exceptions"].as_array().into_iter().flatten()
+        .filter_map(|row| row["chat_id"].as_i64().map(|id| (id, row["keep"].as_u64())))
+        .collect()
+}
+
+pub(crate) fn is_tightening(current: &Value, next: &Value) -> bool {
+    if current["mode"] == "local" && next["mode"] == "stream" {
+        return true;
+    }
+    let cur_exc = exception_map(current);
+    let next_exc = exception_map(next);
+    let cur_stream_ttl = current["stream_ttl_s"].as_u64();
+    let next_stream_ttl = next["stream_ttl_s"].as_u64();
+    if next["mode"] == "stream" {
+        if tighter(cur_stream_ttl, next_stream_ttl) {
+            return true;
+        }
+        return cur_exc.keys().chain(next_exc.keys()).any(|id| {
+            let old = cur_exc.get(id).copied().unwrap_or(cur_stream_ttl);
+            let new = next_exc.get(id).copied().unwrap_or(next_stream_ttl);
+            tighter(old, new)
+        });
+    }
+    if tighter(current["max_cache_bytes"].as_u64(), next["max_cache_bytes"].as_u64()) {
+        return true;
+    }
+    let next_has_limit = next["max_cache_bytes"].as_u64().is_some()
+        || CHAT_TYPES.iter().any(|kind| next["keep"][kind].as_u64().is_some());
+    if current["mode"] == "stream" {
+        if CHAT_TYPES.iter().any(|kind| tighter(cur_stream_ttl, next["keep"][kind].as_u64())) {
+            return true;
+        }
+        return cur_exc.keys().chain(next_exc.keys()).any(|id| {
+            let old = cur_exc.get(id).copied().unwrap_or(cur_stream_ttl);
+            match next_exc.get(id).copied() {
+                Some(new) => tighter(old, new),
+                None => match old {
+                    None => next_has_limit,
+                    Some(_) => CHAT_TYPES.iter().any(|kind| tighter(old, next["keep"][kind].as_u64())),
+                },
+            }
+        });
+    }
+    if CHAT_TYPES.iter().any(|kind| tighter(current["keep"][kind].as_u64(), next["keep"][kind].as_u64())) {
+        return true;
+    }
+    cur_exc.keys().chain(next_exc.keys()).any(|id| {
+        match (cur_exc.get(id).copied(), next_exc.get(id).copied()) {
+            (Some(old), Some(new)) => tighter(old, new),
+            (Some(old), None) => match old {
+                None => next_has_limit,
+                Some(_) => CHAT_TYPES.iter().any(|kind| tighter(old, next["keep"][kind].as_u64())),
+            },
+            (None, Some(new)) => {
+                new.is_some() && CHAT_TYPES.iter().any(|kind| tighter(current["keep"][kind].as_u64(), new))
+            }
+            (None, None) => false,
+        }
+    })
+}
+
 pub(crate) fn validate(settings: &Value) -> Result<(), GwError> {
     let keep = |v: &Value| v.is_null() || matches!(v.as_u64(), Some(86400 | 604800 | 2678400));
     let bytes = |v: &Value| v.as_u64().is_some_and(|n| n <= MAX_INT53);

@@ -64,7 +64,7 @@ async function setupStorageHarness(source = storageCode) {
     'storage-meter', 'storage-legend', 'storage-janitor', 'storage-close', 'storage-local',
     'storage-stream', 'storage-local-settings', 'storage-keep', 'storage-exceptions',
     'storage-exception-count', 'storage-exception-chat', 'storage-exception-add', 'storage-max',
-    'storage-auto', 'storage-form', 'storage-mode-confirm', 'storage-mode-confirm-summary',
+    'storage-auto', 'storage-form', 'storage-mode-confirm', 'storage-mode-confirm-title', 'storage-mode-confirm-summary',
     'storage-mode-cancel', 'storage-mode-confirm-ok', 'storage-clear-scope', 'storage-confirm',
     'storage-clear-error', 'storage-confirm-summary', 'storage-cancel', 'storage-confirm-clear',
     'account',
@@ -189,4 +189,107 @@ test('mutation: removing local-to-stream confirmation check makes guard test fai
   await submitForm();
   assert.notEqual(writes.length, 0, 'đột biến phải làm mất chốt chặn');
   assert.equal(nodes.get('storage-mode-confirm').open, false);
+});
+
+test('M1: tightening keep, max_cache_bytes, or removing forever exception requires confirmation dialog before POSTing confirm=true', async () => {
+  const { nodes, writes, submitForm, clickConfirm } = await setupStorageHarness();
+
+  const privateSelect = nodes.get('storage-keep').children[0].children.find((child) => child.tag === 'select');
+  privateSelect.value = '86400';
+  privateSelect.dispatchEvent(new Event('change'));
+
+  await submitForm();
+  assert.equal(writes.length, 0, 'giảm thời hạn giữ chưa xác nhận thì không được gửi POST');
+  assert.equal(nodes.get('storage-mode-confirm').open, true);
+  assert.match(nodes.get('storage-mode-confirm-summary').textContent, /lượt tới/);
+
+  nodes.get('storage-mode-cancel').click();
+  assert.equal(nodes.get('storage-mode-confirm').open, false);
+  assert.equal(writes.length, 0);
+
+  await submitForm();
+  await clickConfirm('storage-mode-confirm-ok');
+  assert.equal(nodes.get('storage-mode-confirm').open, false);
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].keep.private, 86400);
+  assert.equal(writes[0].confirm, true);
+
+  nodes.get('storage-max').value = String(500 * 1024 * 1024);
+  nodes.get('storage-max').dispatchEvent(new Event('change'));
+  await submitForm();
+  assert.equal(writes.length, 1, 'giảm bộ nhớ đệm tối đa chưa xác nhận thì không được gửi POST');
+  assert.equal(nodes.get('storage-mode-confirm').open, true);
+  await clickConfirm('storage-mode-confirm-ok');
+  assert.equal(writes.length, 2);
+  assert.equal(writes[1].max_cache_bytes, 500 * 1024 * 1024);
+  assert.equal(writes[1].confirm, true);
+
+  // Nới lỏng dung lượng và thêm ngoại lệ Mãi mãi không phải làm chặt.
+  nodes.get('storage-max').value = String(5 * 1024 * 1024 * 1024);
+  nodes.get('storage-max').dispatchEvent(new Event('change'));
+  nodes.get('storage-exception-chat').value = '42';
+  nodes.get('storage-exception-add').click();
+  await submitForm();
+  assert.equal(nodes.get('storage-mode-confirm').open, false);
+  assert.equal(writes.length, 3);
+  assert.equal(writes[2].confirm, undefined);
+  assert.deepEqual(writes[2].exceptions, [{ chat_id: 42, keep: null }]);
+
+  // Xoá ngoại lệ Mãi mãi khi chính sách đích có giới hạn phải xác nhận.
+  const removeBtn = nodes.get('storage-exceptions').children.find((child) => child.tag === 'button');
+  removeBtn.click();
+  await submitForm();
+  assert.equal(writes.length, 3, 'xoá ngoại lệ mãi mãi chưa xác nhận thì không được gửi POST');
+  assert.equal(nodes.get('storage-mode-confirm').open, true);
+  await clickConfirm('storage-mode-confirm-ok');
+  assert.equal(writes.length, 4);
+  assert.equal(writes[3].confirm, true);
+  assert.deepEqual(writes[3].exceptions, []);
+});
+
+test('M1 mutation: bypassing non-mode tightening check makes guard test fail', async () => {
+  const mutant = storageCode.replace('if (reasons.length)', 'if (reasons.includes("mode"))');
+  assert.notEqual(mutant, storageCode);
+  const { nodes, writes, submitForm } = await setupStorageHarness(mutant);
+  const privateSelect = nodes.get('storage-keep').children[0].children.find((child) => child.tag === 'select');
+  privateSelect.value = '86400';
+  privateSelect.dispatchEvent(new Event('change'));
+  await submitForm();
+  assert.equal(writes.length, 1, 'đột biến phải bỏ qua hộp xác nhận khi giảm thời hạn');
+  assert.equal(nodes.get('storage-mode-confirm').open, false);
+});
+
+test('M4: manual clear dialog states N forever chats are skipped for all/type and warns separately for a forever chat', async () => {
+  const { nodes, submitForm } = await setupStorageHarness();
+  nodes.get('storage-exception-chat').value = '42';
+  nodes.get('storage-exception-add').click();
+  await submitForm();
+
+  nodes.get('storage-clear-scope').value = 'all';
+  nodes.get('storage-clear-open').click();
+  assert.match(nodes.get('storage-confirm-summary').textContent, /1 hội thoại giữ mãi mãi sẽ được bỏ qua/);
+
+  nodes.get('storage-clear-scope').value = 'type:photo';
+  nodes.get('storage-clear-open').click();
+  assert.match(nodes.get('storage-confirm-summary').textContent, /1 hội thoại giữ mãi mãi sẽ được bỏ qua/);
+
+  nodes.get('storage-clear-scope').value = 'chat:42';
+  nodes.get('storage-clear-open').click();
+  const chatSummary = nodes.get('storage-confirm-summary').textContent;
+  assert.equal(chatSummary.includes('sẽ được bỏ qua'), false);
+  assert.match(chatSummary, /Mãi mãi/);
+  assert.match(chatSummary, /riêng hội thoại này/);
+});
+
+test('M4 mutation: zeroing forever chat count removes M4 notice', async () => {
+  const mutant = storageCode.replace('storageForeverCount(storageSaved)', '0');
+  assert.notEqual(mutant, storageCode);
+  const { nodes, submitForm } = await setupStorageHarness(mutant);
+  nodes.get('storage-exception-chat').value = '42';
+  nodes.get('storage-exception-add').click();
+  await submitForm();
+
+  nodes.get('storage-clear-scope').value = 'all';
+  nodes.get('storage-clear-open').click();
+  assert.equal(nodes.get('storage-confirm-summary').textContent.includes('hội thoại giữ mãi mãi sẽ được bỏ qua'), false);
 });
