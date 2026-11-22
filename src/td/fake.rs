@@ -23,6 +23,7 @@ pub(crate) struct Fake {
     pub supergroups:Mutex<HashMap<i64, Value>>,
     pub supergroup_full_info:Mutex<HashMap<i64, Value>>,
     pub supergroup_members:Mutex<HashMap<i64, Value>>,
+    pub search_messages:Mutex<HashMap<i64, Value>>,
     pub optimize_reply:Mutex<Option<Box<dyn Fn(&Value)->Value+std::marker::Send+std::marker::Sync>>>,
     pub optimize_delay:Mutex<Option<Duration>>,
 }
@@ -108,6 +109,8 @@ impl TdApi for Fake {
                 .unwrap_or_else(|| json!({"@type":"supergroupFullInfo","description":"","member_count":0,"can_get_members":true})),
             "getSupergroupMembers" => self.supergroup_members.lock().unwrap().get(&r["supergroup_id"].as_i64().unwrap_or_default()).cloned()
                 .unwrap_or_else(|| json!({"@type":"chatMembers","total_count":0,"members":[]})),
+            "searchChatMessages" => self.search_messages.lock().unwrap().get(&r["chat_id"].as_i64().unwrap_or_default()).cloned()
+                .unwrap_or_else(|| json!({"@type":"foundChatMessages","total_count":0,"messages":[]})),
             "deleteChatHistory" | "leaveChat" if self.strict_chats.load(Ordering::Relaxed)
                 && !r["chat_id"].as_i64().is_some_and(|cid| self.chats.lock().unwrap().contains_key(&cid)) => {
                 json!({"@type":"error","code":404,"message":"Chat not found"})

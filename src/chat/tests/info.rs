@@ -447,3 +447,37 @@ async fn auto_delete_validates_telegram_allowed_values_and_requires_confirm() {
         assert_eq!(res["auto_delete_seconds"], seconds);
     }
 }
+
+#[tokio::test]
+async fn chat_delete_requires_confirm_and_calls_correct_tdlib_by_chat_kind() {
+    let private_chat = json!({"id": 5, "type": {"@type": "chatTypePrivate", "user_id": 7}});
+    let group_chat = json!({"id": -1001, "type": {"@type": "chatTypeSupergroup", "supergroup_id": 1001, "is_channel": false}});
+    let (chat, _) = setup(vec![
+        err(json!({"@type":"getChat","chat_id":999}), 404, "Chat not found"),
+        ok(json!({"@type":"getChat","chat_id":5}), private_chat),
+        ok(json!({"@type":"deleteChatHistory","chat_id":5,"remove_from_chat_list":true,"revoke":true}), json!({"@type":"ok"})),
+        ok(json!({"@type":"getChat","chat_id":-1001}), group_chat),
+        ok(json!({"@type":"leaveChat","chat_id":-1001}), json!({"@type":"ok"})),
+    ]);
+
+    for bad in [
+        json!({}),
+        json!({"confirm": false}),
+        json!({"confirm": "true"}),
+        json!({"confirm": true, "extra": 1}),
+        json!({"confirm": true, "revoke": "yes"}),
+    ] {
+        let err = post(&chat, "/api/chats/5/delete", "", bad.clone()).await.unwrap_err();
+        assert_eq!((err.status, err.code.as_str()), (400, "BAD_REQUEST"), "{bad}");
+    }
+
+    assert_eq!(post(&chat, "/api/chats/999/delete", "", json!({"confirm":true})).await.unwrap_err().status, 404);
+    assert_eq!(
+        post(&chat, "/api/chats/5/delete", "", json!({"confirm":true,"revoke":true})).await.unwrap(),
+        json!({"ok":true,"chat_id":5,"deleted":true})
+    );
+    assert_eq!(
+        post(&chat, "/api/chats/-1001/delete", "", json!({"confirm":true})).await.unwrap(),
+        json!({"ok":true,"chat_id":-1001,"deleted":true})
+    );
+}

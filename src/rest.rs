@@ -637,7 +637,8 @@ fn router_with(ctx: Arc<Ctx>) -> Router {
         r = r.route(p, route(post, s(ChatPost)));
     }
     for p in ["/api/chats/:chat_id/send", "/api/chats/:chat_id/send_album", "/api/chats/:chat_id/read",
-              "/api/chats/:chat_id/settings", "/api/chats/:chat_id/clear_history", "/api/chats/:chat_id/leave"] {
+              "/api/chats/:chat_id/settings", "/api/chats/:chat_id/clear_history", "/api/chats/:chat_id/delete",
+              "/api/chats/:chat_id/leave"] {
         r = r.route(p, route(post, s_id(ChatPost, "chat_id")));
     }
     r = r.route("/api/chats/:chat_id/send_file", route(post, s_id(SendFile, "chat_id")));
@@ -1359,6 +1360,7 @@ mod tests {
             ("GET", "/api/chats/-1001/members", "DELETE", "/api/chats/abc/members"),
             ("POST", "/api/chats/42/settings", "GET", "/api/chats/abc/settings"),
             ("POST", "/api/chats/42/clear_history", "GET", "/api/chats/abc/clear_history"),
+            ("POST", "/api/chats/42/delete", "GET", "/api/chats/abc/delete"),
             ("POST", "/api/chats/-1001/leave", "GET", "/api/chats/abc/leave"),
         ] {
             assert_eq!(send(&app, req(method, bad_id_path, None, Body::empty())).await.0, 422, "{method} {bad_id_path}");

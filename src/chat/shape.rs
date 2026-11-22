@@ -2,36 +2,306 @@ use serde_json::{json, Value};
 
 use super::{array, field, text, truth};
 
-pub(super) fn user_name(u: &Value) -> String {
-    let name = format!("{} {}", text(&u["first_name"]), text(&u["last_name"]));
-    if !name.trim().is_empty() { return name.trim().into(); }
-    if let Some(username) = u["usernames"]["active_usernames"][0].as_str() {
-        return format!("@{username}");
+pub(super) const UNKNOWN_USER_LABEL: &str = "Người dùng";
+
+pub(super) fn display_user_name(user: Option<&Value>) -> String {
+    if let Some(u) = user.filter(|u| !u.is_null()) {
+        let name = format!("{} {}", text(&u["first_name"]), text(&u["last_name"]));
+        if !name.trim().is_empty() {
+            return name.trim().into();
+        }
+        if let Some(username) = u["usernames"]["active_usernames"][0]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .or_else(|| u["usernames"]["editable_username"].as_str().filter(|s| !s.is_empty()))
+        {
+            return format!("@{username}");
+        }
     }
-    u.get("id").map(Value::to_string).unwrap_or_default()
+    UNKNOWN_USER_LABEL.into()
 }
 
-fn content(c: &Value) -> (&'static str, String) {
+pub(super) fn user_name(u: &Value) -> String {
+    display_user_name((!u.is_null()).then_some(u))
+}
+
+pub(super) fn is_verified(v: &Value) -> bool {
+    truth(&v["is_verified"]) || truth(&v["verification_status"]["is_verified"])
+}
+
+pub(super) fn effective_muted(ns: &Value, scope_mute_for: Option<i64>) -> bool {
+    if truth(&ns["use_default_mute_for"]) {
+        if let Some(default_mute) = scope_mute_for {
+            return default_mute > 0;
+        }
+    }
+    ns["mute_for"].as_i64().unwrap_or(0) > 0
+}
+
+pub(super) fn user_status_info(status: &Value) -> (bool, String, i64) {
+    let ty = text(&status["@type"]);
+    let name = ty.strip_prefix("userStatus").unwrap_or(ty).to_lowercase();
+    let online = name == "online";
+    let was_online = status["was_online"].as_i64().unwrap_or(0).max(0);
+    (online, name, was_online)
+}
+
+pub(super) fn format_call_duration(seconds: i64) -> String {
+    let sec = seconds.max(0);
+    if sec == 0 {
+        return String::new();
+    }
+    if sec < 60 {
+        return format!("{sec} giây");
+    }
+    if sec < 3600 {
+        let m = sec / 60;
+        let s = sec % 60;
+        return if s == 0 { format!("{m} phút") } else { format!("{m} phút {s} giây") };
+    }
+    let h = sec / 3600;
+    let m = (sec % 3600) / 60;
+    if m == 0 { format!("{h} giờ") } else { format!("{h} giờ {m} phút") }
+}
+
+pub(super) fn format_auto_delete_vi(seconds: i64) -> String {
+    let sec = seconds.max(0);
+    if sec == 0 {
+        return "Tắt".into();
+    }
+    if sec == 86_400 {
+        return "1 ngày".into();
+    }
+    if sec == 604_800 {
+        return "1 tuần".into();
+    }
+    if sec == 2_678_400 {
+        return "1 tháng".into();
+    }
+    let d = sec / 86_400;
+    let h = (sec % 86_400) / 3600;
+    let m = (sec % 3600) / 60;
+    let s = sec % 60;
+    let mut parts = Vec::new();
+    if d > 0 { parts.push(format!("{d} ngày")); }
+    if h > 0 { parts.push(format!("{h} giờ")); }
+    if d == 0 && m > 0 { parts.push(format!("{m} phút")); }
+    if d == 0 && h == 0 && s > 0 { parts.push(format!("{s} giây")); }
+    if parts.is_empty() { format!("{sec} giây") } else { parts.join(" ") }
+}
+
+fn call_info(c: &Value, outgoing: bool) -> (Value, String) {
+    let is_video = truth(&c["is_video"]);
+    let duration = c["duration"].as_i64().unwrap_or(0).max(0);
+    let reason = match text(&c["discard_reason"]["@type"]) {
+        "callDiscardReasonMissed" => "missed",
+        "callDiscardReasonDeclined" => "declined",
+        "callDiscardReasonDisconnected" => "disconnected",
+        "callDiscardReasonHungUp" => "hung_up",
+        "callDiscardReasonEmpty" | "" => "empty",
+        _ => "other",
+    };
+    let prefix = if is_video { "Cuộc gọi video" } else { "Cuộc gọi" };
+    let (status, missed, label) = if reason == "missed" && !outgoing {
+        ("missed", true, format!("{prefix} nhỡ"))
+    } else if reason == "declined" {
+        ("declined", false, format!("{prefix} bị từ chối"))
+    } else if outgoing {
+        ("outgoing", false, format!("{prefix} đi"))
+    } else {
+        ("incoming", false, format!("{prefix} đến"))
+    };
+    let duration_text = format_call_duration(duration);
+    let summary = if duration_text.is_empty() {
+        label.clone()
+    } else {
+        format!("{label} ({duration_text})")
+    };
+    let meta = json!({
+        "is_video": is_video,
+        "outgoing": outgoing,
+        "duration": duration,
+        "reason": reason,
+        "status": status,
+        "missed": missed,
+        "label": label,
+        "duration_text": duration_text,
+    });
+    (meta, summary)
+}
+
+fn content_thumb_file(c: &Value) -> Option<i64> {
+    let ty = text(&c["@type"]);
+    if ty == "messagePhoto" {
+        return array(&c["photo"]["sizes"])
+            .iter()
+            .filter_map(|s| s["photo"]["id"].as_i64().filter(|&id| id > 0).map(|id| (s["width"].as_i64().unwrap_or(i64::MAX), id)))
+            .min_by_key(|(w, _)| *w)
+            .map(|(_, id)| id);
+    }
+    let obj = match ty {
+        "messageVideo" => &c["video"],
+        "messageAnimation" => &c["animation"],
+        "messageVideoNote" => &c["video_note"],
+        "messageDocument" => &c["document"],
+        "messageSticker" => &c["sticker"],
+        _ => return None,
+    };
+    let thumb = &obj["thumbnail"];
+    if matches!(
+        text(&thumb["format"]["@type"]),
+        "thumbnailFormatMpeg4" | "thumbnailFormatTgs" | "thumbnailFormatWebm"
+    ) {
+        return None;
+    }
+    thumb["file"]["id"].as_i64().filter(|&id| id > 0)
+}
+
+pub(super) struct MessageContext<'a> {
+    pub sender: &'a str,
+    pub chat_title: &'a str,
+    pub is_private: bool,
+    pub resolve_user: Option<&'a dyn Fn(i64) -> Option<String>>,
+}
+
+impl<'a> MessageContext<'a> {
+    pub(super) fn plain(sender: &'a str) -> Self {
+        Self { sender, chat_title: "", is_private: false, resolve_user: None }
+    }
+
+    fn user_label(&self, uid: i64) -> String {
+        if uid != 0 {
+            if let Some(resolver) = self.resolve_user {
+                if let Some(name) = resolver(uid) {
+                    if !name.trim().is_empty() {
+                        return name;
+                    }
+                }
+            }
+        }
+        UNKNOWN_USER_LABEL.into()
+    }
+
+    fn actor(&self, msg: &Value) -> String {
+        if truth(&msg["is_outgoing"]) {
+            return "Bạn".into();
+        }
+        if !self.sender.trim().is_empty() {
+            return self.sender.trim().into();
+        }
+        let sender = &msg["sender_id"];
+        if text(&sender["@type"]) == "messageSenderUser" {
+            if let Some(uid) = sender["user_id"].as_i64().filter(|&id| id != 0) {
+                if let Some(resolver) = self.resolve_user {
+                    if let Some(name) = resolver(uid) {
+                        if !name.trim().is_empty() {
+                            return name;
+                        }
+                    }
+                }
+            }
+        }
+        if self.is_private && !self.chat_title.trim().is_empty() {
+            return self.chat_title.trim().into();
+        }
+        UNKNOWN_USER_LABEL.into()
+    }
+}
+
+fn content_with_ctx(m: &Value, ctx: &MessageContext<'_>) -> (&'static str, String, Option<Value>) {
+    let c = &m["content"];
+    let outgoing = truth(&m["is_outgoing"]);
     let cap = text(&c["caption"]["text"]).trim();
     let caption = |label: &str| if cap.is_empty() { label.into() } else { format!("{label}: {cap}") };
-    let (kind, summary) = match text(&c["@type"]) {
-        "messageText" => ("text", text(&c["text"]["text"]).into()),
-        "messagePhoto" => ("photo", caption("🖼 Ảnh")),
-        "messageVideo" => ("video", caption("🎬 Video")),
-        "messageAnimation" => ("animation", "GIF".into()),
-        "messageVoiceNote" => ("voice", "🎤 Tin nhắn thoại".into()),
-        "messageVideoNote" => ("video_note", "⏺ Video tròn".into()),
-        "messageAudio" => ("audio", format!("🎵 {}", nonempty(&c["audio"]["title"], "Âm thanh"))),
-        "messageDocument" => ("document", format!("📎 {}", nonempty(&c["document"]["file_name"], "Tệp"))),
-        "messageSticker" => ("sticker", format!("{} Nhãn dán", text(&c["sticker"]["emoji"]))),
-        "messageCall" => ("call", "📞 Cuộc gọi".into()),
-        "messagePoll" => ("poll", "📊 Bình chọn".into()),
-        "messageLocation" => ("location", "📍 Vị trí".into()),
-        "messageContact" => ("contact", "👤 Danh bạ".into()),
-        "" => ("other", String::new()),
-        t => ("other", format!("[{}]", t.replacen("message", "", 1).to_lowercase())),
+    let sender_uid = (text(&m["sender_id"]["@type"]) == "messageSenderUser")
+        .then(|| m["sender_id"]["user_id"].as_i64())
+        .flatten();
+    let (kind, summary, call_meta) = match text(&c["@type"]) {
+        "messageText" => ("text", text(&c["text"]["text"]).into(), None),
+        "messagePhoto" => ("photo", caption("🖼 Ảnh"), None),
+        "messageVideo" => ("video", caption("🎬 Video"), None),
+        "messageAnimation" => ("animation", caption("GIF"), None),
+        "messageVoiceNote" => ("voice", caption("🎤 Tin nhắn thoại"), None),
+        "messageVideoNote" => ("video_note", caption("⏺ Video tròn"), None),
+        "messageAudio" => ("audio", caption(&format!("🎵 {}", nonempty(&c["audio"]["title"], "Âm thanh"))), None),
+        "messageDocument" => ("document", caption(&format!("📎 {}", nonempty(&c["document"]["file_name"], "Tệp"))), None),
+        "messageSticker" => ("sticker", format!("{} Nhãn dán", text(&c["sticker"]["emoji"])), None),
+        "messageCall" => {
+            let (meta, text_summary) = call_info(c, outgoing);
+            ("call", text_summary, Some(meta))
+        }
+        "messagePoll" => ("poll", "📊 Bình chọn".into(), None),
+        "messageLocation" => ("location", "📍 Vị trí".into(), None),
+        "messageContact" => ("contact", "👤 Danh bạ".into(), None),
+        "messageChatSetMessageAutoDeleteTime" => {
+            let sec = c["message_auto_delete_time"].as_i64().unwrap_or(0).max(0);
+            let from_uid = c["from_user_id"].as_i64().unwrap_or(0);
+            let who = if outgoing {
+                "Bạn".to_string()
+            } else if from_uid != 0 {
+                ctx.resolve_user
+                    .and_then(|r| r(from_uid))
+                    .filter(|s| !s.trim().is_empty())
+                    .unwrap_or_else(|| ctx.actor(m))
+            } else {
+                ctx.actor(m)
+            };
+            let msg = if sec == 0 {
+                format!("{who} đã tắt hẹn giờ tự hủy tin nhắn")
+            } else if from_uid != 0 {
+                format!("{who} đã đặt hẹn giờ tự hủy cho mọi cuộc trò chuyện sau {}", format_auto_delete_vi(sec))
+            } else {
+                format!("{who} đã đặt hẹn giờ tự hủy tin nhắn sau {}", format_auto_delete_vi(sec))
+            };
+            ("service", msg, None)
+        }
+        "messageContactRegistered" => ("service", format!("{} đã tham gia Telegram", ctx.actor(m)), None),
+        "messageChatJoinByLink" | "messageChatJoinByRequest" => ("service", format!("{} đã tham gia nhóm", ctx.actor(m)), None),
+        "messageChatAddMembers" => {
+            let member_ids: Vec<i64> = array(&c["member_user_ids"]).iter().filter_map(Value::as_i64).collect();
+            let actor = ctx.actor(m);
+            let msg = if member_ids.len() == 1 && sender_uid == Some(member_ids[0]) {
+                format!("{actor} đã tham gia nhóm")
+            } else if member_ids.is_empty() {
+                format!("{actor} đã thêm thành viên")
+            } else {
+                let names: Vec<String> = member_ids.into_iter().map(|uid| ctx.user_label(uid)).collect();
+                format!("{actor} đã thêm {}", names.join(", "))
+            };
+            ("service", msg, None)
+        }
+        "messageChatDeleteMember" => {
+            let target_uid = c["user_id"].as_i64().unwrap_or(0);
+            let actor = ctx.actor(m);
+            let msg = if target_uid == 0 || sender_uid == Some(target_uid) {
+                format!("{actor} đã rời nhóm")
+            } else {
+                format!("{actor} đã xóa {} khỏi nhóm", ctx.user_label(target_uid))
+            };
+            ("service", msg, None)
+        }
+        "messageChatChangeTitle" => {
+            let t = text(&c["title"]).trim();
+            let actor = ctx.actor(m);
+            let msg = if t.is_empty() {
+                format!("{actor} đã đổi tên nhóm")
+            } else {
+                format!("{actor} đã đổi tên nhóm thành «{t}»")
+            };
+            ("service", msg, None)
+        }
+        "messageChatChangePhoto" => ("service", format!("{} đã đổi ảnh nhóm", ctx.actor(m)), None),
+        "messageChatDeletePhoto" => ("service", format!("{} đã xóa ảnh nhóm", ctx.actor(m)), None),
+        "messagePinMessage" => ("service", format!("{} đã ghim một tin nhắn", ctx.actor(m)), None),
+        "messageBasicGroupChatCreate" | "messageSupergroupChatCreate" => ("service", format!("{} đã tạo nhóm", ctx.actor(m)), None),
+        "messageChatUpgradeTo" | "messageChatUpgradeFrom" => ("service", "Nhóm đã được nâng cấp lên siêu nhóm".into(), None),
+        "messageVideoChatStarted" => ("service", format!("{} đã bắt đầu cuộc trò chuyện video", ctx.actor(m)), None),
+        "messageVideoChatEnded" => ("service", "Cuộc trò chuyện video đã kết thúc".into(), None),
+        "messageScreenshotTaken" => ("service", format!("{} đã chụp ảnh màn hình", ctx.actor(m)), None),
+        "" => ("other", String::new(), None),
+        t => ("other", format!("[{}]", t.replacen("message", "", 1).to_lowercase()), None),
     };
-    (kind, summary.trim().into())
+    (kind, summary.trim().into(), call_meta)
 }
 
 fn nonempty<'a>(v: &'a Value, default: &'a str) -> &'a str {
@@ -76,10 +346,10 @@ fn message_entity(e: &Value) -> Option<Value> {
     Some(entity)
 }
 
-pub(super) fn message(m: &Value, sender: &str) -> Value {
+pub(super) fn message_with_ctx(m: &Value, ctx: &MessageContext<'_>) -> Value {
     let c = &m["content"];
-    let (kind, summary) = content(c);
-    let formatted = &c[if kind == "text" {"text"} else {"caption"}];
+    let (kind, summary, call_meta) = content_with_ctx(m, ctx);
+    let formatted = &c[if kind == "text" { "text" } else { "caption" }];
     let entities: Vec<_> = array(&formatted["entities"]).iter().filter_map(message_entity).take(100).collect();
     let reactions: Vec<_> = array(&m["interaction_info"]["reactions"]["reactions"]).iter().map(|r| json!({
         "emoji":nonempty(&r["type"]["emoji"],"?"),"count":field(r,"total_count",json!(0)),"mine":truth(&r["is_chosen"])
@@ -106,13 +376,33 @@ pub(super) fn message(m: &Value, sender: &str) -> Value {
                 f
             })
     } else { None };
-    json!({"id":m["id"],"chat_id":m["chat_id"],"date":field(m,"date",json!(0)),"edit_date":field(m,"edit_date",json!(0)),
-        "outgoing":truth(&m["is_outgoing"]),"sender":sender,"kind":kind,
+    let mut out = json!({"id":m["id"],"chat_id":m["chat_id"],"date":field(m,"date",json!(0)),"edit_date":field(m,"edit_date",json!(0)),
+        "outgoing":truth(&m["is_outgoing"]),"sender":ctx.sender,"kind":kind,
         "text":text(&formatted["text"]),"entities":entities,"summary":summary,
-        "reply_to":m["reply_to"]["message_id"].as_i64().unwrap_or(0),"reactions":reactions,"file":file})
+        "reply_to":m["reply_to"]["message_id"].as_i64().unwrap_or(0),"reactions":reactions,"file":file});
+    if let Some(call) = call_meta {
+        out["call"] = call;
+    }
+    out
 }
 
-pub(super) fn summarize(chat: &Value) -> Value {
+pub(super) fn message(m: &Value, sender: &str) -> Value {
+    message_with_ctx(m, &MessageContext::plain(sender))
+}
+
+#[derive(Default)]
+pub(super) struct SummarizeContext<'a> {
+    pub last_sender: &'a str,
+    pub scope_mute_for: Option<i64>,
+    pub verified: bool,
+    pub online: bool,
+    pub status: &'a str,
+    pub was_online: i64,
+    pub member_count: i64,
+    pub resolve_user: Option<&'a dyn Fn(i64) -> Option<String>>,
+}
+
+pub(super) fn summarize_with_ctx(chat: &Value, ctx: &SummarizeContext<'_>) -> Value {
     let ct = &chat["type"];
     let kind = match text(&ct["@type"]) {
         "chatTypePrivate" => "private",
@@ -121,15 +411,82 @@ pub(super) fn summarize(chat: &Value) -> Value {
         "chatTypeSupergroup" | "chatTypeBasicGroup" => "group",
         _ => "other",
     };
+    let title = text(&chat["title"]);
+    let is_private = matches!(kind, "private" | "secret");
+    let positions = array(&chat["positions"]);
+    let pinned = positions.iter().any(|p| truth(&p["is_pinned"]));
+    let archived = positions.iter().any(|p| p["list"]["@type"] == "chatListArchive");
+    let last_read_outbox = chat["last_read_outbox_message_id"].as_i64().unwrap_or(0).max(0);
     let lm = &chat["last_message"];
     let last = if truth(lm) {
-        let (kind, summary) = content(&lm["content"]);
-        json!({"date":field(lm,"date",json!(0)),"outgoing":truth(&lm["is_outgoing"]),"kind":kind,
-            "text":summary.chars().take(120).collect::<String>()})
-    } else { Value::Null };
-    json!({"id":chat["id"],"title":field(chat,"title",json!("")),"kind":kind,"unread":field(chat,"unread_count",json!(0)),
-        "unread_mentions":field(chat,"unread_mention_count",json!(0)),"pinned":truth(&chat["positions"][0]["is_pinned"]),
-        "muted":chat["notification_settings"]["mute_for"].as_i64().unwrap_or(0)>0,
-        "auto_delete_seconds":chat["message_auto_delete_time"].as_i64().unwrap_or(0).max(0),
-        "last":last,"avatar_file":chat["photo"]["small"]["id"],"user_id":ct["user_id"]})
+        let msg_ctx = MessageContext {
+            sender: ctx.last_sender,
+            chat_title: title,
+            is_private,
+            resolve_user: ctx.resolve_user,
+        };
+        let (msg_kind, summary, call_meta) = content_with_ctx(lm, &msg_ctx);
+        let outgoing = truth(&lm["is_outgoing"]);
+        let lm_id = lm["id"].as_i64().unwrap_or(0);
+        let read = outgoing && lm_id > 0 && last_read_outbox >= lm_id;
+        let thumb_file = content_thumb_file(&lm["content"]);
+        let cap = text(&lm["content"]["caption"]["text"]).trim();
+        let last_sender = if (kind == "group" || kind == "channel")
+            && !outgoing
+            && msg_kind != "service"
+            && msg_kind != "call"
+            && !ctx.last_sender.is_empty()
+            && ctx.last_sender != title
+        {
+            ctx.last_sender
+        } else {
+            ""
+        };
+        let mut obj = json!({
+            "id": lm_id,
+            "date": field(lm, "date", json!(0)),
+            "outgoing": outgoing,
+            "kind": msg_kind,
+            "text": summary.chars().take(120).collect::<String>(),
+            "sender": last_sender,
+            "read": read,
+            "thumb_file": thumb_file,
+        });
+        if !cap.is_empty() && msg_kind != "text" {
+            obj["caption"] = json!(cap.chars().take(120).collect::<String>());
+        }
+        if let Some(call) = call_meta {
+            obj["call"] = call;
+        }
+        obj
+    } else {
+        Value::Null
+    };
+    json!({
+        "id": chat["id"],
+        "title": field(chat, "title", json!("")),
+        "kind": kind,
+        "unread": field(chat, "unread_count", json!(0)),
+        "unread_mentions": field(chat, "unread_mention_count", json!(0)),
+        "pinned": pinned,
+        "archived": archived,
+        "marked_unread": truth(&chat["is_marked_as_unread"]),
+        "muted": effective_muted(&chat["notification_settings"], ctx.scope_mute_for),
+        "verified": ctx.verified || is_verified(chat),
+        "online": ctx.online,
+        "status": ctx.status,
+        "was_online": ctx.was_online,
+        "member_count": ctx.member_count,
+        "auto_delete_seconds": chat["message_auto_delete_time"].as_i64().unwrap_or(0).max(0),
+        "last_read_outbox_message_id": last_read_outbox,
+        "last": last,
+        "avatar_file": chat["photo"]["small"]["id"],
+        "user_id": ct["user_id"],
+    })
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
+pub(super) fn summarize(chat: &Value) -> Value {
+    summarize_with_ctx(chat, &SummarizeContext::default())
 }

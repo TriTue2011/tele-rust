@@ -16,7 +16,9 @@ use serde_json::{json, Value};
 use crate::contract::{Binary, BoxFut, ChatControl, GwError, TdLink};
 use crate::events::EventSink;
 use feed::State;
-use shape::{message, summarize, user_name};
+#[cfg(test)]
+use shape::message;
+use shape::{summarize_with_ctx, user_name};
 
 type Reply = Result<Value, GwError>;
 
@@ -191,7 +193,55 @@ impl ChatService {
         let mut chats = Vec::new();
         for id in array(ids) {
             if let Ok(chat) = self.request(json!({"@type":"getChat","chat_id":id})).await {
-                let mut item = summarize(&chat);
+                self.state.remember_chat(&chat);
+                let ct = &chat["type"];
+                let scope = match text(&ct["@type"]) {
+                    "chatTypePrivate" | "chatTypeSecret" => "private",
+                    "chatTypeSupergroup" if truth(&ct["is_channel"]) => "channel",
+                    _ => "group",
+                };
+                let scope_mute_for = self.state.scope_mute_for(scope);
+                let cached_user = ct["user_id"].as_i64().filter(|&uid| uid != 0).and_then(|uid| self.state.user(uid));
+                let cached_sg = ct["supergroup_id"].as_i64().filter(|&sid| sid != 0).and_then(|sid| self.state.supergroup(sid));
+                let cached_bg = ct["basic_group_id"].as_i64().filter(|&bid| bid != 0).and_then(|bid| self.state.basic_group(bid));
+                let (online, status, was_online) = cached_user
+                    .as_ref()
+                    .map(|u| shape::user_status_info(&u["status"]))
+                    .unwrap_or_default();
+                let verified = cached_user.as_ref().is_some_and(shape::is_verified)
+                    || cached_sg.as_ref().is_some_and(shape::is_verified);
+                let member_count = cached_sg
+                    .as_ref()
+                    .and_then(|sg| sg["member_count"].as_i64())
+                    .or_else(|| cached_bg.as_ref().and_then(|bg| bg["member_count"].as_i64()))
+                    .unwrap_or(0)
+                    .max(0);
+                let lm_sender = &chat["last_message"]["sender_id"];
+                let last_sender = match text(&lm_sender["@type"]) {
+                    "messageSenderUser" => lm_sender["user_id"]
+                        .as_i64()
+                        .and_then(|uid| self.state.user(uid))
+                        .map(|u| user_name(&u))
+                        .unwrap_or_default(),
+                    "messageSenderChat" => lm_sender["chat_id"]
+                        .as_i64()
+                        .and_then(|cid| self.state.chat_meta(cid))
+                        .map(|c| c.title)
+                        .unwrap_or_default(),
+                    _ => String::new(),
+                };
+                let resolver = |uid: i64| self.state.user(uid).map(|u| user_name(&u));
+                let ctx = shape::SummarizeContext {
+                    last_sender: &last_sender,
+                    scope_mute_for,
+                    verified,
+                    online,
+                    status: &status,
+                    was_online,
+                    member_count,
+                    resolve_user: Some(&resolver),
+                };
+                let mut item = summarize_with_ctx(&chat, &ctx);
                 if let Some(chat_id) = chat["id"].as_i64().or_else(|| id.as_i64()).filter(|cid| *cid != 0) {
                     let sec = self.state.sync_chat_auto_delete(chat_id, chat["message_auto_delete_time"].as_i64().unwrap_or(0));
                     item["auto_delete_seconds"] = json!(sec);
@@ -210,6 +260,67 @@ impl ChatService {
         Ok(self.chat_list(&ids["chat_ids"]).await)
     }
 
+    async fn format_messages(&self, chat: i64, got: Vec<Value>) -> Vec<Value> {
+        let chat_meta = self.state.chat_meta(chat);
+        let mut out = Vec::with_capacity(got.len());
+        for m in got {
+            let sender = &m["sender_id"];
+            let name = match text(&sender["@type"]) {
+                "messageSenderUser" => match sender["user_id"].as_i64() {
+                    Some(id) => self.user(id).await.map(|u| user_name(&u)).unwrap_or_default(),
+                    None => String::new(),
+                },
+                "messageSenderChat" => match sender["chat_id"].as_i64() {
+                    Some(cid) => {
+                        if let Some(meta) = self.state.chat_meta(cid) {
+                            meta.title
+                        } else {
+                            self.request(json!({"@type":"getChat","chat_id":cid})).await
+                                .map(|c| {
+                                    self.state.remember_chat(&c);
+                                    text(&c["title"]).to_owned()
+                                })
+                                .unwrap_or_default()
+                        }
+                    }
+                    None => String::new(),
+                },
+                _ => String::new(),
+            };
+            let content = &m["content"];
+            match text(&content["@type"]) {
+                "messageChatAddMembers" => {
+                    for uid in array(&content["member_user_ids"]).iter().filter_map(Value::as_i64) {
+                        if uid > 0 {
+                            let _ = self.user(uid).await;
+                        }
+                    }
+                }
+                "messageChatDeleteMember" => {
+                    if let Some(uid) = content["user_id"].as_i64().filter(|&uid| uid > 0) {
+                        let _ = self.user(uid).await;
+                    }
+                }
+                "messageChatSetMessageAutoDeleteTime" => {
+                    if let Some(uid) = content["from_user_id"].as_i64().filter(|&uid| uid > 0) {
+                        let _ = self.user(uid).await;
+                    }
+                }
+                _ => {}
+            }
+            let resolver = |uid: i64| self.state.user(uid).map(|u| user_name(&u));
+            let ctx = shape::MessageContext {
+                sender: &name,
+                chat_title: chat_meta.as_ref().map_or("", |c| c.title.as_str()),
+                is_private: chat_meta.as_ref().is_some_and(|c| c.is_private),
+                resolve_user: Some(&resolver),
+            };
+            out.push(shape::message_with_ctx(&m, &ctx));
+        }
+        out.sort_by_key(|m| m["id"].as_i64());
+        out
+    }
+
     async fn history(&self, chat: i64, mut before: i64, limit: usize) -> Reply {
         let mut got = Vec::new();
         for _ in 0..3 {
@@ -221,22 +332,28 @@ impl ChatService {
             got.extend_from_slice(messages);
             if got.len() >= limit { break; }
         }
-        let mut out = Vec::new();
-        for m in got {
-            let sender = &m["sender_id"];
-            let name = match text(&sender["@type"]) {
-                "messageSenderUser" => match sender["user_id"].as_i64() {
-                    Some(id) => self.user(id).await.map(|u| user_name(&u)).unwrap_or_default(),
-                    None => String::new(),
-                },
-                "messageSenderChat" => self.request(json!({"@type":"getChat","chat_id":sender["chat_id"]})).await
-                    .map(|c| text(&c["title"]).to_owned()).unwrap_or_default(),
-                _ => String::new(),
-            };
-            out.push(message(&m, &name));
-        }
-        out.sort_by_key(|m| m["id"].as_i64());
+        let out = self.format_messages(chat, got).await;
         Ok(json!({"messages":out}))
+    }
+
+    async fn search_chat_messages(&self, chat: i64, query: &str, before: i64, limit: usize) -> Reply {
+        let q = query.trim();
+        if q.chars().count() > 128 {
+            return Err(GwError::bad_request("Từ khoá tìm kiếm tin nhắn tối đa 128 ký tự."));
+        }
+        let result = self.request(json!({
+            "@type": "searchChatMessages",
+            "chat_id": chat,
+            "query": q,
+            "from_message_id": before,
+            "offset": 0,
+            "limit": limit,
+            "filter": Value::Null,
+        })).await?;
+        let got = array(&result["messages"]).to_vec();
+        let out = self.format_messages(chat, got).await;
+        let total_count = result["total_count"].as_i64().unwrap_or(out.len() as i64).max(out.len() as i64);
+        Ok(json!({"messages": out, "total_count": total_count}))
     }
 
     async fn contacts(&self) -> Reply {
@@ -273,13 +390,23 @@ impl ChatService {
             ("GET", ["", "api", "profile"]) => self.profile().await,
             ("POST", ["", "api", "profile"]) => self.update_profile(&body).await,
             ("GET", ["", "api", "chats"]) => self.chats(q.int("limit", 60)?.clamp(1, 200)).await,
-            ("GET", ["", "api", "chats", id, "messages"]) => self.history(
-                path_id(id)?, q.int("before", 0)?, q.int("limit", 30)?.clamp(1, 100) as usize).await,
+            ("GET", ["", "api", "chats", id, "messages"]) => {
+                let chat_id = path_id(id)?;
+                let before = q.int("before", 0)?;
+                let limit = q.int("limit", 30)?.clamp(1, 100) as usize;
+                let term = q.get("q").unwrap_or_default();
+                if term.trim().is_empty() {
+                    self.history(chat_id, before, limit).await
+                } else {
+                    self.search_chat_messages(chat_id, &term, before, limit).await
+                }
+            }
             ("GET", ["", "api", "chats", id, "info"]) => self.chat_info(path_id(id)?).await,
             ("GET", ["", "api", "chats", id, "members"]) => self.chat_members(
                 path_id(id)?, &q.get("q").unwrap_or_default(), q.int("limit", 50)?).await,
             ("POST", ["", "api", "chats", id, "settings"]) => self.update_chat_settings(path_id(id)?, &body).await,
             ("POST", ["", "api", "chats", id, "clear_history"]) => self.clear_chat_history(path_id(id)?, &body).await,
+            ("POST", ["", "api", "chats", id, "delete"]) => self.delete_chat(path_id(id)?, &body).await,
             ("POST", ["", "api", "chats", id, "leave"]) => self.leave_chat(path_id(id)?, &body).await,
             ("GET", ["", "api", "contacts"]) => self.contacts().await,
             ("POST", ["", "api", "contacts", "open"]) => self.open_private(int(&body["user_id"], "user_id")?).await,

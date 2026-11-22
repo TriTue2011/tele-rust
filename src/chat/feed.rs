@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 use tokio::{sync::{broadcast, Notify}, time::{timeout_at, Instant}};
 
 use crate::events::{mask_peer_id, EventSink};
-use super::{array, field, shape::{message, user_name}, text, truth};
+use super::{array, field, shape::{message_with_ctx, user_name, MessageContext}, text, truth};
 
 #[derive(Default)]
 pub(super) struct State {
@@ -18,12 +18,42 @@ struct AutoDeleteEntry {
     last_chat_value: Option<i64>,
 }
 
+#[derive(Clone)]
+pub(super) struct ChatMeta {
+    pub title: String,
+    pub is_private: bool,
+}
+
+fn lru_put<V>(map: &mut HashMap<i64, V>, order: &mut VecDeque<i64>, id: i64, value: V) {
+    if id == 0 { return; }
+    map.insert(id, value);
+    order.retain(|old| *old != id);
+    order.push_back(id);
+    if order.len() > 2000 {
+        if let Some(evicted) = order.pop_front() {
+            map.remove(&evicted);
+        }
+    }
+}
+
+fn lru_touch(order: &mut VecDeque<i64>, id: i64) {
+    order.retain(|old| *old != id);
+    order.push_back(id);
+}
+
 #[derive(Default)]
 struct Inner {
     items: VecDeque<Value>,
     cursor: i64,
     users: HashMap<i64, Value>,
     user_order: VecDeque<i64>,
+    supergroups: HashMap<i64, Value>,
+    supergroup_order: VecDeque<i64>,
+    basic_groups: HashMap<i64, Value>,
+    basic_group_order: VecDeque<i64>,
+    chats: HashMap<i64, ChatMeta>,
+    chat_order: VecDeque<i64>,
+    scope_mute_for: HashMap<&'static str, i64>,
     auto_delete: HashMap<i64, AutoDeleteEntry>,
     auto_delete_order: VecDeque<i64>,
     sent: VecDeque<(i64, i64)>,
@@ -32,22 +62,39 @@ struct Inner {
 impl Inner {
     fn remember_user(&mut self, user: &Value) {
         if let Some(id) = user["id"].as_i64().filter(|id| *id != 0) {
-            self.users.insert(id, user.clone());
-            self.touch_user(id);
-            if self.user_order.len() > 2000 {
-                self.users.remove(&self.user_order.pop_front().unwrap());
-            }
+            lru_put(&mut self.users, &mut self.user_order, id, user.clone());
         }
     }
 
-    fn touch_user(&mut self, id: i64) {
-        self.user_order.retain(|old| *old != id);
-        self.user_order.push_back(id);
+    fn update_user_status(&mut self, user_id: i64, status: &Value) {
+        if user_id == 0 { return; }
+        if let Some(user) = self.users.get_mut(&user_id) {
+            user["status"] = status.clone();
+            lru_touch(&mut self.user_order, user_id);
+        }
+    }
+
+    fn remember_supergroup(&mut self, sg: &Value) {
+        if let Some(id) = sg["id"].as_i64().filter(|id| *id != 0) {
+            lru_put(&mut self.supergroups, &mut self.supergroup_order, id, sg.clone());
+        }
+    }
+
+    fn remember_basic_group(&mut self, bg: &Value) {
+        if let Some(id) = bg["id"].as_i64().filter(|id| *id != 0) {
+            lru_put(&mut self.basic_groups, &mut self.basic_group_order, id, bg.clone());
+        }
+    }
+
+    fn remember_chat(&mut self, chat: &Value) {
+        let Some(id) = chat["id"].as_i64().filter(|id| *id != 0) else { return; };
+        let is_private = matches!(text(&chat["type"]["@type"]), "chatTypePrivate" | "chatTypeSecret");
+        let title = text(&chat["title"]).to_owned();
+        lru_put(&mut self.chats, &mut self.chat_order, id, ChatMeta { title, is_private });
     }
 
     fn touch_auto_delete(&mut self, chat_id: i64) {
-        self.auto_delete_order.retain(|old| *old != chat_id);
-        self.auto_delete_order.push_back(chat_id);
+        lru_touch(&mut self.auto_delete_order, chat_id);
         if self.auto_delete_order.len() > 2000 {
             if let Some(evicted) = self.auto_delete_order.pop_front() {
                 self.auto_delete.remove(&evicted);
@@ -90,11 +137,29 @@ impl Inner {
     }
 
     fn normalize(&self, m: &Value) -> Value {
-        let sender = &m["sender_id"];
-        let name = if sender["@type"] == "messageSenderUser" {
-            sender["user_id"].as_i64().and_then(|id| self.users.get(&id)).map(user_name).unwrap_or_default()
-        } else { String::new() };
-        message(m, &name)
+        let sender_obj = &m["sender_id"];
+        let sender = match text(&sender_obj["@type"]) {
+            "messageSenderUser" => sender_obj["user_id"]
+                .as_i64()
+                .and_then(|id| self.users.get(&id))
+                .map(user_name)
+                .unwrap_or_default(),
+            "messageSenderChat" => sender_obj["chat_id"]
+                .as_i64()
+                .and_then(|id| self.chats.get(&id))
+                .map(|c| c.title.clone())
+                .unwrap_or_default(),
+            _ => String::new(),
+        };
+        let chat_meta = m["chat_id"].as_i64().and_then(|id| self.chats.get(&id));
+        let resolver = |uid: i64| self.users.get(&uid).map(user_name);
+        let ctx = MessageContext {
+            sender: &sender,
+            chat_title: chat_meta.map_or("", |c| c.title.as_str()),
+            is_private: chat_meta.is_some_and(|c| c.is_private),
+            resolve_user: Some(&resolver),
+        };
+        message_with_ctx(m, &ctx)
     }
 }
 
@@ -114,6 +179,9 @@ impl State {
     }
 
     pub(super) fn remember_user(&self, user: &Value) { self.inner.lock().unwrap().remember_user(user); }
+    pub(super) fn remember_supergroup(&self, sg: &Value) { self.inner.lock().unwrap().remember_supergroup(sg); }
+    pub(super) fn remember_basic_group(&self, bg: &Value) { self.inner.lock().unwrap().remember_basic_group(bg); }
+    pub(super) fn remember_chat(&self, chat: &Value) { self.inner.lock().unwrap().remember_chat(chat); }
 
     pub(super) fn set_auto_delete(&self, chat_id: i64, seconds: i64) {
         self.inner.lock().unwrap().set_auto_delete(chat_id, seconds);
@@ -126,8 +194,33 @@ impl State {
     pub(super) fn user(&self, id: i64) -> Option<Value> {
         let mut s = self.inner.lock().unwrap();
         let user = s.users.get(&id)?.clone();
-        s.touch_user(id);
+        lru_touch(&mut s.user_order, id);
         Some(user)
+    }
+
+    pub(super) fn supergroup(&self, id: i64) -> Option<Value> {
+        let mut s = self.inner.lock().unwrap();
+        let sg = s.supergroups.get(&id)?.clone();
+        lru_touch(&mut s.supergroup_order, id);
+        Some(sg)
+    }
+
+    pub(super) fn basic_group(&self, id: i64) -> Option<Value> {
+        let mut s = self.inner.lock().unwrap();
+        let bg = s.basic_groups.get(&id)?.clone();
+        lru_touch(&mut s.basic_group_order, id);
+        Some(bg)
+    }
+
+    pub(super) fn chat_meta(&self, id: i64) -> Option<ChatMeta> {
+        let mut s = self.inner.lock().unwrap();
+        let meta = s.chats.get(&id)?.clone();
+        lru_touch(&mut s.chat_order, id);
+        Some(meta)
+    }
+
+    pub(super) fn scope_mute_for(&self, scope: &str) -> Option<i64> {
+        self.inner.lock().unwrap().scope_mute_for.get(scope).copied()
     }
 
     pub(super) async fn final_id(&self, id: i64, wait: Duration) -> i64 {
@@ -179,14 +272,20 @@ impl State {
             "updateMessageContent" | "updateMessageEdited" => json!({"type":"message_changed","chat_id":u["chat_id"],"message_id":u["message_id"]}),
             "updateDeleteMessages" if truth(&u["is_permanent"]) => json!({"type":"deleted","chat_id":u["chat_id"],"ids":array(&u["message_ids"])}),
             "updateChatLastMessage" | "updateChatReadInbox" | "updateChatTitle" | "updateChatPhoto" | "updateChatPosition"
-            | "updateChatNotificationSettings" | "updateChatUnreadMentionCount" => {
+            | "updateChatNotificationSettings" | "updateChatUnreadMentionCount" | "updateChatIsMarkedAsUnread" => {
                 let id = if truth(&u["chat_id"]) { &u["chat_id"] } else { &u["chat"]["id"] };
                 if !truth(id) { return; }
                 json!({"type":"chat","chat_id":id})
             }
+            "updateChatReadOutbox" => {
+                let Some(chat_id) = u["chat_id"].as_i64().filter(|id| *id != 0) else { return; };
+                let last_id = u["last_read_outbox_message_id"].as_i64().unwrap_or(0).max(0);
+                json!({"type":"chat_read_outbox","chat_id":chat_id,"last_read_outbox_message_id":last_id})
+            }
             "updateNewChat" => {
                 let id = &u["chat"]["id"];
                 if !truth(id) { return; }
+                s.remember_chat(&u["chat"]);
                 if let (Some(chat_id), Some(sec)) = (id.as_i64(), u["chat"]["message_auto_delete_time"].as_i64()) {
                     s.sync_chat_auto_delete(chat_id, sec);
                 }
@@ -198,7 +297,26 @@ impl State {
                 s.set_auto_delete(chat_id, seconds);
                 json!({"type":"chat_auto_delete","chat_id":chat_id,"seconds":seconds})
             }
+            "updateScopeNotificationSettings" => {
+                let scope = match text(&u["scope"]["@type"]) {
+                    "notificationSettingsScopePrivateChats" => "private",
+                    "notificationSettingsScopeGroupChats" => "group",
+                    "notificationSettingsScopeChannelChats" => "channel",
+                    _ => return,
+                };
+                let mute_for = u["notification_settings"]["mute_for"].as_i64().unwrap_or(0).max(0);
+                s.scope_mute_for.insert(scope, mute_for);
+                json!({"type":"scope_notification","scope":scope,"mute_for":mute_for})
+            }
             "updateUser" => { s.remember_user(&u["user"]); return; }
+            "updateUserStatus" => {
+                if let Some(uid) = u["user_id"].as_i64().filter(|id| *id != 0) {
+                    s.update_user_status(uid, &u["status"]);
+                }
+                return;
+            }
+            "updateSupergroup" => { s.remember_supergroup(&u["supergroup"]); return; }
+            "updateBasicGroup" => { s.remember_basic_group(&u["basic_group"]); return; }
             "updateChatAction" => json!({"type":"typing","chat_id":u["chat_id"],"action":text(&u["action"]["@type"])}),
             _ => return,
         };
@@ -355,5 +473,38 @@ mod tests {
         assert_eq!(s.sync_chat_auto_delete(105, 172800), 172800);
         s.set_auto_delete(99, 0);
         assert_eq!(s.sync_chat_auto_delete(99, 0), 0);
+    }
+
+    #[tokio::test]
+    async fn feed_updates_scope_notifications_user_status_supergroups_and_read_outbox() {
+        let s = State::default();
+        s.update(&json!({"@type":"updateUser","user":{"id":7,"first_name":"Đại","last_name":"ca","status":{"@type":"userStatusOffline","was_online":100}}}));
+        s.update(&json!({"@type":"updateUserStatus","user_id":7,"status":{"@type":"userStatusOnline"}}));
+        assert_eq!(s.user(7).unwrap()["status"]["@type"], "userStatusOnline");
+
+        s.update(&json!({"@type":"updateSupergroup","supergroup":{"id":55,"member_count":1200,"is_verified":true}}));
+        assert_eq!(s.supergroup(55).unwrap()["member_count"], 1200);
+        s.update(&json!({"@type":"updateBasicGroup","basic_group":{"id":22,"member_count":8}}));
+        assert_eq!(s.basic_group(22).unwrap()["member_count"], 8);
+
+        s.update(&json!({"@type":"updateNewChat","chat":{"id":42,"title":"Đại ca","type":{"@type":"chatTypePrivate","user_id":7}}}));
+        assert_eq!(s.chat_meta(42).unwrap().title, "Đại ca");
+        assert!(s.chat_meta(42).unwrap().is_private);
+
+        s.update(&json!({"@type":"updateScopeNotificationSettings","scope":{"@type":"notificationSettingsScopePrivateChats"},"notification_settings":{"mute_for":2147483647}}));
+        assert_eq!(s.scope_mute_for("private"), Some(2147483647));
+
+        s.update(&json!({"@type":"updateChatReadOutbox","chat_id":42,"last_read_outbox_message_id":999}));
+        s.update(&json!({"@type":"updateNewMessage","message":{"id":100,"chat_id":42,"is_outgoing":false,"content":{"@type":"messageContactRegistered"}}}));
+
+        let feed = s.since(0, Duration::ZERO).await;
+        assert_eq!(feed["items"][0]["type"], "chat");
+        assert_eq!(feed["items"][1]["type"], "scope_notification");
+        assert_eq!(feed["items"][1]["scope"], "private");
+        assert_eq!(feed["items"][2]["type"], "chat_read_outbox");
+        assert_eq!(feed["items"][2]["chat_id"], 42);
+        assert_eq!(feed["items"][2]["last_read_outbox_message_id"], 999);
+        assert_eq!(feed["items"][3]["message"]["kind"], "service");
+        assert_eq!(feed["items"][3]["message"]["summary"], "Đại ca đã tham gia Telegram");
     }
 }

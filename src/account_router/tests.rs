@@ -1339,3 +1339,96 @@ async fn auto_delete_sync_emits_feed_updates_chats_enforces_auth_csrf_confirm_an
     drop(hub);
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[tokio::test]
+async fn delete_chat_and_message_search_enforce_auth_csrf_confirm_404_and_account_isolation() {
+    let dir = std::env::temp_dir().join(format!("tggw-delete-search-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (api, factory) = crate::td::fake::Fake::factory();
+    let cfg = LoginConfig { data_dir: dir.clone(), api_id: 12345, api_hash: "fake-api-hash".into(), phone: String::new() };
+    let hub = Accounts::with_factory(cfg, "fake".into(), 3399, factory).await.unwrap();
+    let ui_auth = Arc::new(crate::ui_auth::UiAuth::open(&dir, "test-token", None, None, false).unwrap());
+    let router = crate::rest::router_accounts_with_ui_auth(hub.clone(), crate::rest::RestConfig {
+        token: "test-token".into(), rate_limit_per_minute: 1000, version: "test".into(),
+    }, ui_auth);
+
+    let first = "+84900000001";
+    let second = "+84900000002";
+    for phone in [first, second] {
+        let login = send(&router, "POST", "/ui/api/accounts", json!({"phone":phone}), true).await.1;
+        let id = login["login_id"].as_str().unwrap();
+        assert_eq!(send(&router, "POST", &format!("/ui/api/accounts/{id}/code"), json!({"code":"22222"}), true).await.0, 200);
+    }
+
+    let setup_resp = router.clone().oneshot(
+        Request::builder().method("POST").uri("/ui/api/auth/setup")
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .body(Body::from(json!({"token":"test-token","ten":"nguoi-thu","mat_khau":"mat-khau-thu-dai"}).to_string())).unwrap(),
+    ).await.unwrap();
+    assert_eq!(setup_resp.status(), 200);
+    let cookie = setup_resp.headers()[axum::http::header::SET_COOKIE].to_str().unwrap().split(';').next().unwrap().to_owned();
+
+    let send_cookie = |method: &'static str, path: &'static str, body: Value, extra: Vec<(&'static str, &'static str)>| {
+        let router = router.clone();
+        let cookie = cookie.clone();
+        async move {
+            let mut req = Request::builder().method(method).uri(path).header(axum::http::header::COOKIE, cookie);
+            for (k, v) in extra { req = req.header(k, v); }
+            let resp = router.oneshot(req.body(Body::from(serde_json::to_vec(&body).unwrap())).unwrap()).await.unwrap();
+            let status = resp.status().as_u16();
+            let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+            (status, serde_json::from_slice::<Value>(&bytes).unwrap_or(Value::Null))
+        }
+    };
+
+    // 1. Không xác thực -> 401; cookie POST thiếu CSRF / sai Origin -> 403; thiếu confirm / đa tài khoản thiếu account -> 400.
+    api.sent.lock().unwrap().clear();
+    assert_eq!(send(&router, "GET", "/api/chats/42/messages?q=hi&account=%2B84900000001", Value::Null, false).await.0, 401);
+    assert_eq!(send(&router, "POST", "/api/chats/42/delete?account=%2B84900000001", json!({"confirm":true}), false).await.0, 401);
+    assert_eq!(send_cookie("POST", "/api/chats/42/delete?account=%2B84900000001", json!({"confirm":true}), vec![]).await.0, 403);
+    assert_eq!(send_cookie("POST", "/api/chats/42/delete?account=%2B84900000001", json!({"confirm":true}), vec![("Host", "gateway.example"), ("Origin", "https://evil.example")]).await.0, 403);
+    assert_eq!(send(&router, "POST", "/api/chats/42/delete?account=%2B84900000001", json!({}), true).await.0, 400);
+    assert_eq!(send(&router, "POST", "/api/chats/42/delete", json!({"confirm":true}), true).await.0, 400);
+    assert_eq!(send(&router, "POST", "/api/chats/42/delete?account=unknown", json!({"confirm":true}), true).await.0, 404);
+    assert!(api.sent.lock().unwrap().is_empty());
+
+    // 2. Chat không tồn tại -> 404.
+    api.strict_chats.store(true, Ordering::Relaxed);
+    assert_eq!(send(&router, "POST", "/api/chats/9999/delete?account=%2B84900000001", json!({"confirm":true}), true).await.0, 404);
+
+    // 3. Hợp lệ trên tài khoản 1 -> cô lập khỏi tài khoản 2.
+    api.chats.lock().unwrap().insert(42, json!({
+        "@type": "chat", "id": 42, "title": "Đại ca", "type": {"@type": "chatTypePrivate", "user_id": 77}
+    }));
+    api.search_messages.lock().unwrap().insert(42, json!({
+        "@type": "foundChatMessages",
+        "total_count": 1,
+        "messages": [{"id": 500, "chat_id": 42, "date": 1700000000, "is_outgoing": false, "content": {"@type": "messageText", "text": {"text": "hello"}}}]
+    }));
+    api.sent.lock().unwrap().clear();
+
+    let (st_search, found) = send_cookie("GET", "/api/chats/42/messages?q=hello&account=%2B84900000001", Value::Null, vec![]).await;
+    assert_eq!(st_search, 200);
+    assert_eq!(found["total_count"], 1);
+    assert_eq!(found["messages"][0]["text"], "hello");
+
+    let (st_del, del_res) = send_cookie(
+        "POST",
+        "/api/chats/42/delete?account=%2B84900000001",
+        json!({"confirm":true,"revoke":true}),
+        vec![("X-Requested-With", "fetch")],
+    ).await;
+    assert_eq!(st_del, 200);
+    assert_eq!(del_res, json!({"ok":true,"chat_id":42,"deleted":true}));
+
+    let sent = api.sent.lock().unwrap().clone();
+    assert!(sent.iter().any(|(id, req)| *id == 1 && req["@type"] == "searchChatMessages" && req["chat_id"] == 42));
+    assert!(sent.iter().any(|(id, req)| *id == 1 && req["@type"] == "deleteChatHistory" && req["chat_id"] == 42 && req["remove_from_chat_list"] == true && req["revoke"] == true));
+    assert!(!sent.iter().any(|(id, _)| *id == 2));
+
+    hub.shutdown().await;
+    drop(router);
+    drop(hub);
+    std::fs::remove_dir_all(dir).unwrap();
+}

@@ -226,6 +226,7 @@ fn parse_settings_plan(body: &Value) -> Result<SettingsPlan, GwError> {
 impl ChatService {
     pub(super) async fn chat_info(&self, chat_id: i64) -> Reply {
         let ch = self.request(json!({"@type": "getChat", "chat_id": chat_id})).await?;
+        self.state.remember_chat(&ch);
         let ct = &ch["type"];
         let kind = chat_kind(&ch);
         let positions = array(&ch["positions"]);
@@ -251,6 +252,7 @@ impl ChatService {
             "pinned": pinned,
             "archived": archived,
             "auto_delete_seconds": auto_delete_seconds,
+            "last_read_outbox_message_id": ch["last_read_outbox_message_id"].as_i64().unwrap_or(0).max(0),
             "has_protected_content": truth(&ch["has_protected_content"]),
             "avatar_file": ch["photo"]["small"]["id"],
             "notification": notification,
@@ -282,7 +284,7 @@ impl ChatService {
                     .or_else(|| u["usernames"]["editable_username"].as_str())
                     .unwrap_or_default();
                 let bio = f["bio"]["text"].as_str().unwrap_or_default();
-                let status = text(&u["status"]["@type"]).replace("userStatus", "").to_lowercase();
+                let (online, status, was_online) = super::shape::user_status_info(&u["status"]);
                 let is_blocked = ch["block_list"]["@type"] == "blockListMain"
                     || f["block_list"]["@type"] == "blockListMain";
                 out["user_id"] = json!(uid);
@@ -292,6 +294,9 @@ impl ChatService {
                 out["bio"] = json!(bio);
                 out["phone_masked"] = json!(mask_phone(text(&u["phone_number"])));
                 out["status"] = json!(status);
+                out["online"] = json!(online);
+                out["was_online"] = json!(was_online);
+                out["verified"] = json!(super::shape::is_verified(u));
                 out["is_contact"] = json!(truth(&u["is_contact"]));
                 out["is_blocked"] = json!(is_blocked);
                 out["is_bot"] = json!(u["type"]["@type"] == "userTypeBot");
@@ -315,6 +320,9 @@ impl ChatService {
                     None
                 };
                 let bg_val = bg.as_ref().unwrap_or(&Value::Null);
+                if !bg_val.is_null() {
+                    self.state.remember_basic_group(bg_val);
+                }
                 let full_val = full.as_ref().unwrap_or(&Value::Null);
                 let (my_role, is_admin, my_permissions) = member_role_and_perms(&bg_val["status"], &ch["permissions"]);
                 let member_count = bg_val["member_count"]
@@ -344,6 +352,9 @@ impl ChatService {
                     None
                 };
                 let sg_val = sg.as_ref().unwrap_or(&Value::Null);
+                if !sg_val.is_null() {
+                    self.state.remember_supergroup(sg_val);
+                }
                 let full_val = full.as_ref().unwrap_or(&Value::Null);
                 let username = sg_val["usernames"]["active_usernames"][0]
                     .as_str()
@@ -361,6 +372,7 @@ impl ChatService {
                     .unwrap_or(is_admin || kind == "group");
                 out["username"] = json!(username);
                 out["member_count"] = json!(member_count);
+                out["verified"] = json!(super::shape::is_verified(sg_val));
                 out["bio"] = json!(text(&full_val["description"]));
                 out["my_role"] = json!(my_role);
                 out["is_admin"] = json!(is_admin);
@@ -482,6 +494,36 @@ impl ChatService {
         Ok(json!({"ok": true, "chat_id": chat_id, "deleted": true}))
     }
 
+    pub(super) async fn delete_chat(&self, chat_id: i64, body: &Value) -> Reply {
+        let Some(map) = body.as_object() else {
+            return Err(GwError::bad_request("Thân POST phải là JSON object."));
+        };
+        let allowed = ["confirm", "revoke"];
+        if let Some(bad) = map.keys().find(|k| !allowed.contains(&k.as_str())) {
+            return Err(GwError::bad_request(format!("Trường delete không hợp lệ: {bad}")));
+        }
+        if map.get("confirm").and_then(Value::as_bool) != Some(true) {
+            return Err(GwError::bad_request("Xoá hội thoại cần confirm=true."));
+        }
+        let revoke = map.get("revoke").map(|v| parse_bool(v, "revoke")).transpose()?.unwrap_or(false);
+        let ch = self.request(json!({"@type": "getChat", "chat_id": chat_id})).await?;
+        let is_group = matches!(
+            text(&ch["type"]["@type"]),
+            "chatTypeSupergroup" | "chatTypeBasicGroup"
+        );
+        if is_group {
+            self.request(json!({"@type": "leaveChat", "chat_id": chat_id})).await?;
+        } else {
+            self.request(json!({
+                "@type": "deleteChatHistory",
+                "chat_id": chat_id,
+                "remove_from_chat_list": true,
+                "revoke": revoke,
+            })).await?;
+        }
+        Ok(json!({"ok": true, "chat_id": chat_id, "deleted": true}))
+    }
+
     pub(super) async fn leave_chat(&self, chat_id: i64, body: &Value) -> Reply {
         let Some(map) = body.as_object() else {
             return Err(GwError::bad_request("Thân POST phải là JSON object."));
@@ -500,7 +542,7 @@ impl ChatService {
         let user = self.user(uid).await.ok();
         let u = user.as_ref().unwrap_or(&Value::Null);
         let (role, _) = member_role(status);
-        let name = if u.is_null() { uid.to_string() } else { user_name(u) };
+        let name = user_name(u);
         let username = u["usernames"]["active_usernames"][0]
             .as_str()
             .or_else(|| u["usernames"]["editable_username"].as_str())

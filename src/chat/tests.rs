@@ -73,7 +73,10 @@ async fn chats_and_search_summarize_and_skip_missing_chats() {
         ok(json!({"@type":"getChat","chat_id":5}),td_chat),
     ]);
     let expected = json!({"chats":[{"id":5,"title":"Nhóm","kind":"channel","unread":2,"unread_mentions":1,"pinned":true,
-        "muted":true,"auto_delete_seconds":0,"last":{"date":0,"outgoing":false,"kind":"text","text":"Chào"},"avatar_file":10,"user_id":null}]});
+        "archived":false,"marked_unread":false,"muted":true,"verified":false,"online":false,"status":"","was_online":0,
+        "member_count":0,"auto_delete_seconds":0,"last_read_outbox_message_id":0,
+        "last":{"id":3,"date":0,"outgoing":false,"kind":"text","text":"Chào","sender":"","read":false,"thumb_file":null},
+        "avatar_file":10,"user_id":null}]});
     assert_eq!(get(&chat,"/api/chats","limit=999").await.unwrap(),expected);
     assert_eq!(get(&chat,"/api/search","q=+nh%C3%B3m+a+").await.unwrap(),expected);
     assert_eq!(get(&chat,"/api/search","q=+").await.unwrap(),json!({"chats":[]}));
@@ -421,4 +424,164 @@ async fn invalid_profile_updates_fail_without_calling_tdlib() {
         let err = post(&chat, "/api/profile", "", bad.clone()).await.unwrap_err();
         assert_eq!((err.status, err.code.as_str()), (400, "BAD_REQUEST"), "{bad}");
     }
+}
+
+#[test]
+fn message_call_table_formats_direction_video_reason_duration_and_missed_flag() {
+    let cases = [
+        (false, true, "callDiscardReasonHungUp", 18, "Cuộc gọi video đến (18 giây)", "Cuộc gọi video đến", false, "incoming", "18 giây"),
+        (true, false, "callDiscardReasonHungUp", 125, "Cuộc gọi đi (2 phút 5 giây)", "Cuộc gọi đi", false, "outgoing", "2 phút 5 giây"),
+        (false, false, "callDiscardReasonMissed", 0, "Cuộc gọi nhỡ", "Cuộc gọi nhỡ", true, "missed", ""),
+        (false, true, "callDiscardReasonMissed", 0, "Cuộc gọi video nhỡ", "Cuộc gọi video nhỡ", true, "missed", ""),
+        (false, false, "callDiscardReasonDeclined", 0, "Cuộc gọi bị từ chối", "Cuộc gọi bị từ chối", false, "declined", ""),
+        (true, true, "callDiscardReasonDeclined", 0, "Cuộc gọi video bị từ chối", "Cuộc gọi video bị từ chối", false, "declined", ""),
+        (false, false, "callDiscardReasonDisconnected", 3665, "Cuộc gọi đến (1 giờ 1 phút)", "Cuộc gọi đến", false, "incoming", "1 giờ 1 phút"),
+        (true, false, "callDiscardReasonEmpty", 0, "Cuộc gọi đi", "Cuộc gọi đi", false, "outgoing", ""),
+    ];
+    for (outgoing, is_video, discard_ty, duration, want_summary, want_label, want_missed, want_status, want_dur) in cases {
+        let msg = json!({
+            "id": 10,
+            "chat_id": 42,
+            "date": 1700000000,
+            "is_outgoing": outgoing,
+            "content": {
+                "@type": "messageCall",
+                "is_video": is_video,
+                "duration": duration,
+                "discard_reason": {"@type": discard_ty}
+            }
+        });
+        let out = message(&msg, "Đại ca");
+        assert_eq!(out["kind"], "call");
+        assert_eq!(out["summary"], want_summary);
+        assert_eq!(out["call"]["is_video"], is_video);
+        assert_eq!(out["call"]["outgoing"], outgoing);
+        assert_eq!(out["call"]["duration"], duration);
+        assert_eq!(out["call"]["missed"], want_missed);
+        assert_eq!(out["call"]["status"], want_status);
+        assert_eq!(out["call"]["label"], want_label);
+        assert_eq!(out["call"]["duration_text"], want_dur);
+    }
+}
+
+#[tokio::test]
+async fn system_messages_use_real_names_never_numeric_ids_and_handle_missing_users() {
+    assert_eq!(user_name(&json!({"id": 987654321})), "Người dùng");
+    let u_binh = json!({"id": 7, "first_name": "Bình", "last_name": "Lê"});
+    let u_ngoc = json!({"id": 88, "first_name": "Anh Tuan Chị Ngọc"});
+    let u_daica = json!({"id": 77, "first_name": "Đại ca"});
+    let msgs = vec![
+        json!({"id": 1, "chat_id": -5, "date": 100, "is_outgoing": true, "sender_id": {"@type": "messageSenderUser", "user_id": 7},
+            "content": {"@type": "messageChatSetMessageAutoDeleteTime", "message_auto_delete_time": 86400, "from_user_id": 7}}),
+        json!({"id": 2, "chat_id": -5, "date": 101, "is_outgoing": false, "sender_id": {"@type": "messageSenderUser", "user_id": 77},
+            "content": {"@type": "messageChatSetMessageAutoDeleteTime", "message_auto_delete_time": 604800, "from_user_id": 77}}),
+        json!({"id": 3, "chat_id": -5, "date": 102, "is_outgoing": true, "sender_id": {"@type": "messageSenderUser", "user_id": 7},
+            "content": {"@type": "messageChatSetMessageAutoDeleteTime", "message_auto_delete_time": 0, "from_user_id": 7}}),
+        json!({"id": 4, "chat_id": -5, "date": 103, "is_outgoing": false, "sender_id": {"@type": "messageSenderUser", "user_id": 88},
+            "content": {"@type": "messageContactRegistered"}}),
+        json!({"id": 5, "chat_id": -5, "date": 104, "is_outgoing": false, "sender_id": {"@type": "messageSenderUser", "user_id": 7},
+            "content": {"@type": "messageChatAddMembers", "member_user_ids": [7]}}),
+        json!({"id": 6, "chat_id": -5, "date": 105, "is_outgoing": false, "sender_id": {"@type": "messageSenderUser", "user_id": 7},
+            "content": {"@type": "messageChatAddMembers", "member_user_ids": [88, 999999]}}),
+        json!({"id": 7, "chat_id": -5, "date": 106, "is_outgoing": false, "sender_id": {"@type": "messageSenderUser", "user_id": 7},
+            "content": {"@type": "messageChatDeleteMember", "user_id": 7}}),
+    ];
+    let (chat, _) = setup(vec![
+        ok(json!({"@type":"getChatHistory","chat_id":-5,"from_message_id":0,"offset":0,"limit":10,"only_local":false}), json!({"messages": msgs})),
+        ok(json!({"@type":"getChatHistory","chat_id":-5,"from_message_id":7,"offset":0,"limit":3,"only_local":false}), json!({"messages": []})),
+        ok(json!({"@type":"getUser","user_id":7}), u_binh),
+        ok(json!({"@type":"getUser","user_id":77}), u_daica),
+        ok(json!({"@type":"getUser","user_id":88}), u_ngoc),
+        err(json!({"@type":"getUser","user_id":999999}), 404, "User not found"),
+    ]);
+    let res = get(&chat, "/api/chats/-5/messages", "limit=10").await.unwrap();
+    let list = res["messages"].as_array().unwrap();
+    assert_eq!(list[0]["kind"], "service");
+    assert_eq!(list[0]["summary"], "Bạn đã đặt hẹn giờ tự hủy cho mọi cuộc trò chuyện sau 1 ngày");
+    assert_eq!(list[1]["summary"], "Đại ca đã đặt hẹn giờ tự hủy cho mọi cuộc trò chuyện sau 1 tuần");
+    assert_eq!(list[2]["summary"], "Bạn đã tắt hẹn giờ tự hủy tin nhắn");
+    assert_eq!(list[3]["summary"], "Anh Tuan Chị Ngọc đã tham gia Telegram");
+    assert_eq!(list[4]["summary"], "Bình Lê đã tham gia nhóm");
+    assert_eq!(list[5]["summary"], "Bình Lê đã thêm Anh Tuan Chị Ngọc, Người dùng");
+    assert!(!list[5]["summary"].as_str().unwrap().contains("999999"));
+    assert_eq!(list[6]["summary"], "Bình Lê đã rời nhóm");
+}
+
+#[tokio::test]
+async fn chat_list_computes_effective_mute_from_scope_default_verified_online_read_ticks_and_thumbnails() {
+    let list = json!({"@type":"chatListMain"});
+    let c1 = json!({
+        "id": 42, "title": "Telegram", "type": {"@type": "chatTypePrivate", "user_id": 777},
+        "positions": [], "unread_count": 0, "last_read_outbox_message_id": 500,
+        "notification_settings": {"@type":"chatNotificationSettings","use_default_mute_for":true,"mute_for":0},
+        "last_message": {"id": 500, "date": 100, "is_outgoing": true, "content": {"@type":"messageText","text":{"text":"Ok"}}}
+    });
+    let c2 = json!({
+        "id": 43, "title": "Bạn thân", "type": {"@type": "chatTypePrivate", "user_id": 778},
+        "positions": [], "unread_count": 2,
+        "notification_settings": {"@type":"chatNotificationSettings","use_default_mute_for":false,"mute_for":0},
+        "last_message": {"id": 501, "date": 101, "is_outgoing": false, "content": {"@type":"messageCall","is_video":true,"duration":18,"discard_reason":{"@type":"callDiscardReasonHungUp"}}}
+    });
+    let c3 = json!({
+        "id": -1001, "title": "星驰公益", "type": {"@type": "chatTypeSupergroup", "supergroup_id": 1001, "is_channel": false},
+        "positions": [{"list":{"@type":"chatListMain"},"is_pinned":true}], "unread_count": 14682, "unread_mention_count": 3,
+        "notification_settings": {"@type":"chatNotificationSettings","use_default_mute_for":false,"mute_for":2147483647},
+        "last_message": {"id": 600, "date": 102, "is_outgoing": false, "sender_id": {"@type":"messageSenderUser","user_id": 88},
+            "content": {"@type":"messageAnimation","caption":{"text":"Phượt đêm, chỉ 1 giây mất l…"},"animation":{"thumbnail":{"file":{"id":777}}}}}
+    });
+    let (chat, td) = setup(vec![
+        ok(json!({"@type":"loadChats","chat_list":list,"limit":60}), json!({"@type":"ok"})),
+        ok(json!({"@type":"getChats","chat_list":list,"limit":60}), json!({"chat_ids":[42, 43, -1001]})),
+        ok(json!({"@type":"getChat","chat_id":42}), c1),
+        ok(json!({"@type":"getChat","chat_id":43}), c2),
+        ok(json!({"@type":"getChat","chat_id":-1001}), c3),
+    ]);
+    td.updates.send(json!({"@type":"updateUser","user":{"id":777,"first_name":"Telegram","is_verified":true,"status":{"@type":"userStatusOnline"}}})).unwrap();
+    td.updates.send(json!({"@type":"updateUser","user":{"id":88,"first_name":"星驰管家"}})).unwrap();
+    td.updates.send(json!({"@type":"updateSupergroup","supergroup":{"id":1001,"member_count":2500,"is_verified":false}})).unwrap();
+    td.updates.send(json!({"@type":"updateScopeNotificationSettings","scope":{"@type":"notificationSettingsScopePrivateChats"},"notification_settings":{"mute_for":2147483647}})).unwrap();
+    let _ = get(&chat, "/api/feed", "since=0&wait=1").await.unwrap();
+
+    let res = get(&chat, "/api/chats", "").await.unwrap();
+    let arr = res["chats"].as_array().unwrap();
+    assert_eq!(arr[0]["muted"], true);
+    assert_eq!(arr[0]["verified"], true);
+    assert_eq!(arr[0]["online"], true);
+    assert_eq!(arr[0]["last"]["read"], true);
+
+    assert_eq!(arr[1]["muted"], false);
+    assert_eq!(arr[1]["last"]["kind"], "call");
+    assert_eq!(arr[1]["last"]["text"], "Cuộc gọi video đến (18 giây)");
+    assert_eq!(arr[1]["last"]["call"]["missed"], false);
+
+    assert_eq!(arr[2]["unread"], 14682);
+    assert_eq!(arr[2]["unread_mentions"], 3);
+    assert_eq!(arr[2]["member_count"], 2500);
+    assert_eq!(arr[2]["last"]["sender"], "星驰管家");
+    assert_eq!(arr[2]["last"]["thumb_file"], 777);
+    assert_eq!(arr[2]["last"]["caption"], "Phượt đêm, chỉ 1 giây mất l…");
+}
+
+#[tokio::test]
+async fn chat_history_supports_in_chat_search_and_validates_query() {
+    let long_q = "a".repeat(129);
+    let (chat, _) = setup(vec![
+        ok(json!({
+            "@type": "searchChatMessages",
+            "chat_id": 5,
+            "query": "xin chào",
+            "from_message_id": 0,
+            "offset": 0,
+            "limit": 20,
+            "filter": Value::Null
+        }), json!({"total_count": 1, "messages": [td_message(99)]})),
+        ok(json!({"@type":"getUser","user_id":7}), json!({"id":7,"first_name":"An"})),
+    ]);
+
+    let err = get(&chat, "/api/chats/5/messages", &format!("q={long_q}")).await.unwrap_err();
+    assert_eq!((err.status, err.code.as_str()), (400, "BAD_REQUEST"));
+
+    let found = get(&chat, "/api/chats/5/messages", "q=+xin+ch%C3%A0o+&limit=20").await.unwrap();
+    assert_eq!(found["total_count"], 1);
+    assert_eq!(found["messages"], json!([normalized(99, "An")]));
 }

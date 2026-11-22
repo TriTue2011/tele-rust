@@ -534,7 +534,7 @@ fn is_chat_info_route(path: &str) -> bool {
     let mut parts = path.split('/');
     matches!(
         (parts.next(), parts.next(), parts.next(), parts.next(), parts.next(), parts.next()),
-        (Some(""), Some("api"), Some("chats"), Some(_), Some("info" | "settings" | "clear_history" | "leave" | "members"), None)
+        (Some(""), Some("api"), Some("chats"), Some(_), Some("info" | "settings" | "clear_history" | "delete" | "leave" | "members"), None)
     )
 }
 
