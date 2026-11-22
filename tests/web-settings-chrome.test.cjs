@@ -174,7 +174,7 @@ test('TC-CAIDAT: khung cài đặt 390/700 px, giao diện, hồ sơ, định d�
   // 3. Hồ sơ: che số điện thoại, chống XSS, xác nhận trước khi lưu.
   await evaluate('document.querySelector(\'#settings-dialog [data-section="profile"]\').click()');
   await until('document.getElementById("profile-phone-masked").textContent === "+849•••••000"');
-  assert.equal(await evaluate('document.getElementById("settings-dialog").querySelector("em") === null'), true);
+  assert.equal(await evaluate('document.getElementById("settings-panel-profile").querySelector("em") === null'), true);
   await evaluate(`{
     document.getElementById('profile-first-name').value = 'Minh';
     document.getElementById('profile-bio').value = 'Tiểu sử mới';
