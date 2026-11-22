@@ -14,7 +14,7 @@ pub(crate) struct Fake {
     pub profiles:Mutex<HashMap<i32,Value>>,
     pub storage_stats:Mutex<Value>,
     pub storage_chats:Mutex<HashMap<i64, Value>>,
-    pub optimize_reply:Mutex<Option<Box<dyn Fn(&Value)->Value+Send+Sync>>>,
+    pub optimize_reply:Mutex<Option<Box<dyn Fn(&Value)->Value+std::marker::Send+std::marker::Sync>>>,
     pub optimize_delay:Mutex<Option<Duration>>,
 }
 impl Fake {
