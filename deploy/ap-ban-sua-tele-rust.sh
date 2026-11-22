@@ -26,7 +26,7 @@ PY
 cp "$NEWBIN" "$BASE/tggw.new" && chmod 755 "$BASE/tggw.new" && mv -f "$BASE/tggw.new" "$BASE/tggw"
 # 3. Dừng + đổi tên container cũ (không xoá), chạy bản mới trong ảnh có ffmpeg.
 docker stop "$RS" >/dev/null; docker update --restart no "$RS" >/dev/null
-docker rename "$RS" "$RS-cu-$(date +%Y%m%d-%H%M%S)"
+CU="$RS-cu-$(date +%Y%m%d-%H%M%S)"; docker rename "$RS" "$CU"
 TDLIB=$(ls "$BASE"/tdjson.libs/libtdjson-*.so* | head -1 | sed "s#$BASE#/opt/rs#")
 docker run -d --name "$RS" --network host --restart no --entrypoint /opt/rs/tggw \
   --health-cmd "python -c \"import urllib.request; urllib.request.urlopen('http://$HOST:$PORT/health', timeout=4)\"" \
@@ -48,9 +48,11 @@ PY
   then OK=1; break; fi
 done
 if [ "$OK" != "1" ]; then
-  echo "KHÔNG ĐẠT: bản mới không online sau 90 giây — QUAY LẠI Python"
+  echo "KHÔNG ĐẠT: bản mới không online sau 90 giây — QUAY LẠI bản Rust cũ ($CU)"
   docker stop "$RS" >/dev/null 2>&1 || true
-  docker start "$PY" >/dev/null; docker update --restart unless-stopped "$PY" >/dev/null; echo "đã khởi động lại $PY"; exit 4
+  docker rename "$RS" "$RS-loi-$(date +%Y%m%d-%H%M%S)"
+  docker rename "$CU" "$RS"
+  docker start "$RS" >/dev/null; docker update --restart unless-stopped "$RS" >/dev/null; echo "đã khởi động lại bản Rust cũ ($RS)"; exit 4
 fi
 # 5. Kiểm môi trường chạy có đủ công cụ ngoài, rồi chốt khởi động cùng máy.
 docker exec "$RS" sh -c 'which ffmpeg ffprobe edge-tts' | sed 's/^/công cụ trong ảnh chạy: /'
