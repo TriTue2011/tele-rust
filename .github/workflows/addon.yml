@@ -1,0 +1,78 @@
+name: Add-on
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'addon/**'
+      - 'repository.yaml'
+      - 'Cargo.toml'
+      - 'Dockerfile'
+      - 'docker/entrypoint.sh'
+      - 'README.md'
+      - 'LICENSE'
+      - 'NOTICE.md'
+      - 'docs/**'
+      - 'src/config.rs'
+      - 'src/rest.rs'
+      - 'tests/contract/kiem_addon_ci.py'
+      - 'tests/readme-matches-code.test.cjs'
+      - '.github/workflows/**'
+  pull_request:
+    paths:
+      - 'addon/**'
+      - 'repository.yaml'
+      - 'Cargo.toml'
+      - 'Dockerfile'
+      - 'docker/entrypoint.sh'
+      - 'README.md'
+      - 'LICENSE'
+      - 'NOTICE.md'
+      - 'docs/**'
+      - 'src/config.rs'
+      - 'src/rest.rs'
+      - 'tests/contract/kiem_addon_ci.py'
+      - 'tests/readme-matches-code.test.cjs'
+      - '.github/workflows/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Kiểm cấu trúc Add-on, YAML và tài liệu
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Cài yamllint và PyYAML
+        run: python3 -m pip install --no-cache-dir yamllint pyyaml
+
+      - name: Kiểm cú pháp YAML bằng yamllint
+        run: >
+          yamllint -d "{extends: relaxed, rules: {line-length: {max: 160},
+          truthy: {allowed-values: ['true', 'false', 'on']}}}"
+          repository.yaml addon/tele-rs/config.yaml .github/workflows/
+
+      - name: Kiểm cấu trúc add-on, khớp Cargo.toml, Dockerfile và tài liệu
+        run: python3 tests/contract/kiem_addon_ci.py
+
+      - name: Kiểm README khớp biến môi trường và route REST trong mã nguồn
+        run: node --test tests/readme-matches-code.test.cjs
+
+      - name: Kiểm cú pháp entrypoint Docker
+        run: bash -n docker/entrypoint.sh
