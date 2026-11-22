@@ -3,6 +3,7 @@ const { spawn } = require('node:child_process');
 const { mkdtempSync, readFileSync, rmSync } = require('node:fs');
 const { once } = require('node:events');
 const { test } = require('node:test');
+const { openHttpOrigin } = require('./chrome-origin.cjs');
 
 const html = readFileSync(`${__dirname}/../web/app.html`, 'utf8');
 
@@ -185,14 +186,14 @@ test('TC-MACOS-LIST-CALLS: danh sách hội thoại, tiêu đề khung chat, tin
     };
   `;
 
-  const profile = mkdtempSync(`${__dirname}/.macos-browser-`);
+  const profile = mkdtempSync(`${require('node:os').tmpdir()}/tele-macos-browser-`);
   const browser = spawn(process.env.CHROME_BIN || 'google-chrome', [
     '--headless', '--no-sandbox', '--disable-gpu', '--no-first-run', '--disable-extensions',
     '--no-proxy-server', '--remote-debugging-port=0', `--user-data-dir=${profile}`, 'about:blank',
   ]);
   t.after(async () => {
     if (browser.exitCode === null && browser.signalCode === null) { browser.kill(); await once(browser, 'exit'); }
-    rmSync(profile, { recursive: true, force: true });
+    try { rmSync(profile, { recursive: true, force: true, maxRetries: 20, retryDelay: 150 }); } catch { /* dọn thư mục tạm không được làm hỏng kết quả test: Chrome còn ghi sau khi thoát; hồ sơ nằm ở thư mục tạm của hệ điều hành */ }
   });
 
   let debugOutput = '';
@@ -206,7 +207,8 @@ test('TC-MACOS-LIST-CALLS: danh sách hội thoại, tiêu đề khung chat, tin
     });
   });
 
-  const [page] = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
+  const page = (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()).find((target) => target.type === 'page'); // KHÔNG lấy mục đầu: Chrome bản mới liệt kê trang nền của tiện ích trước
+  assert.ok(page, 'không thấy mục tiêu type=page');
   const ws = new WebSocket(page.webSocketDebuggerUrl);
   await once(ws, 'open');
   t.after(() => ws.close());
@@ -246,7 +248,7 @@ test('TC-MACOS-LIST-CALLS: danh sách hội thoại, tiêu đề khung chat, tin
   await dimension(1440);
   const { frameTree } = await cdp('Page.getFrameTree');
   const script = /<script>([\s\S]*?)<\/script>/.exec(html);
-  await cdp('Page.setDocumentContent', { frameId: frameTree.frame.id, html: html.replace(script[0], '') });
+  await openHttpOrigin(cdp, ws, html.replace(script[0], ''));
   await evaluate(mock + script[1]);
   await until('document.querySelectorAll("#list .chat").length === 6');
   await until('Boolean(document.querySelector("#list .p-thumb img"))');
