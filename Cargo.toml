@@ -1,6 +1,6 @@
 [package]
 name = "telegram-gateway-rs"
-version = "0.7.0"
+version = "0.7.1"
 edition = "2021"
 description = "Gateway Telegram (tài khoản người dùng: tin nhắn + gọi thoại/video) cho Home Assistant — bản Rust, chạy song song bản Python"
 publish = false
