@@ -9,6 +9,7 @@ type FakeReply = (Value, Result<Value, TdError>);
 mod catalog;
 mod contacts;
 mod info;
+mod rich_text;
 mod shape;
 mod writing;
 

@@ -1590,3 +1590,105 @@ async fn manual_clear_all_and_type_preserve_forever_chats_until_explicit_chat_cl
     assert_eq!(f.api.sent.lock().unwrap().iter().filter(|(_, r)| r["@type"] == "optimizeStorage").count(), count_before);
     f.finish().await;
 }
+
+#[tokio::test]
+async fn rich_text_send_enforces_auth_csrf_account_isolation_and_ai_markup_422() {
+    let dir = std::env::temp_dir().join(format!("tggw-rich-text-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (api, factory) = crate::td::fake::Fake::factory();
+    let cfg = LoginConfig { data_dir: dir.clone(), api_id: 12345, api_hash: "fake-api-hash".into(), phone: String::new() };
+    let hub = Accounts::with_factory(cfg, "fake".into(), 3399, factory).await.unwrap();
+    let ui_auth = Arc::new(crate::ui_auth::UiAuth::open(&dir, "test-token", None, None, false).unwrap());
+    let router = crate::rest::router_accounts_with_ui_auth(hub.clone(), crate::rest::RestConfig {
+        token: "test-token".into(), rate_limit_per_minute: 1000, version: "test".into(),
+    }, ui_auth);
+
+    let first = "+84900000001";
+    let second = "+84900000002";
+    for phone in [first, second] {
+        let login = send(&router, "POST", "/ui/api/accounts", json!({"phone":phone}), true).await.1;
+        let id = login["login_id"].as_str().unwrap();
+        assert_eq!(send(&router, "POST", &format!("/ui/api/accounts/{id}/code"), json!({"code":"22222"}), true).await.0, 200);
+    }
+
+    let setup_resp = router.clone().oneshot(
+        Request::builder().method("POST").uri("/ui/api/auth/setup")
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .body(Body::from(json!({"token":"test-token","ten":"nguoi-thu","mat_khau":"mat-khau-thu-dai"}).to_string())).unwrap(),
+    ).await.unwrap();
+    assert_eq!(setup_resp.status(), 200);
+    let cookie = setup_resp.headers()[axum::http::header::SET_COOKIE].to_str().unwrap().split(';').next().unwrap().to_owned();
+
+    let send_cookie = |method: &'static str, path: &'static str, body: Value, extra: Vec<(&'static str, &'static str)>| {
+        let router = router.clone();
+        let cookie = cookie.clone();
+        async move {
+            let mut req = Request::builder().method(method).uri(path).header(axum::http::header::COOKIE, cookie);
+            for (k, v) in extra { req = req.header(k, v); }
+            let resp = router.oneshot(req.body(Body::from(serde_json::to_vec(&body).unwrap())).unwrap()).await.unwrap();
+            let status = resp.status().as_u16();
+            let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+            (status, serde_json::from_slice::<Value>(&bytes).unwrap_or(Value::Null))
+        }
+    };
+
+    // 1. Không xác thực / sai Bearer -> 401; cookie thiếu CSRF / Origin lạ -> 403; account lạ -> 404.
+    api.sent.lock().unwrap().clear();
+    let payload = json!({"text":"**Phòng khách** 29°C","format":"markdown","auto_emphasis":true});
+    assert_eq!(send(&router, "POST", "/api/chats/42/send?account=%2B84900000001", payload.clone(), false).await.0, 401);
+    assert_eq!(send(&router, "POST", "/api/send_message?account=%2B84900000001", json!({"peer":"7","message":"29°C","auto_emphasis":true}), false).await.0, 401);
+    let bad_bearer = router.clone().oneshot(
+        Request::builder().method("POST").uri("/api/chats/42/send?account=%2B84900000001")
+            .header(axum::http::header::AUTHORIZATION, "Bearer sai-token")
+            .body(Body::from(payload.to_string())).unwrap(),
+    ).await.unwrap();
+    assert_eq!(bad_bearer.status(), 401);
+    assert_eq!(send_cookie("POST", "/api/chats/42/send?account=%2B84900000001", payload.clone(), vec![]).await.0, 403);
+    assert_eq!(send_cookie("POST", "/api/chats/42/send?account=%2B84900000001", payload.clone(), vec![("Host", "gateway.example"), ("Origin", "http://evil.example")]).await.0, 403);
+    assert_eq!(send(&router, "POST", "/api/chats/42/send?account=unknown", payload.clone(), true).await.0, 404);
+    assert!(api.sent.lock().unwrap().is_empty());
+
+    // 2. Gửi hợp lệ trên tài khoản 1 bằng cookie + CSRF -> chỉ client 1 nhận formattedText có entities.
+    let (st_ok, _) = send_cookie(
+        "POST",
+        "/api/chats/42/send?account=%2B84900000001",
+        payload,
+        vec![("X-Requested-With", "fetch")],
+    ).await;
+    assert_eq!(st_ok, 200);
+    let sent = api.sent.lock().unwrap().clone();
+    let msg_req = sent.iter().find(|(id, req)| *id == 1 && req["@type"] == "sendMessage")
+        .map(|(_, req)| req.clone())
+        .expect("phải gửi sendMessage qua tài khoản 1");
+    assert!(!sent.iter().any(|(id, _)| *id == 2));
+    assert_eq!(msg_req["chat_id"], 42);
+    assert_eq!(
+        msg_req["input_message_content"]["text"],
+        json!({
+            "@type":"formattedText",
+            "text":"Phòng khách 29°C",
+            "entities":[
+                {"@type":"textEntity","offset":0,"length":11,"type":{"@type":"textEntityTypeBold"}},
+                {"@type":"textEntity","offset":12,"length":4,"type":{"@type":"textEntityTypeBold"}}
+            ]
+        })
+    );
+
+    // 3. ai_markup làm sai chữ gốc -> 422 AI_MARKUP_MISMATCH và không gọi TDLib.
+    api.sent.lock().unwrap().clear();
+    let (st_422, err_422) = send_cookie(
+        "POST",
+        "/api/chats/42/send?account=%2B84900000001",
+        json!({"text":"Nhiệt độ 29°C","ai_markup":"Nhiệt độ **30°C**"}),
+        vec![("X-Requested-With", "fetch")],
+    ).await;
+    assert_eq!(st_422, 422);
+    assert_eq!(err_422["error"]["code"], "AI_MARKUP_MISMATCH");
+    assert!(api.sent.lock().unwrap().is_empty());
+
+    hub.shutdown().await;
+    drop(router);
+    drop(hub);
+    std::fs::remove_dir_all(dir).unwrap();
+}

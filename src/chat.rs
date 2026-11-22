@@ -3,6 +3,7 @@ mod contacts;
 mod feed;
 mod files;
 mod info;
+mod rich_text;
 mod services;
 mod shape;
 mod write;

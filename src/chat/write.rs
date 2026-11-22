@@ -3,19 +3,16 @@ pub(crate) use uploads::synthesize_audio;
 
 use serde_json::{json, Value};
 
+use super::rich_text::{
+    self, is_allowed_url, is_utf16_boundary, utf16_len, MAX_ENTITIES, MAX_TEXT_UTF16,
+};
 use super::{array, int, message, string, text, truth, ChatService, GwError, Query, Reply};
 use crate::contract::TdError;
 use std::time::Duration;
 use uploads::{decode, voice_ogg, Upload, MAX_UPLOAD};
 
-const MAX_ENTITIES: usize = 100;
-
 pub(super) fn formatted_text(text: &str) -> Value {
     json!({"@type":"formattedText","text":text,"entities":[]})
-}
-
-fn is_utf16_boundary(units: &[u16], pos: usize) -> bool {
-    pos == units.len() || !(0xDC00..=0xDFFF).contains(&units[pos])
 }
 
 fn build_entities(text: &str, raw: &[Value]) -> Result<Vec<Value>, GwError> {
@@ -64,6 +61,14 @@ fn build_entities(text: &str, raw: &[Value]) -> Result<Vec<Value>, GwError> {
             },
             "spoiler" => json!({"@type":"textEntityTypeSpoiler"}),
             "blockquote" => json!({"@type":"textEntityTypeBlockQuote"}),
+            "text_link" => {
+                let url = obj.get("url").and_then(Value::as_str)
+                    .ok_or_else(|| GwError::bad_request("url trong entity text_link phải là chuỗi."))?;
+                if !is_allowed_url(url) {
+                    return Err(GwError::bad_request("url trong entity text_link không hợp lệ (chỉ hỗ trợ http, https, tg)."));
+                }
+                json!({"@type":"textEntityTypeTextUrl","url":url})
+            }
             _ => return Err(GwError::bad_request("Loại entity không được hỗ trợ.")),
         };
         out.push(json!({"@type":"textEntity","offset":offset,"length":length,"type":td_type}));
@@ -94,6 +99,43 @@ fn file_content(file: &Upload, kind: &str, cap: Value) -> Value {
     }
 }
 
+fn query_format_body(q: &Query<'_>) -> Result<Value, GwError> {
+    let mut map = serde_json::Map::new();
+    if let Some(pm) = q.get("parse_mode") {
+        map.insert("parse_mode".into(), Value::String(pm));
+    }
+    if let Some(fmt) = q.get("format") {
+        map.insert("format".into(), Value::String(fmt));
+    }
+    if let Some(ae) = q.get("auto_emphasis") {
+        let trimmed = ae.trim().to_ascii_lowercase();
+        if !trimmed.is_empty() {
+            let b = match trimmed.as_str() {
+                "true" | "1" => true,
+                "false" | "0" => false,
+                _ => return Err(GwError::bad_request("auto_emphasis phải là true hoặc false.")),
+            };
+            map.insert("auto_emphasis".into(), Value::Bool(b));
+        }
+    }
+    if let Some(am) = q.get("ai_markup") {
+        map.insert("ai_markup".into(), Value::String(am));
+    }
+    Ok(Value::Object(map))
+}
+
+fn album_caption_body(parent: &Value, item: &Value) -> Value {
+    let mut map = serde_json::Map::new();
+    for key in ["parse_mode", "format", "auto_emphasis", "ai_markup", "entities"] {
+        if let Some(v) = item.get(key).filter(|v| !v.is_null()) {
+            map.insert(key.into(), v.clone());
+        } else if let Some(v) = parent.get(key).filter(|v| !v.is_null()) {
+            map.insert(key.into(), v.clone());
+        }
+    }
+    Value::Object(map)
+}
+
 impl ChatService {
     async fn formatted(&self, text: &str, mode: &str) -> Reply {
         let mode = if mode.is_empty() { "plain" } else { mode };
@@ -107,21 +149,41 @@ impl ChatService {
     }
 
     async fn formatted_input(&self, text: &str, body: &Value) -> Reply {
-        match body.get("entities") {
-            Some(raw) if !raw.is_null() => {
-                let list = raw.as_array().ok_or_else(|| GwError::bad_request("entities phải là danh sách."))?;
-                if list.is_empty() {
-                    return self.formatted(text, &string(&body["parse_mode"])).await;
-                }
-                let mode = string(&body["parse_mode"]);
-                if !mode.trim().is_empty() && !mode.trim().eq_ignore_ascii_case("plain") {
+        let opts = rich_text::parse_options(body)?;
+        let mode = string(&body["parse_mode"]);
+        let mode_trimmed = mode.trim();
+        let has_non_plain_mode = !mode_trimmed.is_empty() && !mode_trimmed.eq_ignore_ascii_case("plain");
+        let has_explicit_format = body.get("format").is_some_and(|v| !v.is_null());
+
+        if (opts.is_active() || has_explicit_format) && has_non_plain_mode {
+            return Err(GwError::bad_request("Không dùng đồng thời parse_mode và format/auto_emphasis/ai_markup."));
+        }
+
+        if let Some(raw) = body.get("entities").filter(|v| !v.is_null()) {
+            let list = raw.as_array().ok_or_else(|| GwError::bad_request("entities phải là danh sách."))?;
+            if !list.is_empty() {
+                if has_non_plain_mode {
                     return Err(GwError::bad_request("Không dùng đồng thời parse_mode và entities."));
                 }
+                if opts.is_active() || has_explicit_format {
+                    return Err(GwError::bad_request("Không dùng đồng thời format/auto_emphasis/ai_markup và entities."));
+                }
+                if utf16_len(text) > MAX_TEXT_UTF16 {
+                    return Err(GwError::bad_request("Tin quá dài (tối đa 4096 đơn vị UTF-16)."));
+                }
                 let entities = build_entities(text, list)?;
-                Ok(json!({"@type":"formattedText","text":text,"entities":entities}))
+                return Ok(json!({"@type":"formattedText","text":text,"entities":entities}));
             }
-            _ => self.formatted(text, &string(&body["parse_mode"])).await,
         }
+
+        if opts.is_active() {
+            return rich_text::render_tdlib(text, &opts);
+        }
+
+        if !has_non_plain_mode && utf16_len(text) > MAX_TEXT_UTF16 {
+            return Err(GwError::bad_request("Tin quá dài (tối đa 4096 đơn vị UTF-16)."));
+        }
+        self.formatted(text, &mode).await
     }
 
     async fn final_id(&self, id: i64) -> i64 { self.state.final_id(id, Duration::from_secs(8)).await }
@@ -143,7 +205,6 @@ impl ChatService {
             "send" => {
                 let text = string(&b["text"]);
                 if text.trim().is_empty() { return Err(GwError::bad_request("Thiếu nội dung tin.")); }
-                if text.chars().count() > 4096 { return Err(GwError::bad_request("Tin quá dài (tối đa 4096 ký tự).")); }
                 let reply = opt_id(&b["reply_to"], "reply_to")?;
                 let ft = self.formatted_input(&text, b).await?;
                 let result = self.send(chat, json!({"@type":"inputMessageText","text":ft,
@@ -168,8 +229,10 @@ impl ChatService {
                 if raw.is_empty() { return Err(GwError::bad_request("Tệp rỗng.")); }
                 if raw.len() > MAX_UPLOAD { return Err(GwError::bad_request("Tệp vượt 64 MB.")); }
                 let reply = q.int("reply_to", 0)?;
+                let cap_text = q.get("caption").unwrap_or_default();
+                let cap_body = query_format_body(q)?;
+                let cap = self.formatted_input(&cap_text, &cap_body).await?;
                 let raw = if kind == "voice" { voice_ogg(raw).await? } else { raw };
-                let cap = self.formatted(&q.get("caption").unwrap_or_default(), &q.get("parse_mode").unwrap_or_default()).await?;
                 let file = Upload::save(&self.uploads, &q.get("name").unwrap_or_default(), raw).await?;
                 let content = file_content(&file, &kind, cap);
                 file.keep();
@@ -205,11 +268,15 @@ impl ChatService {
             parsed.push((item, kind, data));
         }
         let reply = opt_id(&b["reply_to"], "reply_to")?;
-        let mode = string(&b["parse_mode"]);
+        let mut parsed_items = Vec::with_capacity(parsed.len());
+        for (item, kind, data) in parsed {
+            let cap_body = album_caption_body(b, item);
+            let cap = self.formatted_input(&string(&item["caption"]), &cap_body).await?;
+            parsed_items.push((item, kind, data, cap));
+        }
         let mut files = Vec::new();
         let mut contents = Vec::new();
-        for (item, kind, data) in parsed {
-            let cap = self.formatted(&string(&item["caption"]), &mode).await?;
+        for (item, kind, data, cap) in parsed_items {
             let file = Upload::save(&self.uploads, &string(&item["name"]), data).await?;
             contents.push(file_content(&file, &kind, cap));
             files.push(file);
@@ -312,14 +379,25 @@ impl ChatService {
             "send_message" => {
                 let msg = string(&b["message"]);
                 if peer.is_empty() || msg.is_empty() { return Err(GwError::bad_request("Thiếu peer hoặc message.")); }
-                json!({"@type":"inputMessageText","text":formatted_text(&msg),"link_preview_options":{"@type":"linkPreviewOptions","is_disabled":true}})
+                let ft = self.formatted_input(&msg, b).await?;
+                json!({"@type":"inputMessageText","text":ft,"link_preview_options":{"@type":"linkPreviewOptions","is_disabled":true}})
             }
             "send_media" => {
                 if peer.is_empty() || !truth(&b["media_b64"]) { return Err(GwError::bad_request("Thiếu peer hoặc media_b64.")); }
                 let raw = decode(&b["media_b64"], "media_b64")?;
                 let name = b["filename"].as_str().unwrap_or("media.bin");
+                let caption = text(&b["caption"]);
+                let cap = if caption.is_empty()
+                    && !rich_text::has_rich_params(b)
+                    && !truth(&b["parse_mode"])
+                    && !truth(&b["entities"])
+                {
+                    formatted_text("")
+                } else {
+                    self.formatted_input(caption, b).await?
+                };
                 file = Upload::save(&self.uploads, name, raw).await?;
-                file_content(&file, "document", formatted_text(text(&b["caption"])))
+                file_content(&file, "document", cap)
             }
             "send_voice" => {
                 if peer.is_empty() { return Err(GwError::bad_request("Thiếu peer.")); }
