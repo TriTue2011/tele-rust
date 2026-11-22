@@ -158,8 +158,9 @@ def check_root_readme_and_docs(cargo_ver: str, src_vars: set[str]) -> None:
     assert "macOS" in readme_text, "README.md thiếu mục trạng thái macOS"
     assert "MIT" in readme_text and "LGPL-3.0" in readme_text and "BSL-1.0" in readme_text
 
-    m = re.search(r"\n## Biến môi trường\n([\s\S]*?)(?=\n## |\Z)", readme_text)
-    assert m, "README.md thiếu mục ## Biến môi trường"
+    ref_text = (ROOT / "docs" / "THAM-CHIEU.md").read_text(encoding="utf-8")
+    m = re.search(r"\n## Biến môi trường\n([\s\S]*?)(?=\n## |\Z)", ref_text)
+    assert m, "docs/THAM-CHIEU.md thiếu mục ## Biến môi trường"
     readme_vars = set()
     for line in m.group(1).splitlines():
         s = line.strip()
@@ -168,11 +169,11 @@ def check_root_readme_and_docs(cargo_ver: str, src_vars: set[str]) -> None:
         cols = [c.strip() for c in s.split("|")[1:-1]]
         for col in cols[:2]:
             readme_vars.update(re.findall(r"`([A-Z][A-Z0-9_]{2,})`", col))
-    assert readme_vars, "Không đọc được biến nào từ bảng ## Biến môi trường trong README.md"
+    assert readme_vars, "Không đọc được biến nào từ bảng ## Biến môi trường trong docs/THAM-CHIEU.md"
     unknown = readme_vars - src_vars
-    assert not unknown, f"README.md nhắc biến không có trong src/: {sorted(unknown)}"
+    assert not unknown, f"docs/THAM-CHIEU.md nhắc biến không có trong src/: {sorted(unknown)}"
 
-    for rel in ("LICENSE", "NOTICE.md", "docs/API.md", "docs/TRIEN-KHAI.md", "docs/BAO-MAT.md", "docs/CHANGELOG.md"):
+    for rel in ("LICENSE", "NOTICE.md", "docs/API.md", "docs/TRIEN-KHAI.md", "docs/BAO-MAT.md", "docs/CHANGELOG.md", "docs/THAM-CHIEU.md", "docs/TINH-NANG.md"):
         p = ROOT / rel
         assert p.is_file() and len(p.read_text(encoding="utf-8").strip()) > 100, f"Thiếu hoặc rỗng {rel}"
 

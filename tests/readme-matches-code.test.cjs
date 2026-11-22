@@ -198,7 +198,7 @@ function extractRoutesFromRestRs() {
 function sectionSlice(md, heading) {
   const marker = `\n## ${heading}\n`;
   const idx = md.indexOf(marker);
-  assert.ok(idx !== -1, `README.md thiếu mục "## ${heading}"`);
+  assert.ok(idx !== -1, `docs/THAM-CHIEU.md thiếu mục "## ${heading}"`);
   const after = md.slice(idx + marker.length);
   const next = after.search(/\n## /);
   return next === -1 ? after : after.slice(0, next);
@@ -263,8 +263,8 @@ function assertReadmeMatchesCode(md, codeEnv, codeRoutes) {
   return rows;
 }
 
-test('mọi biến môi trường trong src/ và src/config.rs khớp 100% bảng README.md', () => {
-  const md = readFileSync(path.join(ROOT, 'README.md'), 'utf8');
+test('mọi biến môi trường trong src/ và src/config.rs khớp 100% bảng trong docs/THAM-CHIEU.md (README chỉ còn hướng dẫn cài đặt)', () => {
+  const md = readFileSync(path.join(ROOT, 'docs/THAM-CHIEU.md'), 'utf8');
   const codeEnv = extractEnvVarsFromSrc();
   const configEnv = extractConfigRsEnvVars();
   assert.ok(codeEnv.size >= 28, `Quá ít biến môi trường trích được: ${codeEnv.size}`);
@@ -277,7 +277,7 @@ test('mọi biến môi trường trong src/ và src/config.rs khớp 100% bản
 });
 
 test('mọi route yêu cầu confirm=true đều ghi rõ confirm trong bảng README.md', () => {
-  const md = readFileSync(path.join(ROOT, 'README.md'), 'utf8');
+  const md = readFileSync(path.join(ROOT, 'docs/THAM-CHIEU.md'), 'utf8');
   const { rows } = extractReadmeRoutes(md);
   const byKey = new Map(rows.map((r) => [r.key, r]));
   const confirmRoutes = [
@@ -313,7 +313,7 @@ test('phiên bản add-on khớp Cargo.toml và README nhắc đúng ảnh GHCR 
 });
 
 test('đột biến đối chứng: thiếu hoặc thừa biến môi trường / route phải bị phát hiện', () => {
-  const md = readFileSync(path.join(ROOT, 'README.md'), 'utf8');
+  const md = readFileSync(path.join(ROOT, 'docs/THAM-CHIEU.md'), 'utf8');
   const codeEnv = extractEnvVarsFromSrc();
   const codeRoutes = extractRoutesFromRestRs();
 
