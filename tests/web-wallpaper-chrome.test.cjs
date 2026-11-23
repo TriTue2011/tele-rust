@@ -76,16 +76,16 @@ test('TC-WALLPAPER: hình nền hội thoại theo Telegram — áp dụng, bộ
   assert.match(await evaluate('document.getElementById("msgs").style.background'), /rgba\(0, 0, 0, 0\.4\)/, 'ban đêm phủ tối 40%');
   await evaluate('document.documentElement.dataset.theme = "system"');
 
-  // 2) mở hộp từ menu ⋮ → có ô máy ảnh, ô «không có», 2 hình nền; cả hai bên mặc định bật (1-1)
+  // 2) mở hộp từ menu ⋮ → có ô máy ảnh, ô «không có», 2 hình nền; cả hai bên mặc định tắt (cần Premium)
   await openMenu(0); await evaluate('document.getElementById("ctx-wallpaper").click()');
   await until('Boolean(document.getElementById("wp-dialog")) && document.querySelectorAll(".wpd-t").length === 4');
   assert.deepEqual(await evaluate('[...document.querySelectorAll(".wpd-t")].map((b) => b.getAttribute("aria-label"))'), ['Chọn ảnh của tôi', 'Không có hình nền', 'Núi', 'Hoàng hôn']);
-  assert.equal(await evaluate('document.getElementById("wpd-both").checked'), true);
+  assert.equal(await evaluate('document.getElementById("wpd-both").checked'), false, 'cả hai bên mặc định TẮT: Telegram đòi Premium (PREMIUM_ACCOUNT_REQUIRED)');
   assert.equal(await evaluate('document.getElementById("wpd-dim").value'), '40', 'độ tối hiện tại nạp từ Telegram');
   await until('document.querySelectorAll(".wpd-t.bg")[0].style.backgroundImage.includes("blob:")');
   await evaluate('document.querySelectorAll(".wpd-t.bg")[1].click()');
   assert.match(await evaluate('document.querySelector(".wpd-preview").style.background'), /linear-gradient/, 'xem trước đổi ngay');
-  await evaluate('document.getElementById("wpd-dim").value = "55"; document.getElementById("wpd-dim").dispatchEvent(new Event("input")); document.getElementById("wpd-both").click(); document.getElementById("wpd-save").click()');
+  await evaluate('document.getElementById("wpd-dim").value = "55"; document.getElementById("wpd-dim").dispatchEvent(new Event("input")); document.getElementById("wpd-save").click()');
   await until('window.__calls.some((c) => c.m === "POST" && /background$/.test(c.p))');
   assert.deepEqual(await evaluate('window.__calls.find((c) => c.m === "POST" && /background$/.test(c.p)).body'), { dimming: 55, for_both: false, background_id: '222' });
   await until('!document.getElementById("wp-dialog")');
@@ -98,7 +98,7 @@ test('TC-WALLPAPER: hình nền hội thoại theo Telegram — áp dụng, bộ
   assert.equal(await evaluate('window.__calls.filter((c) => c.p === "/api/backgrounds").at(-1).dark'), '1');
   await evaluate('document.querySelectorAll(".wpd-tabs button")[1].click(); document.querySelectorAll(".wpd-sw button")[2].click(); document.getElementById("wpd-save").click()');
   await until('window.__calls.some((c) => c.m === "POST")');
-  assert.deepEqual(await evaluate('window.__calls.find((c) => c.m === "POST").body'), { dimming: 40, for_both: true, color: '#e3f5ea' });
+  assert.deepEqual(await evaluate('window.__calls.find((c) => c.m === "POST").body'), { dimming: 40, for_both: false, color: '#e3f5ea' });
   await evaluate('window.__calls.length = 0'); await openMenu(0); await evaluate('document.getElementById("ctx-wallpaper").click()');
   await until('Boolean(document.getElementById("wp-dialog"))');
   await evaluate('document.querySelectorAll(".wpd-tabs button")[2].click()');

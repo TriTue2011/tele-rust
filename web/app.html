@@ -2555,7 +2555,7 @@
     if (!cur) return;
     const chatId = cur, isPrivate = curKind === "private";
     const old = document.getElementById("wp-dialog"); if (old) old.remove();
-    let dark = isDarkTheme(), tab = "gallery", draft = null, dim = 0, both = isPrivate, busy = false, gallery = [], uploadedBlobUrl = "";
+    let dark = isDarkTheme(), tab = "gallery", draft = null, dim = 0, both = false, busy = false, gallery = [], uploadedBlobUrl = "";
     const msg = el("p", "wpd-msg"); msg.setAttribute("role", "status");
     const say = (t, bad) => { msg.textContent = t || ""; msg.className = "wpd-msg" + (bad ? " bad" : ""); };
     const preview = el("div", "wpd-preview"); preview.appendChild(el("div", "wpd-s in", "Xin chào! Đây là tin nhận.")); preview.appendChild(el("div", "wpd-s out", "Tin gửi trên hình nền này."));
@@ -2607,7 +2607,7 @@
       const dimRow = el("label", "wpd-row"); dimRow.appendChild(el("span", "", "Độ tối ban đêm"));
       const dr = document.createElement("input"); dr.type = "range"; dr.min = "0"; dr.max = "100"; dr.step = "5"; dr.value = String(dim); dr.id = "wpd-dim"; dr.setAttribute("aria-label", "Độ tối ban đêm");
       dr.addEventListener("input", () => { dim = Number(dr.value); paint(); }); dimRow.appendChild(dr); kids.push(dimRow);
-      if (isPrivate) { const r = el("label", "wpd-row"); const c = document.createElement("input"); c.type = "checkbox"; c.id = "wpd-both"; c.checked = both; c.addEventListener("change", () => { both = c.checked; }); r.appendChild(c); r.appendChild(el("span", "", "Đổi hình nền cho cả hai bên")); kids.push(r); }
+      if (isPrivate) { const r = el("label", "wpd-row"); const c = document.createElement("input"); c.type = "checkbox"; c.id = "wpd-both"; c.checked = both; c.addEventListener("change", () => { both = c.checked; }); r.appendChild(c); r.appendChild(el("span", "", "Đổi hình nền cho cả hai bên (cần Telegram Premium)")); kids.push(r); }
       body.replaceChildren(...kids);
     }
     function drawTabs() {
