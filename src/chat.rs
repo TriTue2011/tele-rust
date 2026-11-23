@@ -4,6 +4,8 @@ mod contacts;
 mod feed;
 mod files;
 mod info;
+mod look;
+pub(crate) use look::MAX_WALLPAPER_BYTES;
 mod rich_text;
 mod services;
 mod shape;
@@ -474,6 +476,14 @@ impl ChatService {
                 &body,
             ).await,
             ("GET", ["", "api", "chats", id, "info"]) => self.chat_info(path_id(id)?).await,
+            ("GET", ["", "api", "chats", id, "background"]) => self.chat_background(path_id(id)?).await,
+            ("POST", ["", "api", "chats", id, "background"]) => {
+                if body["background"].is_null() && body["remove"].as_bool() == Some(true) { return self.delete_chat_background(path_id(id)?, &body).await; }
+                self.set_chat_background(path_id(id)?, &body).await
+            }
+            ("POST", ["", "api", "wallpapers", "upload"]) => self.save_wallpaper(&body).await,
+            ("GET", ["", "api", "backgrounds"]) => self.installed_backgrounds(q.get("dark").is_some_and(|v| v == "1" || v == "true")).await,
+            ("GET", ["", "api", "messages", "reactions"]) => self.available_reactions(q.int("chat_id", 0)?, q.int("message_id", 0)?).await,
             ("GET", ["", "api", "chats", id, "members"]) => self.chat_members(
                 path_id(id)?, &q.get("q").unwrap_or_default(), q.int("limit", 50)?).await,
             ("POST", ["", "api", "chats", id, "settings"]) => self.update_chat_settings(path_id(id)?, &body).await,

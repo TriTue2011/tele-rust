@@ -172,6 +172,7 @@ enum Kind {
     Ui,
     /// POST tệp thô → `ChatControl::handle(POST, …, {"data_b64"})`.
     SendFile,
+    WallpaperUpload,
     ChatBytes,
     Snapshot,
     LiveView,
@@ -381,6 +382,7 @@ async fn handle(ctx: Arc<Ctx>, spec: Spec, req: Request) -> Response {
             Ok(b) => ctx.chat.handle("POST", &path, &query, b).await,
         },
         Kind::SendFile => send_file(&ctx, &path, &query, body).await,
+        Kind::WallpaperUpload => upload_wallpaper(&ctx, &path, &query, body).await,
         Kind::Auth => unreachable!(),
     };
     with_cookie(match out {
@@ -538,6 +540,13 @@ async fn send_file(ctx: &Ctx, path: &str, query: &str, body: Body) -> Result<Val
     if raw.is_empty() {
         return Err(GwError::bad_request("Tệp rỗng."));
     }
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&raw);
+    ctx.chat.handle("POST", path, query, json!({"data_b64": b64})).await
+}
+
+/// Tải ảnh nền: thân thô ≤ 3 MB (JPEG/PNG), gateway kiểm lại ruột tệp rồi lưu theo băm nội dung.
+async fn upload_wallpaper(ctx: &Ctx, path: &str, query: &str, body: Body) -> Result<Value, GwError> {
+    let raw = to_bytes(body, crate::chat::MAX_WALLPAPER_BYTES + 1).await.map_err(|_| GwError::bad_request("Ảnh nền tối đa 3 MB."))?;
     let b64 = base64::engine::general_purpose::STANDARD.encode(&raw);
     ctx.chat.handle("POST", path, query, json!({"data_b64": b64})).await
 }
@@ -727,6 +736,9 @@ fn router_with(ctx: Arc<Ctx>) -> Router {
         r = r.route(p, route(post, s_id(ChatPost, "chat_id")));
     }
     r = r.route("/api/chats/:chat_id/send_file", route(post, s_id(SendFile, "chat_id")));
+    r = r.route("/api/wallpapers/upload", route(post, s(WallpaperUpload)));
+    r = r.route("/api/backgrounds", route(get, s(ChatGet))).route("/api/messages/reactions", route(get, s(ChatGet)))
+        .route("/api/chats/:chat_id/background", add(route(get, s_id(ChatGet, "chat_id")), post, s_id(ChatPost, "chat_id")));
     // Cuộc gọi → CallControl.
     r = r
         .route("/api/live/calls", route(get, s(LiveCalls)))
