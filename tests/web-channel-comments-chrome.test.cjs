@@ -271,8 +271,8 @@ test('TC-CHANNEL-COMMENTS: hàng bình luận kênh và ngăn bình luận ở 3
     await dimension(width);
     assert.ok(await evaluate(`(() => {
       const r = document.getElementById('comments-drawer').getBoundingClientRect();
-      return window.innerWidth === ${width} && r.width < ${width} && r.right <= ${width} + 1 && document.documentElement.scrollWidth <= ${width};
-    })()`), `ngăn bình luận ở ${width} px`);
+      return window.innerWidth === ${width} && Math.round(r.width) === ${width} && Math.round(r.height) === window.innerHeight && r.right <= ${width} + 1 && document.documentElement.scrollWidth <= ${width};
+    })()`), `ngăn bình luận toàn màn hình ở ${width} px`);
     assert.ok(await evaluate(`(() => {
       const d = document.getElementById('comments-drawer');
       return [...d.querySelectorAll('button')].every((b) => !b.getClientRects().length || b.getBoundingClientRect().height >= 44 || b.classList.contains('comment-reply-btn'));
