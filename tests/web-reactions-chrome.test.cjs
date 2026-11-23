@@ -68,6 +68,7 @@ test('TC-REACTIONS: danh sách cảm xúc theo hội thoại, nhấp đúp, gỡ
   const first = await evaluate(`window.__calls[0]`); const sp = new URLSearchParams(first.q);
   assert.deepEqual([first.m, first.p, sp.get('chat_id'), sp.get('message_id'), sp.get('account')], ['GET', '/api/messages/reactions', '42', '1', '+84900000000'], 'gọi đúng tin và đúng tài khoản');
   assert.deepEqual(await evaluate(`[...document.querySelectorAll('.rxpop .rx-row .rx-b')].map((b) => b.textContent)`), ['❤️', '👍', '👎', '🔥', '🥰', '👏', '😁'], '7 cảm xúc nhanh đúng theo thứ tự Telegram trả');
+  assert.equal(await evaluate(`document.activeElement.classList.contains('rx-b')`), true, 'mở thanh ⇒ tiêu điểm vào cảm xúc đầu (dùng được bằng bàn phím)');
   assert.equal(await evaluate(`document.querySelector('.rxpop .rx-all').hidden`), true);
   await evaluate(`document.querySelector('.rxpop .rx-more').click()`);
   assert.deepEqual(await evaluate(`[...document.querySelectorAll('.rxpop .rx-all .rx-b')].map((b) => b.textContent)`), ['❤️', '👍', '👎', '🔥', '🥰', '👏', '😁', '🎉', '😢', '🤩'], 'gộp top + gần đây + phổ biến, bỏ trùng');
