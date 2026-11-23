@@ -11,6 +11,9 @@ use crate::contract::GwError;
 pub(crate) const MAX_PCM: usize = 64 * 1024;
 const PCM_PER_SECOND: usize = 32_000;
 const TICK_BYTES: usize = 640;
+/// Độ trễ tối đa của hàng đợi mic: 160 ms (5120 byte). Luồng phát đọc đúng 20 ms/lần nên phần dư KHÔNG BAO GIỜ tiêu hết — trước đây trần là 64 KiB (hơn 2 giây)
+/// và tiếng sang máy bên kia chậm vài trăm ms đến 2 s mãi mãi khi trình duyệt gửi dư một chút. Vượt thì bỏ phần mới đến, không báo lỗi (trình duyệt không ngắt mic).
+const LAG_MAX_BYTES: usize = PCM_PER_SECOND / 1000 * 160;
 
 pub(super) fn token() -> Result<String, GwError> {
     let mut raw = [0; 24];
@@ -24,6 +27,7 @@ struct Queue {
     requests: VecDeque<Instant>,
     credit: f64,
     updated: Instant,
+    skipped: u64,
 }
 
 struct Local {
@@ -47,7 +51,7 @@ impl BrowserMic {
             .map_err(|_| GwError::new(500, "MEDIA_LOCAL", "Không mở được nguồn mic cục bộ."))?;
         let port = socket.local_addr().map_err(|_| super::media_error())?.port();
         let (alive, receiver) = watch::channel(());
-        let local = Arc::new(Local { key, queue: Mutex::new(Queue { pcm: VecDeque::new(), requests: VecDeque::new(), credit: MAX_PCM as f64, updated: Instant::now() }),
+        let local = Arc::new(Local { key, queue: Mutex::new(Queue { pcm: VecDeque::new(), requests: VecDeque::new(), credit: MAX_PCM as f64, updated: Instant::now(), skipped: 0 }),
             listener: Arc::new(Semaphore::new(1)), alive: receiver });
         let app = Router::new().route("/:key", get(local_pcm)).with_state(local.clone());
         let mut stopped = local.alive.clone();
@@ -57,6 +61,9 @@ impl BrowserMic {
         Ok(Self { local, port, server, _alive: alive })
     }
 
+    /// Số byte PCM đã bỏ vì hàng đợi vượt 160 ms (chẩn đoán).
+    pub fn skipped(&self) -> u64 { self.local.queue.lock().unwrap().skipped }
+
     pub fn push(&self, pcm: &[u8]) -> Result<(), GwError> {
         if pcm.len() > MAX_PCM { return Err(GwError::new(413, "AUDIO_TOO_LARGE", "PCM vượt 64 KiB.")); }
         if pcm.is_empty() || pcm.len() % 2 != 0 { return Err(GwError::bad_request("Cần PCM s16le 16 kHz mono, số byte chẵn và khác rỗng.")); }
@@ -65,6 +72,7 @@ impl BrowserMic {
         while q.requests.front().is_some_and(|t| now.duration_since(*t) >= Duration::from_secs(1)) { q.requests.pop_front(); }
         q.credit = (q.credit + now.duration_since(q.updated).as_secs_f64() * PCM_PER_SECOND as f64).min(MAX_PCM as f64);
         q.updated = now;
+        if q.pcm.len() + pcm.len() > LAG_MAX_BYTES { q.skipped += pcm.len() as u64; return Ok(()); }
         if q.requests.len() >= 30 || q.credit < pcm.len() as f64 || q.pcm.len() + pcm.len() > MAX_PCM {
             return Err(GwError::new(429, "AUDIO_BACKPRESSURE", "Mic quá nhanh hoặc bộ đệm đã đầy."));
         }
@@ -226,10 +234,13 @@ mod tests {
         assert_eq!(mic.push(&[]).unwrap_err().status, 400);
         assert_eq!(mic.push(&[1]).unwrap_err().status, 400);
         assert_eq!(mic.push(&vec![0; MAX_PCM + 2]).unwrap_err().status, 413);
-        mic.push(&vec![7; MAX_PCM]).unwrap();
-        assert_eq!(mic.push(&[0, 0]).unwrap_err().status, 429);
-        mic.local.queue.lock().unwrap().pcm.clear();
-        assert_eq!(mic.push(&vec![0; 3200]).unwrap_err().status, 429);
+        // Độ trễ hàng đợi bị chặn ở 160 ms: gửi dư thì bỏ êm (không lỗi), đếm phần bỏ, hàng đợi không vượt trần.
+        mic.push(&vec![7; LAG_MAX_BYTES]).unwrap();
+        mic.push(&[0, 0]).unwrap();
+        assert_eq!(mic.local.queue.lock().unwrap().pcm.len(), LAG_MAX_BYTES);
+        assert_eq!(mic.skipped(), 2);
+        mic.push(&vec![0; MAX_PCM]).unwrap();
+        assert_eq!(mic.local.queue.lock().unwrap().pcm.len(), LAG_MAX_BYTES, "gửi dồn 64 KiB cũng không làm trễ thêm");
         let other = BrowserMic::open().await.unwrap();
         for _ in 0..30 { other.push(&[0, 0]).unwrap(); }
         assert_eq!(other.push(&[0, 0]).unwrap_err().status, 429);
