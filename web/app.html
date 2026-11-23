@@ -1300,7 +1300,7 @@
     const key = account + "|" + fileId;
     if (blobs.has(key)) return blobs.get(key);
     const p = fetch(accountPath("/api/file/" + fileId), { credentials: "same-origin" })
-      .then((r) => { if (!r.ok) throw new Error("Tệp chưa tải được"); return r.blob(); }).then((b) => URL.createObjectURL(b));
+      .then((r) => { if (!r.ok) throw Object.assign(new Error("Tệp chưa tải được"), { status: r.status }); return r.blob(); }).then((b) => URL.createObjectURL(b));
     blobs.set(key, p); p.catch(() => blobs.delete(key)); return p;
   }
   const avQueue = []; let avBusy = 0;
@@ -1642,7 +1642,10 @@
       const row = el("div", "lazy"); const b = el("button", "", "▶ " + (isVid ? "Xem" : "Nghe")); row.appendChild(b); row.appendChild(el("span", "", label));
       b.addEventListener("click", () => { b.disabled = true; b.textContent = "Đang tải…";
         blobUrl(f.id).then((u) => { const mEl = el(isVid ? "video" : "audio"); mEl.controls = true; mEl.autoplay = true; mEl.src = u; if (isVid) mEl.playsInline = true; row.replaceWith(mEl); })
-          .catch(() => { b.disabled = false; b.textContent = "▶ Thử lại"; toast("Chưa tải được tệp (còn đang tải về gateway?)"); }); });
+          .catch((e) => { b.disabled = false; b.textContent = "▶ Thử lại";
+            // Mã tệp của TDLib được ĐÁNH LẠI khi gateway khởi động lại ⇒ trang mở từ trước giữ mã cũ: làm mới danh sách để lấy mã mới.
+            toast(e && e.status === 429 ? "Đang tải quá nhiều tệp, thử lại sau vài giây" : "Chưa tải được tệp (" + (e && e.status ? "mã " + e.status : "lỗi mạng") + "). Đang làm mới tin nhắn, bấm Thử lại sau giây lát");
+            if (typeof reloadSoon === "function" && !(e && e.status === 429)) reloadSoon(); }); });
       w.appendChild(row); }
     else if (f && f.id && m.kind === "document") { const a = el("a", "", "📎 " + (f.name || "Tệp") + (f.size ? " (" + fileSize(f.size) + ")" : "")); a.href = "#"; a.addEventListener("click", (e) => { e.preventDefault(); blobUrl(f.id).then((u) => { const d = document.createElement("a"); d.href = u; d.download = f.name || "tep"; d.click(); }).catch(() => toast("Chưa tải được tệp")); }); w.appendChild(a); }
     else if (m.kind !== "text") w.appendChild(el("div", "txt", m.summary));
