@@ -267,12 +267,13 @@ test('TC-CHANNEL-COMMENTS: hàng bình luận kênh và ngăn bình luận ở 3
   assert.equal(await evaluate('document.querySelector("#comments-list .comment-item").dataset.id'), '501');
 
   // 4. Kiểm responsive ở 700 px và 1440 px: ngăn bám phải, không tràn ngang, vùng chạm >= 44 px.
-  for (const width of [700, 1440]) {
+  for (const width of [700, 1440, 1920]) {
     await dimension(width);
+    assert.equal(await evaluate(`Math.round(document.getElementById('app').getBoundingClientRect().width)`), width, `khung ứng dụng phải phủ hết chiều ngang ở ${width} px (3 cột dùng toàn bộ độ rộng)`);
     assert.ok(await evaluate(`(() => {
       const r = document.getElementById('comments-drawer').getBoundingClientRect();
-      return window.innerWidth === ${width} && Math.round(r.width) === ${width} && Math.round(r.height) === window.innerHeight && r.right <= ${width} + 1 && document.documentElement.scrollWidth <= ${width};
-    })()`), `ngăn bình luận toàn màn hình ở ${width} px`);
+      return window.innerWidth === ${width} && r.width < ${width} && r.right <= ${width} + 1 && document.documentElement.scrollWidth <= ${width};
+    })()`), `ngăn bình luận ở ${width} px`);
     assert.ok(await evaluate(`(() => {
       const d = document.getElementById('comments-drawer');
       return [...d.querySelectorAll('button')].every((b) => !b.getClientRects().length || b.getBoundingClientRect().height >= 44 || b.classList.contains('comment-reply-btn'));
