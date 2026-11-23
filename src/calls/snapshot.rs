@@ -20,6 +20,10 @@ impl Default for Snapshot {
     }
 }
 
+/// Khoảng cách tối thiểu giữa hai lần lấy mẫu khung. Điện thoại gửi ~30 khung/giây (đo 29 khung/s ở cuộc gọi thật 23/11); chặn 100→50 ms vẫn
+/// chỉ cho 10–20 khung/giây hiển thị ⇒ «cam chậm, không đủ fps». Nay chỉ còn 20 ms (≤50 khung/s): tốc độ thật do việc nén JPEG (một lượt tại một thời điểm) quyết định.
+const MIN_SAMPLE_GAP: Duration = Duration::from_millis(20);
+
 pub(super) fn valid(w: usize, h: usize, bytes: usize) -> bool {
     (2..=3840).contains(&w) && (2..=2160).contains(&h) && w % 2 == 0 && h % 2 == 0
         && bytes == w * h * 3 / 2
@@ -43,7 +47,7 @@ pub(super) fn rotate_ycbcr(buf: Vec<u8>, w: usize, h: usize, degrees: u16) -> (V
 
 impl Snapshot {
     pub(super) fn submit(&mut self, w: usize, h: usize, raw: Vec<u8>, id: String, tx: mpsc::UnboundedSender<Command>, rotation: u16) {
-        if self.pending || self.last_sample.is_some_and(|t| t.elapsed() < Duration::from_millis(50)) { return; }
+        if self.pending || self.last_sample.is_some_and(|t| t.elapsed() < MIN_SAMPLE_GAP) { return; }
         self.pending = true;
         self.last_sample = Some(Instant::now());
         tokio::task::spawn_blocking(move || {
@@ -106,5 +110,25 @@ mod rotate_tests {
             let (out, w, h) = rotate_ycbcr(img(), 3, 2, deg);
             assert_eq!((letters(&out).as_str(), (w, h)), (want, dims), "xoay {deg}°");
         }
+    }
+}
+
+#[cfg(test)]
+mod fps_tests {
+    use super::*;
+
+    /// Điện thoại gửi khung mỗi ~33 ms (30 khung/s): gateway phải ra gần đủ 30 ảnh/s, không còn bị chặn ở 10–20 ảnh/s.
+    #[tokio::test]
+    async fn sampler_keeps_up_with_thirty_frames_per_second() {
+        let (tx, mut rx) = mpsc::unbounded_channel::<Command>();
+        let mut snap = Snapshot::default();
+        let mut produced = 0usize;
+        let raw = || vec![128u8; 16 * 8 * 3 / 2];
+        for _ in 0..30 {
+            snap.submit(16, 8, raw(), "c".into(), tx.clone(), 0);
+            tokio::time::sleep(Duration::from_millis(33)).await;
+            while let Ok(Command::VideoJpeg(_, jpeg)) = rx.try_recv() { snap.finish(jpeg); produced += 1; }
+        }
+        assert!(produced >= 26, "30 khung gửi tới trong ~1 s mà chỉ ra {produced} ảnh");
     }
 }
