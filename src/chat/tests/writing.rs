@@ -7,7 +7,7 @@ pub(super) fn check_request(mut request: Value, mut expected: Value) {
             let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
             assert!((now+offset-5..=now+offset).contains(&actual.as_i64().unwrap()));
             *expected = actual.clone();
-        } else if expected["@type"] == "inputFileLocal" {
+        } else if expected["@type"] == "inputFileLocal" && !expected["path"].as_str().is_some_and(|p| p.contains("/wallpapers/")) {      // ảnh nền tải lên nằm ở wallpapers/ (giữ nguyên, so sánh đường dẫn thẳng)
             let name = expected["path"].as_str().unwrap();
             let path = Path::new(actual["path"].as_str().unwrap());
             assert_eq!(actual["@type"], "inputFileLocal");
