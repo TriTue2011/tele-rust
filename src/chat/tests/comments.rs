@@ -463,3 +463,26 @@ fn channel_comments_mutation_counterexamples_catch_dropped_limits_and_route_chec
     assert_eq!(MAX_TEXT_UTF16, 4096);
     assert_eq!(MAX_ENTITIES, 100);
 }
+
+#[tokio::test]
+async fn channel_comments_treat_unexpected_chat_error_at_thread_end_as_no_more() {
+    // Gốc (23/11, kênh HÀ NỘI 24H): bài có ít bình luận hơn limit ⇒ trang 2 chạm bài gốc nằm ở KÊNH, TDLib báo
+    // «Receive messages in an unexpected chat». Phải trả các bình luận đã có và has_more=false, không báo lỗi.
+    let thread = json!({"@type":"messageThreadInfo","chat_id":-100200,"message_thread_id":500,"messages":[{"id":500,"chat_id":-100200}]});
+    let comment = |id: i64| json!({"id":id,"chat_id":-100200,"date":1700000000 + id,"is_outgoing":false,
+        "sender_id":{"@type":"messageSenderUser","user_id":11},"reply_to":{"@type":"messageReplyToMessage","message_id":500},
+        "content":{"@type":"messageText","text":{"text":"bình luận"}}});
+    let history = |from: i64| json!({"@type":"getMessageThreadHistory","chat_id":-100100,"message_id":10,"from_message_id":from,"offset":0,"limit":31});
+    let (chat, _) = setup(vec![
+        ok(json!({"@type":"getChat","chat_id":-100100}), channel_chat(-100100, 100)),
+        ok(json!({"@type":"getSupergroupFullInfo","supergroup_id":100}), json!({"@type":"supergroupFullInfo","linked_chat_id":-100200})),
+        ok(json!({"@type":"getMessageThread","chat_id":-100100,"message_id":10}), thread),
+        ok(history(0), json!({"messages":[comment(502), comment(501)]})),
+        err(json!({"@type":"getMessageThreadHistory","chat_id":-100100,"message_id":10,"from_message_id":501,"offset":0,"limit":29}),
+            500, "Receive messages in an unexpected chat"),
+        ok(json!({"@type":"getUser","user_id":11}), json!({"id":11,"first_name":"An"})),
+    ]);
+    let res = get(&chat, "/api/chats/-100100/messages/10/comments", "limit=30").await.unwrap();
+    assert_eq!(res["messages"].as_array().unwrap().len(), 2);
+    assert_eq!(res["has_more"], false);
+}

@@ -79,14 +79,20 @@ impl ChatService {
         let mut seen: HashSet<i64> = HashSet::new();
         for _ in 0..3 {
             let req_limit = (want - got.len()).clamp(1, MAX_COMMENTS_LIMIT as usize);
-            let result = self.request(json!({
+            let result = match self.request(json!({
                 "@type": "getMessageThreadHistory",
                 "chat_id": chat_id,
                 "message_id": message_id,
                 "from_message_id": cursor,
                 "offset": 0,
                 "limit": req_limit,
-            })).await?;
+            })).await {
+                Ok(result) => result,
+                // Hết bình luận: bài gốc nằm ở KÊNH (chat khác nhóm thảo luận) nên khi TDLib đọc quá bình luận cũ nhất nó báo
+                // «Receive messages in an unexpected chat». Đó là điểm cuối của luồng, không phải lỗi — chỉ chấp nhận khi đã có mốc phân trang.
+                Err(e) if cursor != 0 && e.message.contains("unexpected chat") => break,
+                Err(e) => return Err(e),
+            };
             let messages = array(&result["messages"]);
             if messages.is_empty() {
                 break;
