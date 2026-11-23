@@ -43,7 +43,7 @@ pub(super) fn rotate_ycbcr(buf: Vec<u8>, w: usize, h: usize, degrees: u16) -> (V
 
 impl Snapshot {
     pub(super) fn submit(&mut self, w: usize, h: usize, raw: Vec<u8>, id: String, tx: mpsc::UnboundedSender<Command>, rotation: u16) {
-        if self.pending || self.last_sample.is_some_and(|t| t.elapsed() < Duration::from_millis(100)) { return; }
+        if self.pending || self.last_sample.is_some_and(|t| t.elapsed() < Duration::from_millis(50)) { return; }
         self.pending = true;
         self.last_sample = Some(Instant::now());
         tokio::task::spawn_blocking(move || {

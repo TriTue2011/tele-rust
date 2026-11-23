@@ -255,6 +255,10 @@
   #call-stage { min-height:0; display:grid; place-items:center; position:relative; background:#05080b; }
   #call-stage img { position:absolute; inset:0; width:100%; height:100%; object-fit:contain; }
   #call-wait { position:absolute; color:#aab6c2; text-align:center; padding:20px; }
+  /* Gọi THOẠI: không có hình ⇒ cửa sổ gọn, không chiếm cả màn hình như cuộc gọi video */
+  #call-window.voice-call { width:min(480px,96vw); height:auto; grid-template-rows:auto auto auto; }
+  #call-window.voice-call #call-stage { min-height:120px; background:#0d1620; }
+  #call-window.voice-call #call-stage img { display:none; }
   #call-emojis { position:absolute; top:14px; left:50%; transform:translateX(-50%); display:flex; gap:10px; border-radius:99px; padding:8px 14px; background:#101820c9; font-size:22px; }
   #call-meta { position:absolute; right:10px; bottom:8px; color:#c6d0da; background:#101820bd; padding:3px 7px; border-radius:6px; font-size:11px; }
   #call-controls { display:flex; justify-content:center; align-items:center; flex-wrap:wrap; gap:10px; padding:14px; background:#17212b; }
@@ -2928,6 +2932,14 @@
     const manual = pickerSelects[kind].value === "manual";
     pickerUrls[kind].hidden = !manual;
   }
+  // Cuộc gọi THOẠI không có camera: ẩn nhãn + ô chọn camera (trước đây gọi thoại từ web vẫn bắt chọn camera).
+  function setPickerVideo(video) {
+    const want = video !== false;
+    document.querySelector('label[for="device-camera"]').hidden = !want;
+    $("device-camera").hidden = !want;
+    $("device-camera-help").hidden = !want;
+    if (want) updateDeviceUrl("camera"); else pickerUrls.camera.hidden = true;
+  }
   function renderDevicePicker(devices, reason) {
     const entries = devices.catalog || {};
     const prefs = devices.auto ? {} : devicePrefs;
@@ -2975,10 +2987,11 @@
     if (resolve) resolve(value);
   }
   let pendingPickerReason = "";
-  function openDevicePicker(devices, reason) {
+  function openDevicePicker(devices, reason, video = true) {
     if (pendingDevicePicker) finishDevicePicker(null);
     pendingPickerReason = reason;
     renderDevicePicker(devices, reason);
+    setPickerVideo(video);
     return new Promise((resolve) => { pendingDevicePicker = resolve; devicePicker.showModal(); });
   }
   for (const kind of deviceKinds) {
@@ -3027,7 +3040,7 @@
     callDeviceOpening = true;
     updateCallDeviceLine();
     try {
-      const chosen = await openDevicePicker(callDevices, incoming() ? "incoming" : "next");
+      const chosen = await openDevicePicker(callDevices, incoming() ? "incoming" : "next", Boolean(callInfo?.video || callInfo?.peer_video));
       if (chosen && callInfo?.id === id && incoming()) {
         callDeviceSettings = chosen.settings; callDeviceReady = true; callDeviceManual = true;
       }
@@ -3058,7 +3071,7 @@
         callDeviceReady = true;
         callDeviceManual = !devices.auto;
       } else {
-        const chosen = await openDevicePicker(devices, "incoming");
+        const chosen = await openDevicePicker(devices, "incoming", Boolean(info.video));
         if (callInfo?.id !== info.id) return;
         if (chosen) { callDeviceSettings = chosen.settings; callDeviceReady = true; callDeviceManual = true; }
         else if (callInfo.state !== "ringing") { callDeviceSettings = devices.settings; callDeviceReady = true; callDeviceManual = false; }   // đã được nghe tự động: dùng thiết bị HA đã chọn
@@ -3113,6 +3126,7 @@
     if (info.state !== "ringing") acceptedId = null;
     const video = info.video || info.peer_video;
     const name = nameForCall(info.user_id);
+    $("call-window").classList.toggle("voice-call", !video);
     if (info.id !== callInfo?.id) {
       callError(""); stopBrowserAudio();
       if (pendingDevicePicker) finishDevicePicker(null);
@@ -3482,12 +3496,26 @@
       if (snapshot === state) state.timer = setTimeout(() => snapshotLoop(state), Math.max(50, interval - (performance.now() - started)));
     }
   }
+  // Hình bên kia: nhận LUỒNG MJPEG (/api/live/view) trong thẻ <img> — khung nào có là hiện ngay (≈ thời gian thực) thay vì hỏi ảnh chụp
+  // lần lượt (mỗi lần ≥200 ms + thời gian tải ⇒ 3–5 khung/giây, trễ rõ). Chưa có hình/đứt luồng ⇒ thử lại sau 1,5 s.
+  function openVideoStream(state) {
+    const img = $("call-image");
+    img.onload = () => { if (snapshot !== state) return; img.hidden = false; $("call-wait").hidden = true; };
+    img.onerror = () => {
+      if (snapshot !== state) return;
+      img.hidden = true; $("call-wait").hidden = false; $("call-wait").textContent = "Đang chờ hình từ đối phương…";
+      clearTimeout(state.timer);
+      state.timer = setTimeout(() => { if (snapshot === state) openVideoStream(state); }, 1500);
+    };
+    const url = accountPath("/api/live/view/" + encodeURIComponent(state.id));
+    img.src = url + (url.includes("?") ? "&" : "?") + "_=" + Date.now();
+  }
   function startSnapshot(id) {
     if (snapshot?.id === id) return;
     stopSnapshot();
     $("call-wait").textContent = "Đang chờ hình từ đối phương…";
     snapshot = { id, timer: null, controller: new AbortController(), url: "" };
-    snapshotLoop(snapshot);
+    openVideoStream(snapshot);
   }
   function hideCall() {
     stopBrowserAudio();
@@ -3578,7 +3606,7 @@
       const devices = await api("GET", "/api/live/devices");
       if (callInfo || !callsReady) return;
       callDevices = devices;
-      const chosen = devices.auto ? { settings: devices.settings } : await openDevicePicker(devices, "outgoing");
+      const chosen = devices.auto ? { settings: devices.settings } : await openDevicePicker(devices, "outgoing", video);
       if (!chosen || callInfo || !callsReady) return;
       outgoingDevices = { settings: chosen.settings, manual: !devices.auto };
       await callRequest("call", { user_id: userId, video, ...chosen.overrides }, "Không thể gọi");
