@@ -76,7 +76,7 @@ impl BrowserMic {
 
     pub fn command(&self) -> String {
         // Binding NTgCalls nhận Shell, không có API argv. Chỉ chèn cổng u16 và khóa base64url tự sinh.
-        format!("ffmpeg -hide_banner -loglevel quiet -nostdin -protocol_whitelist http,tcp -probesize 32 -analyzeduration 0 -f s16le -ar 16000 -ac 1 -i http://127.0.0.1:{}/{} -f s16le -ac 1 -ar 48000 pipe:1", self.port, self.local.key)
+        format!("ffmpeg -hide_banner -loglevel quiet -nostdin -protocol_whitelist http,tcp -fflags nobuffer -flags low_delay -probesize 32 -analyzeduration 0 -f s16le -ar 16000 -ac 1 -i http://127.0.0.1:{}/{} -f s16le -ac 1 -ar 48000 -flush_packets 1 pipe:1", self.port, self.local.key)
     }
 }
 
