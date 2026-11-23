@@ -3189,9 +3189,66 @@
     if (!browserMic.controller.signal.aborted) releaseBrowserMic(browserMic);
     browserMic = null;
   }
+  // Phát tiếng bên kia KHÔNG qua thẻ <audio> (trình duyệt đệm luồng HTTP 1–3 s ⇒ tiếng chậm như loa Google) mà đọc luồng WAV bằng
+  // fetch + Web Audio, xếp lịch từng khối với độ trễ ~60 ms và BỎ khối khi hàng đợi dài quá 350 ms (không để trễ dồn lên).
+  const LL_LEAD = 0.06, LL_MAX_QUEUE = 0.35;
+  function wavInfo(head) {
+    const v = new DataView(head.buffer, head.byteOffset, head.byteLength);
+    const tag = String.fromCharCode(...head.subarray(0, 4));
+    if (head.length < 44 || tag !== "RIFF") return null;
+    return { channels: v.getUint16(22, true) || 1, rate: v.getUint32(24, true) || 16000, bits: v.getUint16(34, true) || 16, dataAt: 44 };
+  }
+  function schedulePcm(output, bytes, info) {
+    const ctx = output.ctx, frameBytes = 2 * info.channels, frames = Math.floor(bytes.length / frameBytes);
+    if (!frames) return;
+    const now = ctx.currentTime;
+    if (output.next < now + 0.02) output.next = now + LL_LEAD;            // hết hàng đợi: bắt đầu lại với độ trễ nhỏ
+    else if (output.next > now + LL_MAX_QUEUE) return;                    // trễ dồn lên: bỏ khối này để bắt kịp
+    const buffer = ctx.createBuffer(info.channels, frames, info.rate);
+    const view = new DataView(bytes.buffer, bytes.byteOffset, frames * frameBytes);
+    for (let ch = 0; ch < info.channels; ch++) {
+      const data = buffer.getChannelData(ch);
+      for (let i = 0; i < frames; i++) data[i] = view.getInt16((i * info.channels + ch) * 2, true) / 32768;
+    }
+    const node = ctx.createBufferSource(); node.buffer = buffer; node.connect(ctx.destination);
+    node.start(output.next); output.next += buffer.duration;
+    output.scheduled = (output.scheduled || 0) + 1;
+  }
+  function startLowLatencyOutput(output, src) {
+    if (!window.AudioContext || !window.ReadableStream || typeof fetch !== "function") return false;
+    try { output.abort?.abort(); } catch (_) {}
+    output.ctx ||= new AudioContext({ latencyHint: "interactive" });
+    const ctx = output.ctx, controller = new AbortController();
+    output.abort = controller; output.next = 0; output.lowLatency = true;
+    const resumed = () => { if (browserOutput === output) $("call-audio-enable").hidden = ctx.state === "running"; };
+    ctx.resume().then(resumed, resumed); ctx.onstatechange = resumed;
+    (async () => {
+      const response = await fetch(src, { credentials: "same-origin", signal: controller.signal });
+      if (!response.ok || !response.body) throw new Error("Luồng âm thanh lỗi " + response.status);
+      const reader = response.body.getReader();
+      let head = new Uint8Array(0), info = null, rest = new Uint8Array(0);
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done || browserOutput !== output || output.abort !== controller) break;
+        let chunk = value;
+        if (!info) {
+          const joined = new Uint8Array(head.length + chunk.length); joined.set(head); joined.set(chunk, head.length);
+          if (joined.length < 44) { head = joined; continue; }
+          info = wavInfo(joined) || { channels: 1, rate: 16000, bits: 16, dataAt: 0 };
+          chunk = joined.subarray(info.dataAt);
+        }
+        const merged = new Uint8Array(rest.length + chunk.length); merged.set(rest); merged.set(chunk, rest.length);
+        const usable = merged.length - (merged.length % (2 * info.channels));
+        schedulePcm(output, merged.subarray(0, usable), info);
+        rest = merged.slice(usable);
+      }
+    })().catch((e) => { if (browserOutput === output && output.abort === controller && e.name !== "AbortError") { output.lowLatency = false; $("call-audio-enable").hidden = false; } });
+    return true;
+  }
   function stopBrowserOutput() {
     if (!browserOutput) return;
     clearTimeout(browserOutput.timer);
+    try { browserOutput.abort?.abort(); browserOutput.ctx?.close().catch(() => {}); } catch (_) {}
     browserOutput = null;
     callAudio.pause(); callAudio.removeAttribute("src"); callAudio.load(); callAudio.hidden = true;
     $("call-audio-enable").hidden = true;
@@ -3225,8 +3282,10 @@
       output.timer = setTimeout(() => renewBrowserOutput(output), Math.max(1, seconds) * 1000);
       if (renewed) {
         output.src = src;
-        callAudio.src = src; callAudio.hidden = false;
-        playCallAudio(output);
+        if (!startLowLatencyOutput(output, src)) {          // trình duyệt thiếu Web Audio/luồng: quay về thẻ <audio>
+          callAudio.src = src; callAudio.hidden = false;
+          playCallAudio(output);
+        }
       }
     } catch (e) {
       if (browserOutput === output) $("call-audio-enable").hidden = false;
@@ -3243,6 +3302,7 @@
   }
   $("call-audio-enable").addEventListener("click", () => {
     if (!browserOutput) return;
+    if (browserOutput.lowLatency && browserOutput.ctx) { browserOutput.ctx.resume().then(() => { $("call-audio-enable").hidden = browserOutput?.ctx?.state === "running"; }, () => {}); return; }
     if (browserOutput.src && !callAudio.error) playCallAudio(browserOutput);
     else {
       browserOutput.src = "";
