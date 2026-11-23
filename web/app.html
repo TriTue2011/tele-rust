@@ -3193,7 +3193,7 @@
   }
   const callAudio = $("call-audio");
   let browserMic = null, browserOutput = null;
-  const PCM_RATE = 16000, PCM_SAMPLES = PCM_RATE / 10;
+  const PCM_RATE = 16000, PCM_SAMPLES = PCM_RATE / 25;     // khung 40 ms (trước 100 ms) ⇒ mic sang điện thoại ít trễ hơn; 25 yêu cầu/s < giới hạn 30/s của gateway
   function releaseBrowserMic(mic) {
     mic.controller.abort();
     if (mic.processor) {
@@ -3344,7 +3344,11 @@
       if (browserMic !== mic || mic.controller.signal.aborted) return;
       releaseBrowserMic(mic);
       callError("Mất kết nối gửi tiếng từ mic máy này.");
-    } finally { mic.sending = false; }
+    } finally {
+      mic.sending = false;
+      const next = mic.pending; mic.pending = null;
+      if (next && browserMic === mic && !mic.controller.signal.aborted) sendBrowserPcm(mic, next);
+    }
   }
   async function startBrowserMic(id) {
     if (browserMic?.id === id) return;
@@ -3357,7 +3361,7 @@
       mic.stream = stream;
       const context = mic.context = new AudioContext();
       const source = mic.source = context.createMediaStreamSource(stream);
-      const processor = mic.processor = context.createScriptProcessor(2048, 1, 1);
+      const processor = mic.processor = context.createScriptProcessor(1024, 1, 1);
       const silence = mic.silence = context.createGain(); silence.gain.value = 0;
       const ratio = context.sampleRate / PCM_RATE;
       let remaining = ratio, sum = 0, samples = 0;
@@ -3372,7 +3376,8 @@
             const sample = Math.max(-1, Math.min(1, sum / ratio));
             frame.setInt16(samples++ * 2, Math.round(sample * (sample < 0 ? 32768 : 32767)), true);
             if (samples === PCM_SAMPLES) {
-              if (!mic.sending) sendBrowserPcm(mic, frame.buffer);
+              // Khung trước còn đang gửi: giữ ĐÚNG MỘT khung mới nhất (bỏ khung cũ hơn) rồi gửi ngay khi xong — không dồn hàng đợi, không bỏ phí khung mới.
+              if (!mic.sending) sendBrowserPcm(mic, frame.buffer); else mic.pending = frame.buffer;
               frame = new DataView(new ArrayBuffer(PCM_SAMPLES * 2)); samples = 0;
             }
             weight -= remaining; remaining = ratio; sum = 0;
