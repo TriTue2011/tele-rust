@@ -286,7 +286,8 @@ impl State {
             }
             "updateMessageSendFailed" => json!({"type":"send_failed","chat_id":m["chat_id"],"old_id":old,
                 "error":field(&u["error"],"message",json!("gửi không được"))}),
-            "updateMessageContent" | "updateMessageEdited" | "updateMessageInteractionInfo" => json!({"type":"message_changed","chat_id":u["chat_id"],"message_id":u["message_id"]}),
+            "updateMessageContent" | "updateMessageEdited" => json!({"type":"message_changed","chat_id":u["chat_id"],"message_id":u["message_id"]}),
+            "updateMessageInteractionInfo" => json!({"type":"message_interaction","chat_id":u["chat_id"],"message_id":u["message_id"]}),
             "updateDeleteMessages" if truth(&u["is_permanent"]) => json!({"type":"deleted","chat_id":u["chat_id"],"ids":array(&u["message_ids"])}),
             "updateChatLastMessage" | "updateChatReadInbox" | "updateChatTitle" | "updateChatPhoto" | "updateChatPosition"
             | "updateChatNotificationSettings" | "updateChatUnreadMentionCount" | "updateChatIsMarkedAsUnread" => {
