@@ -597,6 +597,7 @@
       <button type="button" id="ctx-mute" class="ctx-item" role="menuitem">Tắt âm</button>
       <button type="button" id="ctx-video-call" class="ctx-item" role="menuitem">Gọi video</button>
       <button type="button" id="ctx-search" class="ctx-item" role="menuitem">Tìm kiếm</button>
+      <button type="button" id="ctx-wallpaper" class="ctx-item" role="menuitem">Hình nền…</button>
       <button type="button" id="ctx-pin" class="ctx-item" role="menuitem">Ghim</button>
       <button type="button" id="ctx-archive" class="ctx-item" role="menuitem">Lưu trữ</button>
       <button type="button" id="ctx-unread" class="ctx-item" role="menuitem">Đánh dấu chưa đọc</button>
@@ -1757,7 +1758,7 @@
     if (typeof renderHeadPeer === "function") renderHeadPeer(c);
     if (typeof renderHeadAutoDelete === "function") renderHeadAutoDelete(c.auto_delete_seconds || 0);
     if (typeof closeChatSearch === "function") closeChatSearch();
-    const box = $("msgs"); box.textContent = ""; rendered.clear(); msgData.clear(); lastDay = null;
+    const box = $("msgs"); box.textContent = ""; rendered.clear(); msgData.clear(); lastDay = null; applyBackground(null);
     try {
       const r = await api("GET", "/api/chats/" + c.id + "/messages?limit=40"); const msgs = r.messages || [];
       if (cur !== c.id) return; oldest = msgs.length ? msgs[0].id : 0;
@@ -1765,6 +1766,7 @@
       appendMessages(msgs, false); box.scrollTop = box.scrollHeight;
       markRead(c.id, msgs);
     } catch (e) { toast(e.message); }
+    loadChatBackground(c.id);
     if (typeof onChatOpened === "function") onChatOpened(c);
     if (typeof updateComposerToolbar === "function") updateComposerToolbar();
     $("text").focus();
@@ -2500,6 +2502,163 @@
     try { const buf = await f.arrayBuffer(); await api("POST", "/api/chats/" + cur + "/send_file?kind=" + kind + "&name=" + encodeURIComponent(f.name), buf, true); toast("Đã gửi"); scheduleChats(); }
     catch (er) { toast(er.message); }
   });
+  // ---- Hình nền hội thoại: DÙNG HÌNH NỀN CỦA TELEGRAM qua TDLib (điện thoại thấy giống web) — bộ sưu tập, màu/chuyển màu, ảnh tự gán,
+  // «đổi cho cả hai bên», độ tối ban đêm. Gateway giữ ảnh tự gán ≤3 MB rồi đưa cho Telegram.
+  const WP_COLORS = ["#ffffff", "#e8f0fe", "#e3f5ea", "#fff4d6", "#fde8ef", "#efe8fb", "#dff4f2", "#cfd8dc", "#90a4ae", "#455a64", "#263238", "#101820", "#0b3d91", "#1b5e20", "#6a1b9a", "#b71c1c", "#e65100", "#ffb300"];
+  const isDarkTheme = () => { const r = document.documentElement; const t = r.dataset.theme; return t === "dark" || t === "midnight" || (t === "system" && r.dataset.resolvedTheme === "dark"); };
+  function fillCss(f) {
+    if (!f || !f.colors || !f.colors.length) return "";
+    if (f.kind === "solid" || f.colors.length === 1) return f.colors[0];
+    if (f.kind === "gradient") return "linear-gradient(" + ((Number(f.angle) || 0) + 180) % 360 + "deg," + f.colors[0] + "," + f.colors[1] + ")";
+    return "linear-gradient(135deg," + f.colors.join(",") + ")";      // gradient tự do: xấp xỉ bằng đường chéo
+  }
+  async function backgroundCss(bg, dimming) {                       // → giá trị CSS `background` (nhiều lớp), hoặc "" nếu chưa dựng được
+    if (!bg) return "";
+    const layers = [];
+    if (dimming > 0) layers.push("linear-gradient(rgba(0,0,0," + (dimming / 100) + "),rgba(0,0,0," + (dimming / 100) + "))");
+    if (bg.kind === "wallpaper" || bg.kind === "pattern") {
+      const file = bg.file || bg.thumb_file;
+      if (file) { try { layers.push("center/cover no-repeat url(" + JSON.stringify(await blobUrl(file)) + ")"); } catch (_) { /* chưa tải được ảnh: dùng nền màu nếu có */ } }
+    }
+    const fill = bg.fill ? fillCss(bg.fill) : "";
+    if (fill) layers.push(fill);
+    return layers.join(",");
+  }
+  async function applyBackground(info) {
+    const box = $("msgs"); const token = ++wpToken;
+    if (!info || !info.background) { box.classList.remove("wp"); box.style.background = ""; return; }
+    const css = await backgroundCss(info.background, isDarkTheme() ? info.dimming : 0);
+    if (token !== wpToken) return;                                  // đã đổi hội thoại/nền khác trong lúc tải
+    box.classList.toggle("wp", !!css); box.style.background = css;
+  }
+  let wpToken = 0;
+  async function loadChatBackground(chatId) {
+    try { const r = await api("GET", "/api/chats/" + chatId + "/background"); if (cur === chatId) applyBackground(r.background); } catch (_) { /* không có nền / lỗi mạng: giữ nền mặc định */ }
+  }
+  function shrinkImage(file) {                                      // ≤ 3 MB, cạnh dài ≤ 1920 px, luôn ra JPEG/PNG gateway nhận
+    return new Promise((resolve, reject) => {
+      if (!/^image\/(jpeg|png)$/.test(file.type)) return reject(new Error("Chỉ nhận ảnh JPEG hoặc PNG."));
+      const url = URL.createObjectURL(file), img = new Image();
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        const scale = Math.min(1, 1920 / Math.max(img.naturalWidth, img.naturalHeight));
+        if (file.size <= 3 * 1024 * 1024 && scale === 1) return resolve(file);
+        const c = document.createElement("canvas"); c.width = Math.max(1, Math.round(img.naturalWidth * scale)); c.height = Math.max(1, Math.round(img.naturalHeight * scale));
+        c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+        c.toBlob((b) => (b && b.size <= 3 * 1024 * 1024 ? resolve(b) : reject(new Error("Ảnh vẫn quá lớn sau khi nén (tối đa 3 MB)."))), "image/jpeg", 0.85);
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("Không đọc được ảnh này.")); };
+      img.src = url;
+    });
+  }
+  async function openWallpaperDialog() {
+    if (!cur) return;
+    const chatId = cur, isPrivate = curKind === "private";
+    const old = document.getElementById("wp-dialog"); if (old) old.remove();
+    let dark = isDarkTheme(), tab = "gallery", draft = null, dim = 0, both = isPrivate, busy = false, gallery = [], uploadedBlobUrl = "";
+    const msg = el("p", "wpd-msg"); msg.setAttribute("role", "status");
+    const say = (t, bad) => { msg.textContent = t || ""; msg.className = "wpd-msg" + (bad ? " bad" : ""); };
+    const preview = el("div", "wpd-preview"); preview.appendChild(el("div", "wpd-s in", "Xin chào! Đây là tin nhận.")); preview.appendChild(el("div", "wpd-s out", "Tin gửi trên hình nền này."));
+    const body = el("div"); const tabs = el("div", "wpd-tabs"); tabs.setAttribute("role", "tablist");
+    async function paint() {
+      let css = "";
+      if (draft && draft.preview) css = draft.preview;
+      else if (draft && draft.bg) css = await backgroundCss(draft.bg, dark ? dim : 0);
+      preview.style.background = css || "";
+      if (css && draft && draft.preview && dark && dim > 0) preview.style.background = "linear-gradient(rgba(0,0,0," + dim / 100 + "),rgba(0,0,0," + dim / 100 + "))," + draft.preview;
+    }
+    function tile(cls, label, css, on, fn, content) {
+      const b = el("button", "wpd-t " + cls + (on ? " on" : ""), content || ""); b.type = "button"; b.title = label; b.setAttribute("aria-label", label); b.setAttribute("aria-pressed", String(!!on));
+      if (css) b.style.background = css; b.addEventListener("click", fn); return b;
+    }
+    const same = (a) => draft && draft.background_id && draft.background_id === a;
+    async function drawBody() {
+      const kids = [];
+      if (tab === "gallery") {
+        const grid = el("div", "wpd-grid");
+        const pick = document.createElement("input"); pick.type = "file"; pick.accept = "image/jpeg,image/png"; pick.hidden = true; pick.id = "wpd-file";
+        pick.addEventListener("change", () => { upload(pick.files && pick.files[0]); pick.value = ""; });
+        grid.appendChild(tile("cam", "Chọn ảnh của tôi", "", false, () => pick.click(), "📷"));
+        grid.appendChild(tile("none", "Không có hình nền", "", !draft, () => { draft = null; paint(); drawBody(); }, "∅"));
+        for (const b of gallery) {
+          const t = tile("bg", b.name || "Hình nền", b.fill ? fillCss(b.fill) : "", same(b.id), () => { draft = { background_id: b.id, bg: b }; paint(); drawBody(); });
+          if (!b.fill && (b.thumb_file || b.file)) blobUrl(b.thumb_file || b.file).then((u) => { t.style.backgroundImage = "url(" + JSON.stringify(u) + ")"; }).catch(() => {});
+          grid.appendChild(t);
+        }
+        kids.push(grid, pick);
+        if (!gallery.length) kids.push(el("p", "wpd-msg", "Chưa có hình nền nào trong bộ sưu tập của tài khoản này (mở Telegram trên điện thoại → Cài đặt → Giao diện chat để thêm)."));
+      } else if (tab === "color") {
+        const sw = el("div", "wpd-sw");
+        for (const c of WP_COLORS) { const b = el("button", draft && draft.color === c ? "on" : ""); b.type = "button"; b.style.background = c; b.setAttribute("aria-label", "Màu " + c); b.addEventListener("click", () => { draft = { color: c, preview: c }; paint(); drawBody(); }); sw.appendChild(b); }
+        const custom = document.createElement("input"); custom.type = "color"; custom.value = draft && draft.color || "#e8f0fe"; custom.setAttribute("aria-label", "Màu tuỳ ý");
+        custom.addEventListener("input", () => { draft = { color: custom.value, preview: custom.value }; paint(); });
+        const row = el("label", "wpd-row"); row.appendChild(el("span", "", "Màu tuỳ ý")); row.appendChild(custom); kids.push(sw, row);
+      } else if (tab === "gradient") {
+        const g = draft && draft.gradient ? draft.gradient : { from: "#a1c4fd", to: "#c2e9fb", angle: 160 };
+        const upd = () => { draft = { gradient: Object.assign({}, g), preview: "linear-gradient(" + (g.angle + 180) % 360 + "deg," + g.from + "," + g.to + ")" }; paint(); };
+        const mk = (label, key, type, attrs) => { const row = el("label", "wpd-row"); row.appendChild(el("span", "", label)); const i = document.createElement("input"); i.type = type; Object.assign(i, attrs || {}); i.value = g[key];
+          i.setAttribute("aria-label", label); i.addEventListener("input", () => { g[key] = type === "range" ? Number(i.value) : i.value; upd(); }); row.appendChild(i); return row; };
+        kids.push(mk("Từ màu", "from", "color"), mk("Đến màu", "to", "color"), mk("Góc", "angle", "range", { min: "0", max: "360", step: "5" }));
+        if (!draft || !draft.gradient) upd();
+      } else {
+        kids.push(el("p", "wpd-msg", "Bấm ô máy ảnh ở «Bộ sưu tập» để chọn ảnh JPEG/PNG (tự nén nếu lớn hơn 3 MB)."));
+      }
+      // độ tối ban đêm + cho cả hai bên (chỉ hội thoại 1-1)
+      const dimRow = el("label", "wpd-row"); dimRow.appendChild(el("span", "", "Độ tối ban đêm"));
+      const dr = document.createElement("input"); dr.type = "range"; dr.min = "0"; dr.max = "100"; dr.step = "5"; dr.value = String(dim); dr.id = "wpd-dim"; dr.setAttribute("aria-label", "Độ tối ban đêm");
+      dr.addEventListener("input", () => { dim = Number(dr.value); paint(); }); dimRow.appendChild(dr); kids.push(dimRow);
+      if (isPrivate) { const r = el("label", "wpd-row"); const c = document.createElement("input"); c.type = "checkbox"; c.id = "wpd-both"; c.checked = both; c.addEventListener("change", () => { both = c.checked; }); r.appendChild(c); r.appendChild(el("span", "", "Đổi hình nền cho cả hai bên")); kids.push(r); }
+      body.replaceChildren(...kids);
+    }
+    function drawTabs() {
+      tabs.replaceChildren(...[["gallery", "Bộ sưu tập"], ["color", "Màu"], ["gradient", "Chuyển màu"]].map(([id, label]) => { const b = el("button", tab === id ? "on" : "", label); b.type = "button"; b.setAttribute("role", "tab"); b.setAttribute("aria-selected", String(tab === id));
+        b.addEventListener("click", () => { tab = id; drawTabs(); drawBody(); }); return b; }));
+    }
+    async function upload(f) {
+      if (!f || busy) return; busy = true; say("Đang xử lý ảnh…");
+      try {
+        const blob = await shrinkImage(f); const buf = await blob.arrayBuffer();
+        const r = await api("POST", "/api/wallpapers/upload", buf, true);
+        if (uploadedBlobUrl) URL.revokeObjectURL(uploadedBlobUrl); uploadedBlobUrl = URL.createObjectURL(blob);
+        draft = { file_path: r.file, preview: "center/cover no-repeat url(" + JSON.stringify(uploadedBlobUrl) + ")" }; say("Đã tải ảnh lên."); await paint(); await drawBody();
+      } catch (e) { say(e.message || String(e), true); }
+      busy = false;
+    }
+    async function loadGallery() {
+      try { const r = await api("GET", "/api/backgrounds?dark=" + (dark ? "1" : "0")); gallery = r.backgrounds || []; } catch (e) { gallery = []; say("Không tải được bộ sưu tập: " + (e.message || e), true); }
+      drawBody();
+    }
+    const nightBtn = el("button", "ghost", dark ? "🌙" : "☀️"); nightBtn.type = "button"; nightBtn.id = "wpd-night"; nightBtn.setAttribute("aria-label", "Xem bộ sưu tập ban ngày hoặc ban đêm"); nightBtn.setAttribute("aria-pressed", String(dark));
+    nightBtn.addEventListener("click", () => { dark = !dark; nightBtn.textContent = dark ? "🌙" : "☀️"; nightBtn.setAttribute("aria-pressed", String(dark)); draft = null; paint(); loadGallery(); });
+    const close = () => { dlg.remove(); document.removeEventListener("keydown", onKey, true); if (uploadedBlobUrl) URL.revokeObjectURL(uploadedBlobUrl); };
+    const onKey = (e) => { if (e.key === "Escape") { e.stopPropagation(); close(); } };
+    async function commit(kind) {
+      if (busy) return; busy = true; say("Đang lưu…");
+      try {
+        let res;
+        if (kind === "remove") res = await api("POST", "/api/chats/" + chatId + "/background", { remove: true, restore_previous: false });
+        else {
+          if (!draft) { busy = false; return say("Hãy chọn một hình nền trước.", true); }
+          const b = { dimming: dim, for_both: isPrivate && both };
+          if (draft.background_id) b.background_id = draft.background_id; else if (draft.color) b.color = draft.color; else if (draft.gradient) b.gradient = draft.gradient; else if (draft.file_path) b.file_path = draft.file_path;
+          res = await api("POST", "/api/chats/" + chatId + "/background", b);
+        }
+        if (res && res.error) throw new Error(res.error.message || res.error);
+        close(); toast(kind === "remove" ? "Đã bỏ hình nền." : "Đã đổi hình nền."); if (cur === chatId) loadChatBackground(chatId);
+      } catch (e) { busy = false; say("Không lưu được: " + (e.message || e), true); }
+    }
+    const actions = el("div", "wpd-act");
+    const bClear = el("button", "ghost", "Bỏ hình nền"); bClear.type = "button"; bClear.id = "wpd-clear"; bClear.addEventListener("click", () => commit("remove"));
+    const bCancel = el("button", "ghost", "Huỷ"); bCancel.type = "button"; bCancel.id = "wpd-cancel"; bCancel.addEventListener("click", close);
+    const bSave = el("button", "", "Lưu"); bSave.type = "button"; bSave.id = "wpd-save"; bSave.addEventListener("click", () => commit("set"));
+    actions.append(bClear, bCancel, bSave);
+    const head = el("div", "wpd-row"); head.appendChild(el("h2", "", "Hình nền hội thoại")); head.lastChild.style.flex = "1"; head.appendChild(nightBtn);
+    const box = el("div", "wpd-box"); box.append(head, preview, tabs, body, msg, actions);
+    const dlg = el("div", "wpd"); dlg.id = "wp-dialog"; dlg.setAttribute("role", "dialog"); dlg.setAttribute("aria-modal", "true"); dlg.setAttribute("aria-label", "Hình nền hội thoại"); dlg.appendChild(box);
+    document.body.appendChild(dlg); document.addEventListener("keydown", onKey, true);
+    drawTabs(); loadGallery(); paint();
+    try { const r = await api("GET", "/api/chats/" + chatId + "/background"); if (r.background && r.background.dimming) { dim = r.background.dimming; drawBody(); } } catch (_) { /* không đọc được nền hiện tại */ }
+  }
   // ---- Thả cảm xúc: danh sách CẢM XÚC ĐƯỢC PHÉP của hội thoại (Telegram quyết định, không gắn cứng 👍) + bảng emoji đầy đủ khi soạn tin ----
   // «Dùng gần đây» của bảng emoji nhớ bằng COOKIE (Tele nhớ tuỳ chọn bằng cookie), như thứ tự danh bạ và độ rộng khung.
   if (window.Emoji) {
@@ -5555,6 +5714,13 @@
     if (!target) return;
     if (cur !== target.id && typeof openChat === "function") await openChat(target);
     if (typeof startCall === "function") startCall(true);
+  });
+  $("ctx-wallpaper").addEventListener("click", async () => {
+    const target = ctxMenuChat;
+    closeChatContextMenu();
+    if (!target) return;
+    if (cur !== target.id && typeof openChat === "function") await openChat(target);
+    openWallpaperDialog();
   });
   $("ctx-search").addEventListener("click", async () => {
     const target = ctxMenuChat;
