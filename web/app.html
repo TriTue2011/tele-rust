@@ -65,7 +65,7 @@
   html, body { height:100%; margin:0; }
   body { background:var(--bg); color:var(--fg); font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
   #app { display:flex; height:100%; background:var(--panel); }
-  aside { width:340px; border-right:1px solid var(--line); display:flex; flex-direction:column; min-width:0; }
+  aside { width:var(--aside-w,340px); position:relative; border-right:1px solid var(--line); display:flex; flex-direction:column; min-width:0; }
   main { flex:1; display:flex; flex-direction:column; min-width:0; background:var(--bg); position:relative; }
   .bar { display:flex; align-items:center; gap:8px; padding:10px 12px; border-bottom:1px solid var(--line); background:var(--panel); }
   .bar h1 { font-size:16px; margin:0; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -430,7 +430,7 @@
   .font-popover label { display:block; font-weight:600; font-size:12px; margin-bottom:4px; color:var(--mut); }
   .font-popover button, .font-popover select { min-height:44px; max-width:100%; }
   .font-popover input[type=range] { min-height:44px; flex:1; min-width:0; accent-color:var(--acc); }
-  .chat-info-drawer { width:340px; flex:none; border-left:1px solid var(--line); display:flex; flex-direction:column; min-width:0; background:var(--panel); color:var(--fg); overflow:hidden; }
+  .chat-info-drawer { width:var(--drawer-w,340px); position:relative; flex:none; border-left:1px solid var(--line); display:flex; flex-direction:column; min-width:0; background:var(--panel); color:var(--fg); overflow:hidden; }
   .chat-info-top { display:flex; align-items:center; gap:8px; padding:10px 14px; border-bottom:1px solid var(--line); flex:none; }
   .chat-info-top h2 { margin:0; font-size:16px; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .chat-info-body { flex:1; min-height:0; overflow-y:auto; overflow-x:hidden; padding:14px; display:flex; flex-direction:column; gap:12px; overflow-wrap:anywhere; }
@@ -492,6 +492,13 @@
   .comments-post-preview { padding:9px 14px; border-bottom:1px solid var(--line); background:var(--bg); font-size:13px; color:var(--mut); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:none; }
   .comments-body { flex:1; min-height:0; overflow-y:auto; overflow-x:hidden; padding:12px 14px; display:flex; flex-direction:column; gap:10px; }
   .comments-list { display:flex; flex-direction:column; gap:8px; }
+  .chat-info-drawer.comments-drawer { width:var(--comments-w,460px); }
+  /* Tay kéo đổi độ rộng khung (chỉ máy tính ≥ 1060 px): cột trái kéo cạnh phải, ngăn bên phải kéo cạnh trái. */
+  .pane-resizer { position:absolute; top:0; bottom:0; width:10px; cursor:col-resize; z-index:5; touch-action:none; background:transparent; }
+  .pane-resizer.edge-right { right:-5px; } .pane-resizer.edge-left { left:-5px; }
+  .pane-resizer:hover, .pane-resizer:focus-visible, .pane-resizer.dragging { background:color-mix(in srgb, var(--acc) 45%, transparent); outline:none; }
+  @media (max-width:1059px) { .pane-resizer { display:none; } .chat-info-drawer.comments-drawer { width:min(var(--comments-w,460px),70vw); } }
+  @media (max-width:699px) { .chat-info-drawer.comments-drawer { width:100%; } }
   .comment-item { padding:8px 10px; border-radius:10px; background:var(--bg); border:1px solid var(--line); display:flex; flex-direction:column; gap:4px; overflow-wrap:anywhere; }
   .comment-item.out { background:var(--out); }
   .comment-head { display:flex; align-items:center; justify-content:space-between; gap:8px; }
@@ -2529,6 +2536,76 @@
     else if (it.type === "typing" && it.chat_id === cur) { $("typing").textContent = it.action === "chatActionCancel" ? "" : "đang gõ…"; clearTimeout(typingTimer); typingTimer = setTimeout(() => { $("typing").textContent = ""; }, 5000); }
   }
   let reloadH = null; function reloadSoon() { clearTimeout(reloadH); reloadH = setTimeout(reloadCurrent, 600); }
+
+  // ---- đổi độ rộng các khung (kéo hoặc phím mũi tên; nhớ bằng cookie, như thứ tự danh bạ) --------------------------------
+  const PANES = {
+    aside: { cssVar: "--aside-w", def: 340, min: 260, max: 620, edge: "right" },
+    drawer: { cssVar: "--drawer-w", def: 340, min: 300, max: 720, edge: "left" },
+    comments: { cssVar: "--comments-w", def: 460, min: 340, max: 900, edge: "left" },
+  };
+  const paneCookie = "tggw_pane_widths=";
+  const paneWidths = {};
+  function loadPaneWidths() {
+    try {
+      const raw = document.cookie.split(/;\s*/).find((c) => c.startsWith(paneCookie));
+      if (!raw) return;
+      for (const part of decodeURIComponent(raw.slice(paneCookie.length)).split("|")) {
+        const [name, value] = part.split(":"); const n = Number(value);
+        if (PANES[name] && Number.isFinite(n)) paneWidths[name] = clampPane(name, n);
+      }
+    } catch (_) {}
+  }
+  function savePaneWidths() {
+    const secure = location.protocol === "https:" ? "; Secure" : "";
+    const value = Object.entries(paneWidths).map(([k, v]) => k + ":" + Math.round(v)).join("|");
+    try { document.cookie = paneCookie + encodeURIComponent(value) + "; Max-Age=31536000; Path=/; SameSite=Strict" + secure; } catch (_) {}
+  }
+  function clampPane(name, width) {
+    const p = PANES[name];
+    return Math.max(p.min, Math.min(p.max, Math.round(width)));
+  }
+  function applyPaneWidth(name, width, save) {
+    const w = clampPane(name, width);
+    paneWidths[name] = w;
+    $("app").style.setProperty(PANES[name].cssVar, w + "px");
+    if (save) savePaneWidths();
+    return w;
+  }
+  function paneElement(name) { return name === "aside" ? document.querySelector("aside") : name === "comments" ? $("comments-drawer") : $("chat-info-drawer"); }
+  function makePaneResizer(name) {
+    const host = paneElement(name); if (!host) return;
+    const p = PANES[name];
+    const bar = document.createElement("div");
+    bar.className = "pane-resizer edge-" + p.edge; bar.tabIndex = 0;
+    bar.setAttribute("role", "separator"); bar.setAttribute("aria-orientation", "vertical");
+    bar.setAttribute("aria-label", "Kéo để đổi độ rộng khung"); bar.title = "Kéo để đổi độ rộng · nhấp đúp để về mặc định";
+    const current = () => Math.round(host.getBoundingClientRect().width);
+    let startX = 0, startW = 0;
+    bar.addEventListener("pointerdown", (e) => {
+      startX = e.clientX; startW = current(); bar.classList.add("dragging"); bar.setPointerCapture(e.pointerId); e.preventDefault();
+    });
+    bar.addEventListener("pointermove", (e) => {
+      if (!bar.classList.contains("dragging")) return;
+      const dx = e.clientX - startX;
+      applyPaneWidth(name, startW + (p.edge === "right" ? dx : -dx), false);
+    });
+    const end = () => { if (bar.classList.contains("dragging")) { bar.classList.remove("dragging"); savePaneWidths(); } };
+    bar.addEventListener("pointerup", end); bar.addEventListener("pointercancel", end);
+    bar.addEventListener("dblclick", () => { delete paneWidths[name]; $("app").style.removeProperty(p.cssVar); savePaneWidths(); });
+    bar.addEventListener("keydown", (e) => {
+      if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+      const grow = (e.key === "ArrowRight") === (p.edge === "right");
+      applyPaneWidth(name, current() + (grow ? 16 : -16), true); e.preventDefault();
+    });
+    host.appendChild(bar);
+  }
+  function initPaneResizers() {
+    if (typeof document.querySelector !== "function" || typeof document.createElement !== "function" || !$("app")?.style) return;   // môi trường thử không có DOM đầy đủ
+    loadPaneWidths();
+    for (const [name, w] of Object.entries(paneWidths)) $("app").style.setProperty(PANES[name].cssVar, w + "px");
+    for (const name of Object.keys(PANES)) makePaneResizer(name);
+  }
+  initPaneResizers();
 
   // ---- tìm kiếm, tab và danh bạ -------------------------------------------------------------------
   // ---- danh bạ ------------------------------------------------------------------------------------
