@@ -10,6 +10,7 @@ mod catalog;
 mod comments;
 mod contacts;
 mod info;
+mod interaction;
 mod rich_text;
 mod shape;
 mod writing;
@@ -17,11 +18,17 @@ mod writing;
 struct FakeTd {
     calls: Mutex<VecDeque<FakeReply>>,
     updates: broadcast::Sender<Value>,
+    /// openChat/closeChat là yêu cầu nền: không nằm trong kịch bản, chỉ được ghi lại để khẳng định.
+    background: Mutex<Vec<(String, i64)>>,
 }
 
 impl TdLink for FakeTd {
     fn request(&self, req: Value) -> BoxFut<'_, Result<Value, TdError>> {
         Box::pin(async move {
+            if let Some(kind) = req["@type"].as_str().filter(|k| matches!(*k, "openChat" | "closeChat")) {
+                self.background.lock().unwrap().push((kind.to_owned(), req["chat_id"].as_i64().unwrap_or(0)));
+                return Ok(json!({"@type":"ok"}));
+            }
             let (expected, result) = self.calls.lock().unwrap().pop_front().expect("TDLib request ngoài dự kiến");
             writing::check_request(req, expected);
             result
@@ -37,7 +44,7 @@ impl Drop for FakeTd {
 }
 
 fn setup(calls: Vec<FakeReply>) -> (ChatService, Arc<FakeTd>) {
-    let td = Arc::new(FakeTd { calls: Mutex::new(calls.into()), updates: broadcast::channel(64).0 });
+    let td = Arc::new(FakeTd { calls: Mutex::new(calls.into()), updates: broadcast::channel(64).0, background: Mutex::new(Vec::new()) });
     (ChatService::new(td.clone(), "+000123", "target/chat-tests"), td)
 }
 

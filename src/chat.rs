@@ -12,7 +12,7 @@ pub(crate) use write::synthesize_audio;
 #[cfg(test)]
 mod tests;
 
-use std::{path::{Path, PathBuf}, sync::Arc, time::Duration};
+use std::{collections::VecDeque, path::{Path, PathBuf}, sync::{Arc, Mutex}, time::{Duration, Instant}};
 
 use serde_json::{json, Value};
 
@@ -32,7 +32,14 @@ pub struct ChatService {
     state: Arc<State>,
     updates: tokio::task::JoinHandle<()>,
     call_updates: Option<tokio::task::JoinHandle<()>>,
+    /// Chat đang mở với TDLib (mới nhất ở cuối). TDLib chỉ làm tươi và đẩy lượt cảm xúc/xem/bình luận cho chat đang mở.
+    open_chats: Mutex<VecDeque<(i64, Instant)>>,
 }
+
+/// Số chat mở cùng lúc tối đa, thời gian nhắc lại `openChat` (TDLib khởi động lại thì mất trạng thái) và thời gian rảnh thì đóng.
+const MAX_OPEN_CHATS: usize = 3;
+const REOPEN_AFTER: Duration = Duration::from_secs(120);
+const CLOSE_IDLE_AFTER: Duration = Duration::from_secs(600);
 
 impl ChatService {
     /// Tạo trong Tokio runtime của gateway, dùng số tài khoản mà tầng đăng nhập đã chọn.
@@ -44,7 +51,7 @@ impl ChatService {
         let state = Arc::new(State::default());
         let updates = tokio::spawn(state.clone().receive(td.updates(), events));
         let data_dir = data_dir.as_ref().to_path_buf();
-        Self { td, account: account.into(), uploads: data_dir.join("uploads"), data_dir, state, updates, call_updates: None }
+        Self { td, account: account.into(), uploads: data_dir.join("uploads"), data_dir, state, updates, call_updates: None, open_chats: Mutex::new(VecDeque::new()) }
     }
 
     pub(crate) fn follow_calls(mut self, source: tokio::sync::broadcast::Receiver<Value>) -> Self {
@@ -369,7 +376,26 @@ impl ChatService {
         out
     }
 
+    /// Giữ chat mở với TDLib để nhận số liệu tương tác tươi. Lỗi bị bỏ qua (chỉ ảnh hưởng độ tươi, không ảnh hưởng đọc tin).
+    async fn keep_open(&self, chat: i64) {
+        let now = Instant::now();
+        let close = {
+            let mut list = self.open_chats.lock().unwrap();
+            let mut close = Vec::new();
+            list.retain(|(id, at)| { let keep = *id == chat || now.duration_since(*at) < CLOSE_IDLE_AFTER; if !keep { close.push(*id); } keep });
+            let fresh = list.iter().find(|(id, _)| *id == chat).is_some_and(|(_, at)| now.duration_since(*at) < REOPEN_AFTER);
+            if fresh { return; }
+            list.retain(|(id, _)| *id != chat);
+            list.push_back((chat, now));
+            while list.len() > MAX_OPEN_CHATS { if let Some((id, _)) = list.pop_front() { close.push(id); } }
+            close
+        };
+        for id in close { let _ = self.request(json!({"@type":"closeChat","chat_id":id})).await; }
+        let _ = self.request(json!({"@type":"openChat","chat_id":chat})).await;
+    }
+
     async fn history(&self, chat: i64, mut before: i64, limit: usize) -> Reply {
+        self.keep_open(chat).await;
         let mut got = Vec::new();
         for _ in 0..3 {
             let result = self.request(json!({"@type":"getChatHistory","chat_id":chat,"from_message_id":before,
