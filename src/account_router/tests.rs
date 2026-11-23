@@ -1692,3 +1692,105 @@ async fn rich_text_send_enforces_auth_csrf_account_isolation_and_ai_markup_422()
     drop(hub);
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[tokio::test]
+async fn channel_comments_enforce_auth_csrf_and_multi_account_isolation() {
+    let dir = std::env::temp_dir().join(format!("tggw-channel-comments-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (api, factory) = crate::td::fake::Fake::factory();
+    let cfg = LoginConfig { data_dir: dir.clone(), api_id: 12345, api_hash: "fake-api-hash".into(), phone: String::new() };
+    let hub = Accounts::with_factory(cfg, "fake".into(), 3399, factory).await.unwrap();
+    let ui_auth = Arc::new(crate::ui_auth::UiAuth::open(&dir, "test-token", None, None, false).unwrap());
+    let router = crate::rest::router_accounts_with_ui_auth(hub.clone(), crate::rest::RestConfig {
+        token: "test-token".into(), rate_limit_per_minute: 1000, version: "test".into(),
+    }, ui_auth);
+
+    let first = "+84900000001";
+    let second = "+84900000002";
+    for phone in [first, second] {
+        let login = send(&router, "POST", "/ui/api/accounts", json!({"phone":phone}), true).await.1;
+        let id = login["login_id"].as_str().unwrap();
+        assert_eq!(send(&router, "POST", &format!("/ui/api/accounts/{id}/code"), json!({"code":"22222"}), true).await.0, 200);
+    }
+
+    let setup_resp = router.clone().oneshot(
+        Request::builder().method("POST").uri("/ui/api/auth/setup")
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .body(Body::from(json!({"token":"test-token","ten":"nguoi-thu","mat_khau":"mat-khau-thu-dai"}).to_string())).unwrap(),
+    ).await.unwrap();
+    assert_eq!(setup_resp.status(), 200);
+    let cookie = setup_resp.headers()[axum::http::header::SET_COOKIE].to_str().unwrap().split(';').next().unwrap().to_owned();
+
+    let send_cookie = |method: &'static str, path: &'static str, body: Value, extra: Vec<(&'static str, &'static str)>| {
+        let router = router.clone();
+        let cookie = cookie.clone();
+        async move {
+            let mut req = Request::builder().method(method).uri(path).header(axum::http::header::COOKIE, cookie);
+            for (k, v) in extra { req = req.header(k, v); }
+            let resp = router.oneshot(req.body(Body::from(serde_json::to_vec(&body).unwrap())).unwrap()).await.unwrap();
+            let status = resp.status().as_u16();
+            let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+            (status, serde_json::from_slice::<Value>(&bytes).unwrap_or(Value::Null))
+        }
+    };
+
+    // Cấu hình dữ liệu kênh + nhóm thảo luận giả trên Fake TDLib.
+    api.chats.lock().unwrap().insert(-100100, json!({
+        "id": -100100, "title": "Kênh Tin Tức Mẫu",
+        "type": {"@type":"chatTypeSupergroup","supergroup_id":100,"is_channel":true}
+    }));
+    api.supergroup_full_info.lock().unwrap().insert(100, json!({
+        "@type":"supergroupFullInfo","linked_chat_id":-100200
+    }));
+    api.message_threads.lock().unwrap().insert((-100100, 10), json!({
+        "@type":"messageThreadInfo","chat_id":-100200,"message_thread_id":500,"messages":[{"id":500,"chat_id":-100200}]
+    }));
+    api.thread_history.lock().unwrap().insert((-100100, 10), json!({
+        "@type":"messages","messages":[
+            {"id":502,"chat_id":-100200,"date":1700000002,"is_outgoing":false,"sender_id":{"@type":"messageSenderUser","user_id":11},"content":{"@type":"messageText","text":{"text":"Bình luận 2"}}},
+            {"id":501,"chat_id":-100200,"date":1700000001,"is_outgoing":false,"sender_id":{"@type":"messageSenderUser","user_id":11},"content":{"@type":"messageText","text":{"text":"Bình luận 1"}}}
+        ]
+    }));
+
+    // 1. Không có xác thực / sai Bearer -> 401; cookie POST thiếu CSRF / Origin lạ -> 403; account lạ -> 404.
+    api.sent.lock().unwrap().clear();
+    assert_eq!(send(&router, "GET", "/api/chats/-100100/messages/10/comments?account=%2B84900000001", Value::Null, false).await.0, 401);
+    assert_eq!(send(&router, "POST", "/api/chats/-100100/messages/10/comments?account=%2B84900000001", json!({"text":"Xin chào"}), false).await.0, 401);
+    let bad_bearer = router.clone().oneshot(
+        Request::builder().method("GET").uri("/api/chats/-100100/messages/10/comments?account=%2B84900000001")
+            .header(axum::http::header::AUTHORIZATION, "Bearer sai-token").body(Body::empty()).unwrap(),
+    ).await.unwrap();
+    assert_eq!(bad_bearer.status(), 401);
+    assert_eq!(send_cookie("POST", "/api/chats/-100100/messages/10/comments?account=%2B84900000001", json!({"text":"Xin chào"}), vec![]).await.0, 403);
+    assert_eq!(send_cookie("POST", "/api/chats/-100100/messages/10/comments?account=%2B84900000001", json!({"text":"Xin chào"}), vec![("Host", "gateway.example"), ("Origin", "http://evil.example")]).await.0, 403);
+    assert_eq!(send(&router, "GET", "/api/chats/-100100/messages/10/comments?account=unknown", Value::Null, true).await.0, 404);
+    assert!(api.sent.lock().unwrap().is_empty());
+
+    // 2. Tài khoản 1 đọc và gửi bình luận hợp lệ -> chỉ client 1 nhận yêu cầu TDLib, client 2 không bị chạm.
+    let (st_get, got) = send(&router, "GET", "/api/chats/-100100/messages/10/comments?account=%2B84900000001&limit=10", Value::Null, true).await;
+    assert_eq!(st_get, 200);
+    assert_eq!(got["discussion_chat_id"], -100200);
+    assert_eq!(got["messages"].as_array().unwrap().len(), 2);
+
+    let (st_post, _) = send_cookie(
+        "POST",
+        "/api/chats/-100100/messages/10/comments?account=%2B84900000001",
+        json!({"text":"Bình luận mới"}),
+        vec![("X-Requested-With", "fetch")],
+    ).await;
+    assert_eq!(st_post, 200);
+    let sent = api.sent.lock().unwrap().clone();
+    assert!(sent.iter().any(|(id, req)| *id == 1 && req["@type"] == "sendMessage" && req["chat_id"] == -100200 && req["message_thread_id"] == 500));
+    assert!(!sent.iter().any(|(id, _)| *id == 2), "Không được rò sang client 2");
+
+    // 3. Cô lập khi strict_chats=true và kênh không tồn tại cho chat_id khác -> 404 (chống IDOR).
+    api.strict_chats.store(true, Ordering::Relaxed);
+    assert_eq!(send(&router, "GET", "/api/chats/99999/messages/10/comments?account=%2B84900000002", Value::Null, true).await.0, 404);
+    assert_eq!(send_cookie("POST", "/api/chats/99999/messages/10/comments?account=%2B84900000002", json!({"text":"Thử IDOR"}), vec![("X-Requested-With", "fetch")]).await.0, 404);
+
+    hub.shutdown().await;
+    drop(router);
+    drop(hub);
+    std::fs::remove_dir_all(dir).unwrap();
+}

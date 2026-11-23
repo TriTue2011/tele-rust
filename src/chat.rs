@@ -1,4 +1,5 @@
 //! HTTP chat cho một tài khoản TDLib đã đăng nhập.
+mod comments;
 mod contacts;
 mod feed;
 mod files;
@@ -11,7 +12,7 @@ pub(crate) use write::synthesize_audio;
 #[cfg(test)]
 mod tests;
 
-use std::{path::{Path, PathBuf}, sync::Arc, time::Duration};
+use std::{collections::VecDeque, path::{Path, PathBuf}, sync::{Arc, Mutex}, time::{Duration, Instant}};
 
 use serde_json::{json, Value};
 
@@ -31,7 +32,14 @@ pub struct ChatService {
     state: Arc<State>,
     updates: tokio::task::JoinHandle<()>,
     call_updates: Option<tokio::task::JoinHandle<()>>,
+    /// Chat đang mở với TDLib (mới nhất ở cuối). TDLib chỉ làm tươi và đẩy lượt cảm xúc/xem/bình luận cho chat đang mở.
+    open_chats: Mutex<VecDeque<(i64, Instant)>>,
 }
+
+/// Số chat mở cùng lúc tối đa, thời gian nhắc lại `openChat` (TDLib khởi động lại thì mất trạng thái) và thời gian rảnh thì đóng.
+const MAX_OPEN_CHATS: usize = 3;
+const REOPEN_AFTER: Duration = Duration::from_secs(120);
+const CLOSE_IDLE_AFTER: Duration = Duration::from_secs(600);
 
 impl ChatService {
     /// Tạo trong Tokio runtime của gateway, dùng số tài khoản mà tầng đăng nhập đã chọn.
@@ -43,7 +51,7 @@ impl ChatService {
         let state = Arc::new(State::default());
         let updates = tokio::spawn(state.clone().receive(td.updates(), events));
         let data_dir = data_dir.as_ref().to_path_buf();
-        Self { td, account: account.into(), uploads: data_dir.join("uploads"), data_dir, state, updates, call_updates: None }
+        Self { td, account: account.into(), uploads: data_dir.join("uploads"), data_dir, state, updates, call_updates: None, open_chats: Mutex::new(VecDeque::new()) }
     }
 
     pub(crate) fn follow_calls(mut self, source: tokio::sync::broadcast::Receiver<Value>) -> Self {
@@ -262,7 +270,17 @@ impl ChatService {
     }
 
     async fn format_messages(&self, chat: i64, got: Vec<Value>) -> Vec<Value> {
-        let chat_meta = self.state.chat_meta(chat);
+        let mut chat_meta = self.state.chat_meta(chat);
+        if chat_meta.is_none()
+            && got
+                .iter()
+                .any(|m| m["interaction_info"]["reply_info"]["reply_count"].as_i64().unwrap_or(0) > 0)
+        {
+            if let Ok(ch) = self.request(json!({"@type":"getChat","chat_id":chat})).await {
+                self.state.remember_chat(&ch);
+                chat_meta = self.state.chat_meta(chat);
+            }
+        }
         let mut out = Vec::with_capacity(got.len());
         for m in got {
             let sender = &m["sender_id"];
@@ -309,20 +327,75 @@ impl ChatService {
                 }
                 _ => {}
             }
+            let is_channel = chat_meta.as_ref().map_or_else(|| truth(&m["is_channel_post"]), |c| c.is_channel);
+            let reply_count = m["interaction_info"]["reply_info"]["reply_count"].as_i64().unwrap_or(0);
+            if is_channel && reply_count > 0 {
+                let mut prefetched = 0usize;
+                for rs in array(&m["interaction_info"]["reply_info"]["recent_replier_ids"]) {
+                    if prefetched >= 3 {
+                        break;
+                    }
+                    match text(&rs["@type"]) {
+                        "messageSenderUser" => {
+                            if let Some(uid) = rs["user_id"].as_i64().filter(|&id| id != 0) {
+                                let _ = self.user(uid).await;
+                                prefetched += 1;
+                            }
+                        }
+                        "messageSenderChat" => {
+                            if let Some(cid) = rs["chat_id"].as_i64().filter(|&id| id != 0) {
+                                if self.state.chat_meta(cid).is_none() {
+                                    if let Ok(c) = self.request(json!({"@type":"getChat","chat_id":cid})).await {
+                                        self.state.remember_chat(&c);
+                                    }
+                                }
+                                prefetched += 1;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
             let resolver = |uid: i64| self.state.user(uid).map(|u| user_name(&u));
+            let user_replier = |uid: i64| self.state.user(uid).map(|u| (user_name(&u), shape::user_avatar(&u)));
+            let chat_replier = |cid: i64| self.state.chat_meta(cid).map(|c| (c.title, c.avatar_file));
             let ctx = shape::MessageContext {
                 sender: &name,
                 chat_title: chat_meta.as_ref().map_or("", |c| c.title.as_str()),
                 is_private: chat_meta.as_ref().is_some_and(|c| c.is_private),
                 resolve_user: Some(&resolver),
             };
-            out.push(shape::message_with_ctx(&m, &ctx));
+            let comments_ctx = shape::CommentsContext {
+                is_channel,
+                resolve_user: Some(&user_replier),
+                resolve_chat: Some(&chat_replier),
+            };
+            out.push(shape::message_with_comments(&m, &ctx, Some(&comments_ctx)));
         }
         out.sort_by_key(|m| m["id"].as_i64());
         out
     }
 
+    /// Giữ chat mở với TDLib để nhận số liệu tương tác tươi. Lỗi bị bỏ qua (chỉ ảnh hưởng độ tươi, không ảnh hưởng đọc tin).
+    async fn keep_open(&self, chat: i64) {
+        let now = Instant::now();
+        let close = {
+            let mut list = self.open_chats.lock().unwrap();
+            let mut close = Vec::new();
+            list.retain(|(id, at)| { let keep = *id == chat || now.duration_since(*at) < CLOSE_IDLE_AFTER; if !keep { close.push(*id); } keep });
+            let fresh = list.iter().find(|(id, _)| *id == chat).is_some_and(|(_, at)| now.duration_since(*at) < REOPEN_AFTER);
+            if fresh { return; }
+            list.retain(|(id, _)| *id != chat);
+            list.push_back((chat, now));
+            while list.len() > MAX_OPEN_CHATS { if let Some((id, _)) = list.pop_front() { close.push(id); } }
+            close
+        };
+        for id in close { let _ = self.request(json!({"@type":"closeChat","chat_id":id})).await; }
+        let _ = self.request(json!({"@type":"openChat","chat_id":chat})).await;
+    }
+
     async fn history(&self, chat: i64, mut before: i64, limit: usize) -> Reply {
+        self.keep_open(chat).await;
         let mut got = Vec::new();
         for _ in 0..3 {
             let result = self.request(json!({"@type":"getChatHistory","chat_id":chat,"from_message_id":before,
@@ -389,6 +462,17 @@ impl ChatService {
                     self.search_chat_messages(chat_id, &term, before, limit).await
                 }
             }
+            ("GET", ["", "api", "chats", id, "messages", msg_id, "comments"]) => self.channel_comments(
+                path_id(id)?,
+                path_msg_id(msg_id)?,
+                q.int("from", 0)?,
+                q.int("limit", 30)?,
+            ).await,
+            ("POST", ["", "api", "chats", id, "messages", msg_id, "comments"]) => self.send_channel_comment(
+                path_id(id)?,
+                path_msg_id(msg_id)?,
+                &body,
+            ).await,
             ("GET", ["", "api", "chats", id, "info"]) => self.chat_info(path_id(id)?).await,
             ("GET", ["", "api", "chats", id, "members"]) => self.chat_members(
                 path_id(id)?, &q.get("q").unwrap_or_default(), q.int("limit", 50)?).await,
@@ -462,6 +546,7 @@ impl Query<'_> {
 
 fn bad_number(name: &str) -> GwError { GwError::bad_request(format!("Tham số {name} phải là số.")) }
 fn path_id(id: &str) -> Result<i64, GwError> { id.parse().map_err(|_| bad_number("chat_id/file_id")) }
+fn path_msg_id(id: &str) -> Result<i64, GwError> { id.parse().map_err(|_| bad_number("message_id")) }
 
 fn int(value: &Value, name: &str) -> Result<i64, GwError> {
     value.as_i64().or_else(|| value.as_str().and_then(|s| s.trim().parse().ok()))

@@ -76,7 +76,7 @@ fn build_entities(text: &str, raw: &[Value]) -> Result<Vec<Value>, GwError> {
     Ok(out)
 }
 
-fn opt_id(value: &Value, name: &str) -> Result<i64, GwError> {
+pub(super) fn opt_id(value: &Value, name: &str) -> Result<i64, GwError> {
     if truth(value) { int(value, name) } else { Ok(0) }
 }
 
@@ -148,7 +148,7 @@ impl ChatService {
         self.request(json!({"@type":"parseTextEntities","text":text,"parse_mode":parser})).await
     }
 
-    async fn formatted_input(&self, text: &str, body: &Value) -> Reply {
+    pub(super) async fn formatted_input(&self, text: &str, body: &Value) -> Reply {
         let opts = rich_text::parse_options(body)?;
         let mode = string(&body["parse_mode"]);
         let mode_trimmed = mode.trim();
@@ -186,7 +186,7 @@ impl ChatService {
         self.formatted(text, &mode).await
     }
 
-    async fn final_id(&self, id: i64) -> i64 { self.state.final_id(id, Duration::from_secs(8)).await }
+    pub(super) async fn final_id(&self, id: i64) -> i64 { self.state.final_id(id, Duration::from_secs(8)).await }
 
     async fn reply_to(&self, req: &mut Value, reply: i64) {
         if reply != 0 {

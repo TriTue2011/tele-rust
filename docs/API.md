@@ -31,7 +31,7 @@ Tài liệu này tổng hợp hợp đồng HTTP REST thực tế được hiệ
   - Sai đường dẫn: HTTP `404` → `{"detail":"Not Found"}`
   - Sai phương thức HTTP: HTTP `405` → `{"detail":"Method Not Allowed"}`
   - Sai kiểu số nguyên cho `:chat_id`, `:file_id` hoặc `?since=`: HTTP `422` → `{"detail":[{"type":"int_parsing",...}]}`
-- **Mã lỗi nghiệp vụ thường gặp:** `UNAUTHORIZED` (401), `INVALID_CREDENTIALS` (401), `CSRF_FORBIDDEN` (403), `MEDIA_TOKEN` (403), `NOT_FOUND` (404), `ALREADY_CONFIGURED` (409), `CALL_BUSY` (409), `CALL_NOT_ACTIVE` (409), `NO_VIDEO` (409), `STORAGE_BUSY` (409), `STORAGE_CACHE_PATH` (409), `STORAGE_POLICY_CHANGED` (409), `AUDIO_TOO_LARGE` / `FILE_TOO_LARGE` (413), `INVALID_PHONE` / `INVALID_STORAGE_SETTINGS` / `INVALID_APPEARANCE_SETTINGS` / `REPORT_NEEDS_DETAILS` (422), `RATE_LIMITED` / `LOGIN_RATE_LIMITED` / `LOGIN_LOCKED` / `FLOOD_WAIT` / `AUDIO_BACKPRESSURE` / `AUDIO_LISTENERS` (429), `BROWSER_VIDEO_UNAVAILABLE` / `TTS_UNAVAILABLE` / `AUDIO_UNAVAILABLE` (501), `ACCOUNT_OFFLINE` / `ACCOUNT_CLOSING` / `STORAGE_STATS` / `STORAGE_CLEANUP` / `CALL_RUNTIME` (503), `TDLIB_TIMEOUT` / `TELEGRAM_TIMEOUT` (504).
+- **Mã lỗi nghiệp vụ thường gặp:** `UNAUTHORIZED` (401), `INVALID_CREDENTIALS` (401), `CSRF_FORBIDDEN` (403), `MEDIA_TOKEN` (403), `NOT_FOUND` (404), `ALREADY_CONFIGURED` (409), `CALL_BUSY` (409), `CALL_NOT_ACTIVE` (409), `NO_VIDEO` (409), `NO_DISCUSSION` (409), `STORAGE_BUSY` (409), `STORAGE_CACHE_PATH` (409), `STORAGE_POLICY_CHANGED` (409), `AUDIO_TOO_LARGE` / `FILE_TOO_LARGE` (413), `INVALID_PHONE` / `INVALID_STORAGE_SETTINGS` / `INVALID_APPEARANCE_SETTINGS` / `REPORT_NEEDS_DETAILS` (422), `RATE_LIMITED` / `LOGIN_RATE_LIMITED` / `LOGIN_LOCKED` / `FLOOD_WAIT` / `AUDIO_BACKPRESSURE` / `AUDIO_LISTENERS` (429), `BROWSER_VIDEO_UNAVAILABLE` / `TTS_UNAVAILABLE` / `AUDIO_UNAVAILABLE` (501), `ACCOUNT_OFFLINE` / `ACCOUNT_CLOSING` / `STORAGE_STATS` / `STORAGE_CLEANUP` / `CALL_RUNTIME` (503), `TDLIB_TIMEOUT` / `TELEGRAM_TIMEOUT` (504).
 
 ## 3. Chọn tài khoản ở chế độ đa tài khoản
 
@@ -57,6 +57,8 @@ Tài liệu này tổng hợp hợp đồng HTTP REST thực tế được hiệ
 ### 4.3. Hội thoại, tin nhắn & thông tin chat (`/api/chats*`, `/api/messages/*`, `/api/search`, `/api/resolve`, `/api/translate`)
 - `GET /api/chats?limit=60` (tối đa `200`).
 - `GET /api/chats/:chat_id/messages?before=0&limit=30&q=` (có `q` tối đa 128 ký tự sẽ gọi `searchChatMessages`).
+- `GET /api/chats/:chat_id/messages/:message_id/comments?from=0&limit=30`: lấy bình luận của bài đăng kênh từ nhóm thảo luận liên kết (`{discussion_chat_id, thread_id, root_message_id, messages, has_more}`; trả `409 NO_DISCUSSION` nếu kênh không có nhóm thảo luận).
+- `POST /api/chats/:chat_id/messages/:message_id/comments`: gửi bình luận vào nhóm thảo luận (`{"text": "...", "entities": [...], "reply_to": 0}`; hỗ trợ `format`/`auto_emphasis`/`ai_markup`, không yêu cầu `confirm`, trả `409 NO_DISCUSSION` nếu không có nhóm thảo luận).
 - `GET /api/chats/:chat_id/info`: trả `chat_id`, `title`, `kind` (`private`/`secret`/`group`/`channel`), `unread`, `marked_unread`, `pinned`, `archived`, `auto_delete_seconds`, `notification`, cùng thông tin thành viên/quyền/liên kết mời (chỉ trả `invite_link` nếu `is_admin == true`).
 - `GET /api/chats/:chat_id/members?q=&limit=50`: thành viên nhóm/siêu nhóm (lọc theo `q`, giới hạn tối đa `50`).
 - `POST /api/chats/:chat_id/settings`: nhận một hoặc nhiều khoá trong `["notification", "auto_delete", "pin", "archive", "mark_unread"]`. Riêng `auto_delete` yêu cầu `{"seconds": 0 | 86400*N (1..365), "confirm": true}`.

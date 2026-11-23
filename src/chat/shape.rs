@@ -25,6 +25,10 @@ pub(super) fn user_name(u: &Value) -> String {
     display_user_name((!u.is_null()).then_some(u))
 }
 
+pub(super) fn user_avatar(u: &Value) -> Option<i64> {
+    u["profile_photo"]["small"]["id"].as_i64().filter(|&id| id > 0)
+}
+
 pub(super) fn is_verified(v: &Value) -> bool {
     truth(&v["is_verified"]) || truth(&v["verification_status"]["is_verified"])
 }
@@ -482,7 +486,74 @@ fn message_entity(e: &Value) -> Option<Value> {
     Some(entity)
 }
 
-pub(super) fn message_with_ctx(m: &Value, ctx: &MessageContext<'_>) -> Value {
+pub(super) struct CommentsContext<'a> {
+    pub is_channel: bool,
+    pub resolve_user: Option<&'a dyn Fn(i64) -> Option<(String, Option<i64>)>>,
+    pub resolve_chat: Option<&'a dyn Fn(i64) -> Option<(String, Option<i64>)>>,
+}
+
+pub(super) fn message_comments(
+    m: &Value,
+    is_channel: bool,
+    resolve_user: Option<&dyn Fn(i64) -> Option<(String, Option<i64>)>>,
+    resolve_chat: Option<&dyn Fn(i64) -> Option<(String, Option<i64>)>>,
+) -> Option<Value> {
+    if !is_channel {
+        return None;
+    }
+    let ri = m.get("interaction_info")?.get("reply_info")?;
+    if ri.is_null() {
+        return None;
+    }
+    let count = ri["reply_count"].as_i64().unwrap_or(0);
+    if count <= 0 {
+        return None;
+    }
+    let mut repliers = Vec::new();
+    for sender in array(&ri["recent_replier_ids"]) {
+        if repliers.len() >= 3 {
+            break;
+        }
+        let entry = match text(&sender["@type"]) {
+            "messageSenderUser" => {
+                let Some(uid) = sender["user_id"].as_i64().filter(|&id| id != 0) else {
+                    continue;
+                };
+                let (name, avatar_file) = resolve_user
+                    .and_then(|r| r(uid))
+                    .unwrap_or_else(|| (UNKNOWN_USER_LABEL.into(), None));
+                let clean = if name.trim().is_empty() { UNKNOWN_USER_LABEL.into() } else { name };
+                json!({"id": uid, "name": clean, "avatar_file": avatar_file})
+            }
+            "messageSenderChat" => {
+                let Some(cid) = sender["chat_id"].as_i64().filter(|&id| id != 0) else {
+                    continue;
+                };
+                let (name, avatar_file) = resolve_chat
+                    .and_then(|r| r(cid))
+                    .unwrap_or_else(|| (UNKNOWN_USER_LABEL.into(), None));
+                let clean = if name.trim().is_empty() { UNKNOWN_USER_LABEL.into() } else { name };
+                json!({"id": cid, "name": clean, "avatar_file": avatar_file})
+            }
+            _ => continue,
+        };
+        repliers.push(entry);
+    }
+    let last_read = ri["last_read_inbox_message_id"].as_i64().unwrap_or(0).max(0);
+    let last_msg = ri["last_message_id"].as_i64().unwrap_or(0).max(0);
+    let unread = last_read > 0 && last_msg > last_read;
+    Some(json!({
+        "count": count,
+        "repliers": repliers,
+        "unread": unread,
+    }))
+}
+
+pub(super) fn message_with_comments(
+    m: &Value,
+    ctx: &MessageContext<'_>,
+    comments_ctx: Option<&CommentsContext<'_>>,
+) -> Value {
     let c = &m["content"];
     let (kind, summary, call_meta) = content_with_ctx(m, ctx);
     let formatted = &c[if kind == "text" { "text" } else { "caption" }];
@@ -519,7 +590,16 @@ pub(super) fn message_with_ctx(m: &Value, ctx: &MessageContext<'_>) -> Value {
     if let Some(call) = call_meta {
         out["call"] = call;
     }
+    if let Some(cc) = comments_ctx {
+        if let Some(comments) = message_comments(m, cc.is_channel, cc.resolve_user, cc.resolve_chat) {
+            out["comments"] = comments;
+        }
+    }
     out
+}
+
+pub(super) fn message_with_ctx(m: &Value, ctx: &MessageContext<'_>) -> Value {
+    message_with_comments(m, ctx, None)
 }
 
 pub(super) fn message(m: &Value, sender: &str) -> Value {

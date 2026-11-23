@@ -477,6 +477,36 @@
   .ci-autodelete-custom { display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin-top:4px; }
   .ci-autodelete-custom input[type=number] { flex:1 1 90px; min-width:80px; min-height:44px; max-width:100%; padding:8px 10px; border:1px solid var(--line); border-radius:9px; background:var(--panel); color:var(--fg); font:inherit; }
   .ci-warn-banner { margin:0; padding:9px 11px; border-radius:9px; border:1px solid var(--warn-border); background:var(--warn-bg); color:var(--warn-fg); font-size:13px; font-weight:600; line-height:1.4; }
+  .msg-comments-bar { display:flex; align-items:center; gap:8px; width:100%; margin-top:5px; padding:6px 2px 2px; min-height:36px; border:0; border-top:1px solid var(--line); border-radius:0; background:transparent; color:var(--acc); font-size:13px; font-weight:600; text-align:left; cursor:pointer; }
+  .msg-comments-bar:hover { opacity:.85; }
+  .comments-avatars { display:inline-flex; align-items:center; flex:none; }
+  .comments-av { width:22px; height:22px; border-radius:50%; display:grid; place-items:center; color:#fff; font-size:10px; font-weight:700; overflow:hidden; position:relative; border:2px solid var(--in); flex:none; }
+  .comments-av + .comments-av { margin-left:-7px; }
+  .m.out .comments-av { border-color:var(--out); }
+  .comments-av img { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; }
+  .comments-count { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .comments-unread-dot { width:8px; height:8px; border-radius:50%; background:var(--acc); flex:none; }
+  .comments-chevron { color:var(--mut); font-size:16px; line-height:1; flex:none; }
+  .comments-head-meta { flex:1; min-width:0; }
+  .comments-head-meta small { display:block; font-size:12px; color:var(--mut); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .comments-post-preview { padding:9px 14px; border-bottom:1px solid var(--line); background:var(--bg); font-size:13px; color:var(--mut); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:none; }
+  .comments-body { flex:1; min-height:0; overflow-y:auto; overflow-x:hidden; padding:12px 14px; display:flex; flex-direction:column; gap:10px; }
+  .comments-list { display:flex; flex-direction:column; gap:8px; }
+  .comment-item { padding:8px 10px; border-radius:10px; background:var(--bg); border:1px solid var(--line); display:flex; flex-direction:column; gap:4px; overflow-wrap:anywhere; }
+  .comment-item.out { background:var(--out); }
+  .comment-head { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+  .comment-author { font-size:13px; font-weight:600; color:var(--acc); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; }
+  .comment-time { font-size:11px; color:var(--mut); flex:none; }
+  .comment-reply-quote { border-left:3px solid var(--acc); padding:2px 8px; font-size:12px; color:var(--mut); background:var(--panel); border-radius:4px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .comment-text { font-size:var(--chat-font-size); line-height:var(--chat-line-height); white-space:pre-wrap; overflow-wrap:anywhere; }
+  .comment-foot { display:flex; justify-content:flex-end; margin-top:2px; }
+  .comment-reply-btn { min-height:28px !important; padding:2px 8px; font-size:12px; border-radius:6px; background:transparent; color:var(--acc); border:1px solid var(--line); }
+  .comments-reply-bar { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:6px 14px; border-top:1px solid var(--line); background:var(--bg); font-size:12px; color:var(--mut); flex:none; }
+  .comments-reply-bar span { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .comments-form { display:flex; gap:8px; align-items:flex-end; padding:10px 12px; border-top:1px solid var(--line); background:var(--panel); flex:none; }
+  .comments-form textarea { flex:1; min-width:0; min-height:44px; max-height:110px; padding:9px 11px; border:1px solid var(--line); border-radius:9px; background:var(--bg); color:var(--fg); font:inherit; resize:none; }
+  .comments-form button { min-height:44px; flex:none; }
+  @media (max-width:699px) { .msg-comments-bar { min-height:44px; } }
 </style>
 </head>
 <body>
@@ -736,6 +766,30 @@
         <button type="button" id="ci-leave" class="storage-danger">Rời nhóm</button>
       </section>
     </div>
+  </section>
+  <section id="comments-drawer" class="chat-info-drawer comments-drawer" role="region" aria-label="Bình luận" hidden>
+    <header class="chat-info-top">
+      <div class="comments-head-meta">
+        <h2 id="comments-title">Bình luận</h2>
+        <small id="comments-sub" hidden></small>
+      </div>
+      <button id="comments-close" type="button" class="icon" aria-label="Đóng bình luận">✕</button>
+    </header>
+    <div id="comments-post-preview" class="comments-post-preview" hidden></div>
+    <div id="comments-body" class="comments-body">
+      <button id="comments-more" type="button" class="ghost" hidden>Tải thêm cũ hơn</button>
+      <p id="comments-status" class="settings-status" role="status" aria-live="polite"></p>
+      <p id="comments-error" class="settings-error" role="alert"></p>
+      <div id="comments-list" class="comments-list"></div>
+    </div>
+    <div id="comments-reply-bar" class="comments-reply-bar" hidden>
+      <span id="comments-reply-txt"></span>
+      <button id="comments-reply-clear" type="button" class="ghost" aria-label="Bỏ trả lời bình luận">✕</button>
+    </div>
+    <form id="comments-form" class="comments-form" autocomplete="off">
+      <textarea id="comments-input" rows="1" placeholder="Viết bình luận…" aria-label="Nội dung bình luận"></textarea>
+      <button id="comments-send" type="submit">Gửi</button>
+    </form>
   </section>
 </div>
 <dialog id="contact-dialog" class="contact-dialog" aria-labelledby="contact-dialog-title">
@@ -1603,6 +1657,33 @@
       foot.appendChild(tick);
     }
     w.appendChild(foot);
+    if (m.comments && Number(m.comments.count) > 0) {
+      const bar = el("button", "msg-comments-bar");
+      bar.type = "button";
+      bar.setAttribute("aria-label", m.comments.count + " bình luận");
+      const repliers = Array.isArray(m.comments.repliers) ? m.comments.repliers.slice(0, 3) : [];
+      if (repliers.length) {
+        const avs = el("span", "comments-avatars");
+        const palette = typeof COLORS !== "undefined" ? COLORS : ["#e17076", "#7bc862", "#e5ca77", "#65aadd"];
+        for (const r of repliers) {
+          const name = r?.name || "Người dùng";
+          const avText = typeof initials === "function" ? initials(name) : name.slice(0, 1).toUpperCase();
+          const av = el("span", "comments-av", avText);
+          if (av.style) av.style.background = palette[Math.abs(Number(r?.id) || 0) % palette.length];
+          if (r?.avatar_file && typeof loadAvatar === "function") loadAvatar(av, r.avatar_file);
+          avs.appendChild(av);
+        }
+        bar.appendChild(avs);
+      }
+      bar.appendChild(el("span", "comments-count", m.comments.count + " bình luận"));
+      if (m.comments.unread) bar.appendChild(el("span", "comments-unread-dot"));
+      bar.appendChild(el("span", "comments-chevron", "›"));
+      bar.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (typeof openCommentsDrawer === "function") openCommentsDrawer(m);
+      });
+      w.appendChild(bar);
+    }
     const acts = el("div", "acts");
     const add = (label, title, fn) => { const b = el("button", "", label); b.title = title; b.setAttribute("aria-label", title); b.addEventListener("click", (e) => { e.stopPropagation(); fn(); }); acts.appendChild(b); };
     add("↩", "Trả lời", () => setReply(m)); add("👍", "Thích", () => react(m, "👍", true));
@@ -4343,12 +4424,14 @@
   function closeChatOverlays() {
     closeFontPopover();
     closeChatInfo();
+    if (typeof closeCommentsDrawer === "function") closeCommentsDrawer();
     if (typeof closeChatContextMenu === "function") closeChatContextMenu();
     if (typeof closeChatSearch === "function") closeChatSearch();
   }
 
   function onChatOpened(c) {
     closeFontPopover();
+    if (typeof closeCommentsDrawer === "function") closeCommentsDrawer();
     if (typeof closeChatContextMenu === "function") closeChatContextMenu();
     if (!$("chat-info-drawer").hidden && c?.id) {
       loadChatInfo(c.id);
@@ -4922,6 +5005,7 @@
   async function openChatInfo() {
     if (!cur) return;
     closeFontPopover();
+    if (typeof closeCommentsDrawer === "function") closeCommentsDrawer();
     $("chat-info-drawer").hidden = false;
     $("chat-info-open").setAttribute("aria-expanded", "true");
     await loadChatInfo(cur);
@@ -5416,6 +5500,7 @@
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && !$("font-popover").hidden) closeFontPopover();
     if (e.key === "Escape" && !$("chat-ctx-menu").hidden) closeChatContextMenu();
+    if (e.key === "Escape" && !$("comments-drawer")?.hidden && typeof closeCommentsDrawer === "function") closeCommentsDrawer();
   });
   document.addEventListener("click", (e) => {
     const pop = $("font-popover");
@@ -5425,6 +5510,238 @@
     const ctx = $("chat-ctx-menu");
     if (ctx && !ctx.hidden && e.target !== ctx && !ctx.contains?.(e.target) && e.target !== $("chat-menu-open") && !$("chat-menu-open").contains?.(e.target)) {
       closeChatContextMenu();
+    }
+  });
+
+  // ---- bình luận của kênh -------------------------------------------------------------------
+  let commentsPost = null;
+  let commentsChatId = null;
+  let commentsRootId = 0;
+  let commentsItems = [];
+  let commentsOldest = 0;
+  let commentsSeq = 0;
+  let commentsReplyTo = 0;
+  let commentsSending = false;
+  let commentsComposing = false;
+  let commentsLocked = false;
+  const commentsById = new Map();
+
+  function clearCommentReply() {
+    commentsReplyTo = 0;
+    if ($("comments-reply-txt")) $("comments-reply-txt").textContent = "";
+    if ($("comments-reply-bar")) $("comments-reply-bar").hidden = true;
+  }
+
+  function setCommentReply(c) {
+    if (!c || !c.id || commentsLocked) return;
+    commentsReplyTo = c.id;
+    const who = c.outgoing ? "Bạn" : (c.sender || "Người dùng");
+    const snippet = (c.text || c.summary || "").slice(0, 60);
+    $("comments-reply-txt").textContent = "↩ Trả lời " + who + (snippet ? ": " + snippet : "");
+    $("comments-reply-bar").hidden = false;
+    $("comments-input").focus();
+  }
+
+  function closeCommentsDrawer() {
+    commentsSeq++;
+    commentsPost = null;
+    commentsChatId = null;
+    commentsRootId = 0;
+    commentsItems = [];
+    commentsOldest = 0;
+    commentsById.clear();
+    clearCommentReply();
+    commentsLocked = false;
+    if ($("comments-drawer")) $("comments-drawer").hidden = true;
+  }
+
+  function updatePostCommentsBar(post) {
+    if (!post || !post.id || typeof rendered === "undefined") return;
+    const node = rendered.get(post.id);
+    const bar = node?.querySelector?.(".msg-comments-bar");
+    if (!bar) return;
+    const count = Number(post.comments?.count || 0);
+    const countEl = bar.querySelector?.(".comments-count");
+    if (countEl) countEl.textContent = count + " bình luận";
+    bar.setAttribute?.("aria-label", count + " bình luận");
+    if (!post.comments?.unread) {
+      bar.querySelector?.(".comments-unread-dot")?.remove?.();
+    }
+  }
+
+  function renderCommentsList() {
+    const box = $("comments-list");
+    if (!box) return;
+    box.replaceChildren();
+    if (!commentsItems.length) {
+      if (!$("comments-error")?.textContent && !$("comments-status")?.textContent) {
+        box.appendChild(el("div", "empty", "Chưa có bình luận nào."));
+      }
+      return;
+    }
+    for (const c of commentsItems) {
+      const row = el("div", "comment-item" + (c.outgoing ? " out" : ""));
+      row.dataset.id = String(c.id);
+      const head = el("div", "comment-head");
+      head.appendChild(el("span", "comment-author", c.outgoing ? "Bạn" : (c.sender || "Người dùng")));
+      head.appendChild(el("span", "comment-time", hhmm(c.date) + (c.edit_date ? " · đã sửa" : "")));
+      row.appendChild(head);
+      if (c.reply_to && c.reply_to !== commentsRootId) {
+        const src = commentsById.get(c.reply_to);
+        const quote = src
+          ? "↩ " + (src.outgoing ? "Bạn" : (src.sender || "Người dùng")) + ": " + (src.text || src.summary || "").slice(0, 80)
+          : "↩ Trả lời bình luận trước";
+        row.appendChild(el("div", "comment-reply-quote", quote));
+      }
+      const bodyText = el("div", "comment-text");
+      bodyText.textContent = "";
+      if (c.text) renderText(bodyText, c.text, c.entities);
+      else bodyText.textContent = c.summary || "";
+      row.appendChild(bodyText);
+      const foot = el("div", "comment-foot");
+      const replyBtn = el("button", "comment-reply-btn", "↩ Trả lời");
+      replyBtn.type = "button";
+      replyBtn.addEventListener("click", () => setCommentReply(c));
+      foot.appendChild(replyBtn);
+      row.appendChild(foot);
+      box.appendChild(row);
+    }
+  }
+
+  async function loadCommentsPage(older, seq) {
+    if (!commentsPost || !commentsChatId) return;
+    if (older) $("comments-more").disabled = true;
+    else $("comments-status").textContent = "Đang tải bình luận…";
+    $("comments-error").textContent = "";
+    try {
+      const query = older && commentsOldest ? "?limit=30&from=" + commentsOldest : "?limit=30";
+      const r = await api("GET", "/api/chats/" + commentsChatId + "/messages/" + commentsPost.id + "/comments" + query);
+      if (seq !== commentsSeq) return;
+      $("comments-status").textContent = "";
+      commentsRootId = Number(r.root_message_id || r.thread_id || commentsRootId || 0);
+      for (const m of r.messages || []) {
+        if (m && m.id) commentsById.set(m.id, m);
+      }
+      commentsItems = Array.from(commentsById.values()).sort((a, b) => (a.id || 0) - (b.id || 0));
+      commentsOldest = commentsItems.length ? commentsItems[0].id : 0;
+      $("comments-more").hidden = !Boolean(r.has_more);
+      $("comments-more").disabled = false;
+      commentsLocked = false;
+      $("comments-input").disabled = false;
+      $("comments-send").disabled = false;
+      renderCommentsList();
+    } catch (err) {
+      if (seq !== commentsSeq) return;
+      $("comments-status").textContent = "";
+      $("comments-more").disabled = false;
+      $("comments-error").textContent = err.message || "Không tải được bình luận.";
+      if (err.code === "NO_DISCUSSION") {
+        commentsLocked = true;
+        $("comments-input").disabled = true;
+        $("comments-send").disabled = true;
+        $("comments-more").hidden = true;
+      }
+    }
+  }
+
+  async function openCommentsDrawer(m) {
+    if (!m || !m.id) return;
+    const chatId = m.chat_id ?? cur;
+    if (!chatId) return;
+    if (typeof closeChatInfo === "function") closeChatInfo();
+    if (typeof closeFontPopover === "function") closeFontPopover();
+    const seq = ++commentsSeq;
+    commentsPost = m;
+    commentsChatId = chatId;
+    commentsRootId = 0;
+    commentsItems = [];
+    commentsOldest = 0;
+    commentsById.clear();
+    commentsLocked = false;
+    clearCommentReply();
+    if (m.comments && m.comments.unread) {
+      m.comments.unread = false;
+      updatePostCommentsBar(m);
+    }
+    $("comments-drawer").hidden = false;
+    $("comments-error").textContent = "";
+    $("comments-status").textContent = "Đang tải bình luận…";
+    $("comments-more").hidden = true;
+    $("comments-list").replaceChildren();
+    $("comments-input").disabled = false;
+    $("comments-send").disabled = false;
+    const preview = (m.text || m.summary || "").trim();
+    $("comments-post-preview").textContent = preview;
+    $("comments-post-preview").hidden = !preview;
+    const subText = m.comments?.count ? m.comments.count + " bình luận" : "";
+    $("comments-sub").textContent = subText;
+    $("comments-sub").hidden = !subText;
+    await loadCommentsPage(false, seq);
+  }
+
+  async function sendComment() {
+    if (!commentsPost || !commentsChatId || commentsSending || commentsComposing || commentsLocked) return;
+    const input = $("comments-input");
+    const text = String(input.value || "");
+    if (!text.trim()) return;
+    if (text.length > 4096) {
+      $("comments-error").textContent = "Bình luận tối đa 4096 ký tự.";
+      return;
+    }
+    const payload = commentsReplyTo ? { text, reply_to: commentsReplyTo } : { text };
+    const seq = commentsSeq;
+    commentsSending = true;
+    $("comments-send").disabled = true;
+    $("comments-error").textContent = "";
+    try {
+      const created = await api("POST", "/api/chats/" + commentsChatId + "/messages/" + commentsPost.id + "/comments", payload);
+      if (seq !== commentsSeq) return;
+      input.value = "";
+      clearCommentReply();
+      if (created && created.id) {
+        const item = Object.assign({}, created, { outgoing: true, date: created.date || Math.floor(Date.now() / 1000) });
+        commentsById.set(item.id, item);
+        commentsItems = Array.from(commentsById.values()).sort((a, b) => (a.id || 0) - (b.id || 0));
+        commentsOldest = commentsItems.length ? commentsItems[0].id : 0;
+      }
+      if (!commentsPost.comments) commentsPost.comments = { count: 0, repliers: [], unread: false };
+      commentsPost.comments.count = Number(commentsPost.comments.count || 0) + 1;
+      commentsPost.comments.unread = false;
+      updatePostCommentsBar(commentsPost);
+      renderCommentsList();
+      $("comments-sub").textContent = commentsPost.comments.count + " bình luận";
+      $("comments-sub").hidden = false;
+      $("comments-body").scrollTop = $("comments-body").scrollHeight;
+    } catch (err) {
+      if (seq !== commentsSeq) return;
+      $("comments-error").textContent = err.message || "Không gửi được bình luận.";
+      if (err.code === "NO_DISCUSSION") {
+        commentsLocked = true;
+        input.disabled = true;
+        $("comments-send").disabled = true;
+      }
+    } finally {
+      commentsSending = false;
+      if (!commentsLocked) $("comments-send").disabled = false;
+    }
+  }
+
+  $("comments-close").addEventListener("click", closeCommentsDrawer);
+  $("comments-more").addEventListener("click", () => {
+    if (commentsPost && commentsOldest) loadCommentsPage(true, commentsSeq);
+  });
+  $("comments-reply-clear").addEventListener("click", clearCommentReply);
+  $("comments-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    sendComment();
+  });
+  $("comments-input").addEventListener("compositionstart", () => { commentsComposing = true; });
+  $("comments-input").addEventListener("compositionend", () => { commentsComposing = false; });
+  $("comments-input").addEventListener("keydown", (e) => {
+    if (e.isComposing || commentsComposing || e.keyCode === 229) return;
+    if (e.key === "Enter" && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      e.preventDefault();
+      sendComment();
     }
   });
 
