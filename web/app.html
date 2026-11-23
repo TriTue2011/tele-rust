@@ -2473,7 +2473,29 @@
   async function delMsg(m) { if (!confirm("Xoá tin nhắn này" + (m.outgoing ? " (với cả hai bên)" : "") + "?")) return;
     try { await api("POST", "/api/messages/delete", { chat_id: m.chat_id, message_ids: [m.id], revoke: true }); removeMsg(m.id); } catch (e) { toast(e.message); } }
   function removeMsg(id) { const n = rendered.get(id); if (n) { n.remove(); rendered.delete(id); } }
-  async function reloadCurrent() { if (!cur) return; const c = chats.find((x) => x.id === cur); if (c) { const keep = $("msgs").scrollTop; await openChat(c); $("msgs").scrollTop = keep; } }
+  // Tải lại CHÍNH chat đang xem (do sự kiện từ máy chủ) không được đóng ngăn bình luận / menu đang mở — trước đây bấm bình luận xong
+  // sự kiện «tương tác» kéo theo tải lại làm ngăn bị đóng ngay (người dùng phải bấm 2–3 lần).
+  let reloadingSameChat = false;
+  async function reloadCurrent() {
+    if (!cur) return; const c = chats.find((x) => x.id === cur);
+    if (c) { const keep = $("msgs").scrollTop; reloadingSameChat = true; try { await openChat(c); } finally { reloadingSameChat = false; } $("msgs").scrollTop = keep; }
+  }
+  // Cảm xúc / số bình luận đổi: chỉ vẽ lại ĐÚNG bài đó tại chỗ (không xoá cả danh sách ⇒ không nháy màn hình).
+  let interactionH = null, interactionBusy = false;
+  function refreshInteractionsSoon() { clearTimeout(interactionH); interactionH = setTimeout(refreshInteractions, 800); }
+  async function refreshInteractions() {
+    if (!cur || interactionBusy) return; const chat = cur; interactionBusy = true;
+    try {
+      const r = await api("GET", "/api/chats/" + chat + "/messages?limit=40");
+      if (cur !== chat) return;
+      for (const m of r.messages || []) {
+        const old = rendered.get(m.id), prev = msgData.get(m.id);
+        if (!old || !prev || JSON.stringify([m.reactions, m.comments]) === JSON.stringify([prev.reactions, prev.comments])) continue;
+        const keep = $("msgs").scrollTop; const node = renderMessage(m);
+        old.replaceWith(node); rendered.set(m.id, node); msgData.set(m.id, m); $("msgs").scrollTop = keep;
+      }
+    } catch (_) { /* làm tươi không được thì thôi: lần sự kiện sau thử lại */ } finally { interactionBusy = false; }
+  }
 
   // ---- cập nhật theo thời gian thực -------------------------------------------------------------
   async function fetchFeed(cursor, wait, signal) {
@@ -2534,6 +2556,7 @@
       else if (it.message && !it.message.outgoing && document.hidden === false) { /* thông báo nhẹ ở danh sách */ }
       scheduleChats();
     } else if (it.type === "chat" || it.type === "scope_notification") scheduleChats();
+    else if (it.type === "message_interaction") { if (it.chat_id === cur) refreshInteractionsSoon(); }
     else if (it.type === "chat_auto_delete") { if (typeof applyChatAutoDeleteUpdate === "function") applyChatAutoDeleteUpdate(it.chat_id, it.seconds); }
     else if (it.type === "chat_read_outbox") { if (typeof applyChatReadOutboxUpdate === "function") applyChatReadOutboxUpdate(it.chat_id, it.last_read_outbox_message_id); }
     else if (it.type === "send_ok") { if (it.chat_id === cur) { removeMsg(it.old_id); if (it.message) appendMessages([it.message], false); } scheduleChats(); }
@@ -4507,9 +4530,11 @@
   }
 
   function onChatOpened(c) {
-    closeFontPopover();
-    if (typeof closeCommentsDrawer === "function") closeCommentsDrawer();
-    if (typeof closeChatContextMenu === "function") closeChatContextMenu();
+    if (typeof reloadingSameChat === "undefined" || !reloadingSameChat) {
+      closeFontPopover();
+      if (typeof closeCommentsDrawer === "function") closeCommentsDrawer();
+      if (typeof closeChatContextMenu === "function") closeChatContextMenu();
+    }
     if (!$("chat-info-drawer").hidden && c?.id) {
       loadChatInfo(c.id);
     }

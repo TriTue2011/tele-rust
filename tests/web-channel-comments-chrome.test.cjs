@@ -158,6 +158,10 @@ test('TC-CHANNEL-COMMENTS: hàng bình luận kênh và ngăn bình luận ở 3
         status = 409;
         payload = { error: { code: 'NO_DISCUSSION', message: 'Kênh này chưa liên kết nhóm thảo luận.' } };
       } else if (url.pathname === '/api/feed') {
+        if (window.__feedItems) {
+          const items = window.__feedItems; window.__feedItems = null; window.__feedCursor = (window.__feedCursor || 1) + 1;
+          return new Response(JSON.stringify({ items, cursor: window.__feedCursor, reset: false }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        }
         await new Promise((resolve) => setTimeout(resolve, 400));
       }
       return new Response(JSON.stringify(payload), { status, headers: { 'Content-Type': 'application/json' } });
@@ -296,6 +300,19 @@ test('TC-CHANNEL-COMMENTS: hàng bình luận kênh và ngăn bình luận ở 3
   assert.equal(await width('aside'), a0 + 16, 'ArrowRight làm cột danh sách rộng thêm 16 px');
   await press('aside .pane-resizer', 'ArrowLeft'); await press('aside .pane-resizer', 'ArrowLeft'); await press('aside .pane-resizer', 'ArrowLeft');
   assert.ok(await width('aside') >= 260, 'cột danh sách không hẹp hơn mức tối thiểu');
+
+  // 4c. Sự kiện từ máy chủ (message_changed ⇒ tải lại chat; message_interaction ⇒ làm tươi tại chỗ) KHÔNG được đóng ngăn bình luận
+  //     đang mở (lỗi «bấm bình luận xong nháy màn hình rồi mất, phải bấm 2–3 lần»).
+  const historyCalls = () => evaluate('window.commentsTestCalls.filter((c) => c.method === "GET" && c.pathname === "/api/chats/-100100/messages").length');
+  const before = await historyCalls();
+  await evaluate(`window.__feedItems = [{id: 901, type: 'message_changed', chat_id: -100100, message_id: 10}]`);
+  await until(`window.commentsTestCalls.filter((c) => c.method === "GET" && c.pathname === "/api/chats/-100100/messages").length > ${before}`);
+  await until('document.querySelectorAll("#msgs .m").length >= 1');
+  assert.equal(await evaluate('document.getElementById("comments-drawer").hidden'), false, 'tải lại chat làm ngăn bình luận bị đóng');
+  const before2 = await historyCalls();
+  await evaluate(`window.__feedItems = [{id: 902, type: 'message_interaction', chat_id: -100100, message_id: 10}]`);
+  await until(`window.commentsTestCalls.filter((c) => c.method === "GET" && c.pathname === "/api/chats/-100100/messages").length > ${before2}`);
+  assert.equal(await evaluate('document.getElementById("comments-drawer").hidden'), false, 'làm tươi tương tác làm ngăn bình luận bị đóng');
 
   // 5. Gửi bình luận mới -> gọi đúng POST /api/chats/-100100/messages/10/comments và tăng số đếm lên 6.
   await evaluate(`{

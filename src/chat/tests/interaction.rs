@@ -23,7 +23,7 @@ async fn history_opens_each_chat_once_and_closes_the_oldest_beyond_three() {
 }
 
 #[tokio::test]
-async fn interaction_info_update_becomes_message_changed_feed_event() {
+async fn interaction_info_update_becomes_message_interaction_feed_event() {
     let (chat, td) = setup(vec![]);
     let updater = async {
         tokio::task::yield_now().await;
@@ -32,6 +32,6 @@ async fn interaction_info_update_becomes_message_changed_feed_event() {
     };
     let (feed, ()) = tokio::join!(get(&chat, "/api/feed", "since=0&wait=1"), updater);
     let feed = feed.unwrap();
-    assert_eq!(feed["items"][0]["type"], "message_changed");
+    assert_eq!(feed["items"][0]["type"], "message_interaction");
     assert_eq!((feed["items"][0]["chat_id"].as_i64(), feed["items"][0]["message_id"].as_i64()), (Some(-100), Some(42)));
 }
