@@ -113,8 +113,8 @@ impl Ctx {
             error.retry_after_seconds = Some(5);
             error
         };
-        if matches!(kind, Kind::AudioIn) {
-            // Audio PCM keeps its existing per-call rate limit rather than consuming the control budget.
+        if matches!(kind, Kind::AudioIn | Kind::VideoIn) {
+            // Audio PCM / khung webcam có giới hạn riêng theo cuộc gọi, không tiêu ngân sách điều khiển.
         } else if matches!(kind, Kind::Snapshot) {
             let limit = self.limit.saturating_mul(3);
             if Self::rate_limited(&self.snapshot_hits, &principal, limit) {
@@ -176,6 +176,7 @@ enum Kind {
     Snapshot,
     LiveView,
     AudioIn,
+    VideoIn,
     Events,
     Auth,
 }
@@ -320,6 +321,17 @@ async fn handle(ctx: Arc<Ctx>, spec: Spec, req: Request) -> Response {
                 Ok(Ok(raw)) => raw,
             };
             ctx.call.audio_in(path.rsplit('/').next().unwrap(), raw.to_vec()).await
+        }
+        Kind::VideoIn => {
+            let Ok(_permit) = ctx.audio_slots.try_acquire() else {
+                return with_cookie(error_resp(&GwError::new(429, "VIDEO_BACKPRESSURE", "Quá nhiều khung camera đang chờ.")), refreshed_cookie.as_deref());
+            };
+            let raw = match tokio::time::timeout(Duration::from_secs(5), to_bytes(body, 256 * 1024)).await {
+                Err(_) => return with_cookie(error_resp(&GwError::new(408, "VIDEO_TIMEOUT", "Quá thời gian nhận khung camera.")), refreshed_cookie.as_deref()),
+                Ok(Err(_)) => return with_cookie(error_resp(&GwError::new(413, "VIDEO_TOO_LARGE", "Khung JPEG vượt 256 KiB.")), refreshed_cookie.as_deref()),
+                Ok(Ok(raw)) => raw,
+            };
+            ctx.call.video_in(path.rsplit('/').next().unwrap(), raw.to_vec()).await
         }
         Kind::ChatBytes => return with_cookie(bytes_resp(ctx.chat.bytes(&path, &query).await), refreshed_cookie.as_deref()),
         Kind::Snapshot if ctx.accounts => return with_cookie(bytes_resp(ctx.chat.bytes(&path,&query).await), refreshed_cookie.as_deref()),
@@ -719,6 +731,7 @@ fn router_with(ctx: Arc<Ctx>) -> Router {
     r = r
         .route("/api/live/calls", route(get, s(LiveCalls)))
         .route("/api/live/audio/in/:call_id", route(post, s(AudioIn)))
+        .route("/api/live/video/in/:call_id", route(post, s(VideoIn)))
         .route("/api/live/audio/out/:call_id", on(get, audio_out_stream).on(MethodFilter::HEAD, method_not_allowed).fallback(method_not_allowed))
         .route("/api/live/settings", add(route(get, s(ChatGet)), post, s(Live(Settings))))
         .route("/api/live/devices", route(get, s(LiveDevices)))
@@ -818,6 +831,15 @@ where
     F: Future<Output = ()> + Send + 'static,
 {
     let addr = listener.local_addr().map_err(|e| format!("không đọc được địa chỉ HTTP: {e}"))?;
+    if crate::tls_serve::enabled() {
+        match crate::tls_serve::acceptor(&crate::tls_serve::tls_dir(), addr) {
+            Ok(acceptor) => {
+                log::info!("tggw serve: nghe http://{addr} và https://{addr} (cùng cổng, chứng chỉ tự ký)");
+                return crate::tls_serve::serve_dual(listener, app, acceptor, shutdown).await;
+            }
+            Err(e) => log::warn!("HTTPS tắt vì không dựng được chứng chỉ ({e}); vẫn nghe HTTP"),
+        }
+    }
     log::info!("tggw serve: nghe http://{addr}");
     axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
         .with_graceful_shutdown(shutdown).await.map_err(|e| format!("HTTP lỗi: {e}"))
@@ -937,6 +959,9 @@ mod tests {
         }
         fn say(&self, b: Value) -> BoxFut<'_, Result<Value, GwError>> {
             self.rec("say", "", "", b)
+        }
+        fn video_in(&self, id: &str, jpeg: Vec<u8>) -> BoxFut<'_, Result<Value, GwError>> {
+            self.rec("video_in", id, "", json!(jpeg))
         }
         fn audio_in(&self, id: &str, pcm: Vec<u8>) -> BoxFut<'_, Result<Value, GwError>> {
             self.rec("audio_in", id, "", json!(pcm))
@@ -1172,6 +1197,19 @@ mod tests {
         let (app, call, _) = app();
         assert_eq!(send(&app, ok("POST", "/api/live/hangup", Body::empty())).await.0, 200);
         assert_eq!(call.last(), ("hangup".into(), "".into(), "".into(), json!({})));
+    }
+
+    #[tokio::test]
+    async fn browser_camera_frames_need_auth_are_size_limited_and_do_not_spend_control_budget() {
+        let (call, chat) = (Arc::new(Fake::default()), Arc::new(Fake::default()));
+        let app = app_limit(&call, &chat, 1);
+        let path = "/api/live/video/in/c1";
+        assert_eq!(send(&app, req("POST", path, None, vec![0xFF, 0xD8, 0xFF, 0xD9])).await.0, 401);
+        assert_eq!(send(&app, ok("POST", path, vec![0; 262_145])).await.0, 413);
+        for _ in 0..5 { assert_eq!(send(&app, ok("POST", path, vec![0xFF, 0xD8, 9, 0xFF, 0xD9])).await.0, 200); }
+        assert_eq!(call.last(), ("video_in".into(), "c1".into(), "".into(), json!([255, 216, 9, 255, 217])));
+        assert_eq!(send(&app, ok("GET", "/api/live/calls", Body::empty())).await.0, 200);
+        assert_eq!(send(&app, ok("GET", "/api/live/calls", Body::empty())).await.0, 429, "khung camera không tiêu ngân sách điều khiển");
     }
 
     #[tokio::test]

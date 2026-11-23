@@ -665,6 +665,14 @@ impl CallControl for Accounts {
             Err(GwError::not_found("Không có cuộc gọi này."))
         })
     }
+    fn video_in(&self,id:&str,jpeg:Vec<u8>)->BoxFut<'_,Result<Value,GwError>> {
+        let id=id.to_owned(); Box::pin(async move {
+            for (_,e) in self.all() {
+                if e.calls.owns_call(&id).await { return e.calls.video_in(&id,jpeg).await; }
+            }
+            Err(GwError::not_found("Không có cuộc gọi này."))
+        })
+    }
     fn audio_out(&self,id:&str,token:&str)->BoxFut<'_,Result<AudioOut,GwError>> {
         let (id,token)=(id.to_owned(),token.to_owned()); Box::pin(async move {
             for (_,e) in self.all() {

@@ -123,12 +123,8 @@ impl Devices {
             || !matches!(self.speaker.as_str(), "" | "browser")
     }
 
-    pub fn check_camera(&self, video: bool, off: bool) -> Result<(), GwError> {
-        if video && !off && self.camera == "browser" {
-            return Err(GwError::new(501, "BROWSER_VIDEO_UNAVAILABLE", "Camera trình duyệt chưa được hỗ trợ; chọn black hoặc camera HA."));
-        }
-        Ok(())
-    }
+    /// Camera `browser` (webcam của trình duyệt qua `POST /api/live/video/in/:call_id`) đã được hỗ trợ; chưa có khung nào thì hình đen.
+    pub fn check_camera(&self, _video: bool, _off: bool) -> Result<(), GwError> { Ok(()) }
 
     pub fn update(&mut self, body: &Value) -> Result<(), GwError> {
         if !body.is_object() { return Err(GwError::bad_request("Cần JSON object")); }

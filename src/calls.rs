@@ -43,6 +43,7 @@ enum Command {
     VideoJpeg(String, Option<Vec<u8>>),
     CastAudio(String, String, oneshot::Sender<Option<CastAudio>>),
     AudioIn(String, Vec<u8>, oneshot::Sender<Reply>, tokio::sync::OwnedSemaphorePermit),
+    VideoIn(String, Vec<u8>, oneshot::Sender<Reply>),
     AudioOut(String, String, oneshot::Sender<Result<AudioOut, GwError>>),
     OwnsCall(String, oneshot::Sender<bool>),
     HasActiveCall(oneshot::Sender<bool>),
@@ -183,6 +184,15 @@ impl CallControl for CallManager {
             rx.await.map_err(|_| runtime_error())?
         })
     }
+    fn video_in(&self, id: &str, jpeg: Vec<u8>) -> BoxFut<'_, Reply> {
+        let id = id.to_owned();
+        Box::pin(async move {
+            if jpeg.len() > browser::MAX_JPEG { return Err(GwError::new(413, "VIDEO_TOO_LARGE", "Khung JPEG vượt 256 KiB.")); }
+            let (tx, rx) = oneshot::channel();
+            self.handle.sender.send(Command::VideoIn(id, jpeg, tx)).map_err(|_| runtime_error())?;
+            rx.await.map_err(|_| runtime_error())?
+        })
+    }
     fn audio_out(&self, id: &str, token: &str) -> BoxFut<'_, Result<AudioOut, GwError>> {
         let (id, token) = (id.to_owned(), token.to_owned());
         Box::pin(async move {
@@ -245,6 +255,7 @@ struct LiveCall {
     playback_final: Option<u64>,
     cast: Option<cast::CastSink>,
     browser_mic: Option<browser::BrowserMic>,
+    browser_cam: Option<browser::BrowserCam>,
     browser_audio: Option<browser_audio::BrowserAudio>,
     cam_off: bool,
     view_on: bool,
@@ -277,7 +288,7 @@ impl LiveCall {
         let playback_path = data_dir.join("live").join(format!("{id}_in.pcm"));
         let mut c = Self { id, td_id: None, user_id, outgoing, video, state: if outgoing { "dialing" } else { "ringing" },
             accepted: false, ready_done: false, media_created: false, pending_signaling: Vec::new(), devices, mic_source, playback_kind, playback_cmd,
-            playback_path, playback_final: None, cast: None, browser_mic: None, browser_audio: None, cam_off: false, view_on: video, peer_video: false,
+            playback_path, playback_final: None, cast: None, browser_mic: None, browser_cam: None, browser_audio: None, cam_off: false, view_on: video, peer_video: false,
             view: json!({"frames":0,"jpeg":0,"size":"","dropped":0,"bad":0}), snapshot: Default::default(), trace: None, sig: [0;4], frames_in: 0, frame_bytes: 0,
             peak: 0, error: String::new(), emojis: json!([]), started: Instant::now(), active: None, ended: None,
             events: VecDeque::new(), capture_revision: 0, speech_revision: None, speech_pending: false };
@@ -323,6 +334,10 @@ impl LiveCall {
             if self.browser_mic.is_none() { self.browser_mic = Some(browser::BrowserMic::open().await?); }
             description.microphone.as_mut().unwrap().input = self.browser_mic.as_ref().unwrap().command();
         } else { self.browser_mic = None; }
+        if devices.camera == "browser" && video && !cam_off {
+            if self.browser_cam.is_none() { self.browser_cam = Some(browser::BrowserCam::open(profile.2 as u8).await?); }
+            if let Some(camera) = description.camera.as_mut() { camera.input = self.browser_cam.as_ref().unwrap().command(profile); }
+        } else { self.browser_cam = None; }
         Ok(description)
     }
 
@@ -428,6 +443,15 @@ impl Actor {
                                 if c.state != "active" || c.devices.mic != "browser" { return Err(GwError::new(409, "CALL_NOT_ACTIVE", "Cuộc gọi chưa nhận hoặc không dùng mic browser.")); }
                                 c.browser_mic.as_ref().ok_or_else(media_error)?.push(&pcm)?;
                                 Ok(json!({"ok":true,"bytes":pcm.len()}))
+                            });
+                        let _ = reply.send(result);
+                    }
+                    Some(Command::VideoIn(id, jpeg, reply)) => {
+                        let result = self.calls.iter().find(|c| c.id == id && c.state != "ended").ok_or_else(missing)
+                            .and_then(|c| {
+                                if c.state != "active" || c.devices.camera != "browser" || c.cam_off { return Err(GwError::new(409, "CALL_NOT_ACTIVE", "Cuộc gọi chưa nhận hoặc không dùng camera browser.")); }
+                                c.browser_cam.as_ref().ok_or_else(media_error)?.push(&jpeg)?;
+                                Ok(json!({"ok":true,"bytes":jpeg.len()}))
                             });
                         let _ = reply.send(result);
                     }
@@ -651,6 +675,7 @@ impl Actor {
         c.state = "ended";
         c.snapshot = Default::default();
         c.browser_mic = None;
+        c.browser_cam = None;
         c.browser_audio = None;
         if let Some(cast) = c.cast.take() { cast.close().await; }
         c.ended = Some(Instant::now());
