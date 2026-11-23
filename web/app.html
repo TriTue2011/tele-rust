@@ -1758,7 +1758,7 @@
     if (typeof renderHeadPeer === "function") renderHeadPeer(c);
     if (typeof renderHeadAutoDelete === "function") renderHeadAutoDelete(c.auto_delete_seconds || 0);
     if (typeof closeChatSearch === "function") closeChatSearch();
-    const box = $("msgs"); box.textContent = ""; rendered.clear(); msgData.clear(); lastDay = null; applyBackground(null);
+    const box = $("msgs"); box.textContent = ""; rendered.clear(); msgData.clear(); lastDay = null; if (typeof applyBackground === "function") applyBackground(null);
     try {
       const r = await api("GET", "/api/chats/" + c.id + "/messages?limit=40"); const msgs = r.messages || [];
       if (cur !== c.id) return; oldest = msgs.length ? msgs[0].id : 0;
@@ -1766,7 +1766,7 @@
       appendMessages(msgs, false); box.scrollTop = box.scrollHeight;
       markRead(c.id, msgs);
     } catch (e) { toast(e.message); }
-    loadChatBackground(c.id);
+    if (typeof loadChatBackground === "function") loadChatBackground(c.id);
     if (typeof onChatOpened === "function") onChatOpened(c);
     if (typeof updateComposerToolbar === "function") updateComposerToolbar();
     $("text").focus();
@@ -2661,7 +2661,7 @@
   }
   // ---- Thả cảm xúc: danh sách CẢM XÚC ĐƯỢC PHÉP của hội thoại (Telegram quyết định, không gắn cứng 👍) + bảng emoji đầy đủ khi soạn tin ----
   // «Dùng gần đây» của bảng emoji nhớ bằng COOKIE (Tele nhớ tuỳ chọn bằng cookie), như thứ tự danh bạ và độ rộng khung.
-  if (window.Emoji) {
+  if (typeof window !== "undefined" && window.Emoji) {
     const emojiCookie = "tggw_emoji=";
     Emoji.setStorage({
       get: () => { try { const raw = document.cookie.split(/;\s*/).find((c) => c.startsWith(emojiCookie)); return raw ? decodeURIComponent(raw.slice(emojiCookie.length)) : null; } catch (_) { return null; } },

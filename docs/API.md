@@ -60,6 +60,8 @@ Tài liệu này tổng hợp hợp đồng HTTP REST thực tế được hiệ
 - `GET /api/chats/:chat_id/messages/:message_id/comments?from=0&limit=30`: lấy bình luận của bài đăng kênh từ nhóm thảo luận liên kết (`{discussion_chat_id, thread_id, root_message_id, messages, has_more}`; trả `409 NO_DISCUSSION` nếu kênh không có nhóm thảo luận).
 - `POST /api/chats/:chat_id/messages/:message_id/comments`: gửi bình luận vào nhóm thảo luận (`{"text": "...", "entities": [...], "reply_to": 0}`; hỗ trợ `format`/`auto_emphasis`/`ai_markup`, không yêu cầu `confirm`, trả `409 NO_DISCUSSION` nếu không có nhóm thảo luận).
 - `GET /api/chats/:chat_id/info`: trả `chat_id`, `title`, `kind` (`private`/`secret`/`group`/`channel`), `unread`, `marked_unread`, `pinned`, `archived`, `auto_delete_seconds`, `notification`, cùng thông tin thành viên/quyền/liên kết mời (chỉ trả `invite_link` nếu `is_admin == true`).
+- `GET /api/messages/reactions?chat_id=&message_id=`: cảm xúc được phép của tin (`top`, `recent`, `popular`, `allow_custom_emoji`).
+- `GET /api/backgrounds[?dark=1]`, `GET|POST /api/chats/:chat_id/background`, `POST /api/wallpapers/upload`: hình nền hội thoại đồng bộ với Telegram (bộ sưu tập, màu, chuyển màu, ảnh tự gán ≤ 3 MB, `for_both`, `dimming`).
 - `GET /api/chats/:chat_id/members?q=&limit=50`: thành viên nhóm/siêu nhóm (lọc theo `q`, giới hạn tối đa `50`).
 - `POST /api/chats/:chat_id/settings`: nhận một hoặc nhiều khoá trong `["notification", "auto_delete", "pin", "archive", "mark_unread"]`. Riêng `auto_delete` yêu cầu `{"seconds": 0 | 86400*N (1..365), "confirm": true}`.
 - `POST /api/chats/:chat_id/clear_history`: `{"confirm": true, "revoke": false, "remove_from_list": false}`.

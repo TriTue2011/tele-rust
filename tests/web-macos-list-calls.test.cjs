@@ -456,12 +456,12 @@ function setupMacosHarness(options = {}) {
   return { ...ctx.exports, nodes, doc, requests, toasts, startedCalls, flush, setCur: (id, kind) => { ctx.cur = id; ctx.curKind = kind; } };
 }
 
-test('HTML sạch bảo mật, đúng phạm vi Telegram macOS (bỏ bottom nav/birthday/đổi hình nền) và đủ phần tử mới', () => {
+test('HTML sạch bảo mật, đúng phạm vi Telegram macOS (bỏ bottom nav/birthday; CÓ hình nền hội thoại theo yêu cầu 23/11) và đủ phần tử mới', () => {
   new vm.Script(fullScript);
   for (const banned of ['innerHTML', 'outerHTML', 'insertAdjacentHTML', 'localStorage', 'sessionStorage', 'gw_token', 'GATEWAY_TOKEN', '@font-face', 'fonts.googleapis', 'fonts.gstatic']) {
     assert.equal(html.includes(banned), false, `không được chứa ${banned}`);
   }
-  assert.equal(html.includes('Đổi hình nền'), false, 'đã bỏ menu Đổi hình nền theo chỉnh 22/11');
+  assert.equal(html.includes('id="ctx-wallpaper"') && html.includes('/api/chats/" + chatId + "/background'), true, 'hình nền hội thoại (đồng bộ Telegram) là tính năng chủ máy yêu cầu 23/11: phải có mục menu và gọi API thật');
   assert.equal(html.includes('Cập nhật sinh nhật'), false, 'đã bỏ banner sinh nhật theo chỉnh 22/11');
   assert.equal(html.includes('bottom-nav'), false, 'đã bỏ thanh điều hướng dưới kiểu điện thoại');
   for (const id of [

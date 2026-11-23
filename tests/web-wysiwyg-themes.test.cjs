@@ -324,7 +324,7 @@ test('cấu trúc HTML sạch bảo mật, đủ nút WYSIWYG B/I/U/S/</>/Tx và
     'innerHTML', 'outerHTML', 'insertAdjacentHTML', 'document.write',
     'localStorage', 'sessionStorage', 'gw_token', 'GATEWAY_TOKEN',
     '@font-face', 'fonts.googleapis', 'fonts.gstatic',
-    'Đổi hình nền', 'Cập nhật sinh nhật', 'bottom-nav', '999+', '📞 Cuộc gọi',
+    'Cập nhật sinh nhật', 'bottom-nav', '999+', '📞 Cuộc gọi',
   ]) {
     assert.equal(html.includes(banned), false, `Không được chứa chuỗi cấm: ${banned}`);
   }

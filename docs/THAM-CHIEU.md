@@ -64,6 +64,8 @@ Mọi đường dẫn có xác thực đều chấp nhận `Authorization: Beare
 | `GET` | `/index.html` | Không | — | Phục vụ trang đăng nhập web & quản lý tài khoản (`web/index.html`). |
 | `GET` | `/ui/` | Không | — | Bí danh phục vụ `web/index.html`. |
 | `GET` | `/ui/index.html` | Không | — | Đường dẫn chuẩn tới trang quản lý tài khoản (`web/index.html`). |
+| `GET` | `/ui/emoji.js` | Không | — | Bảng emoji và thanh cảm xúc (mô-đun dùng chung với zalo-rs). |
+| `GET` | `/ui/emoji-data.js` | Không | — | Dữ liệu 1355 emoji (nhóm, tên Anh, từ khoá Việt). |
 | `GET` | `/ui/qrcode.min.js` | Không | — | Phục vụ thư viện tạo mã QR nội bộ (`qrcode-generator` 1.4.4). |
 | `GET` | `/ui/api/auth/status` | Công khai (kiểm cookie nếu có) | Cookie `tggw_session` | Kiểm tra đã thiết lập tài khoản web chưa và trạng thái đăng nhập. |
 | `POST` | `/ui/api/auth/setup` | Token gateway một lần | `token`, `ten`, `mat_khau` (≥10 ký tự) | Tạo tài khoản web lần đầu và cấp cookie phiên `HttpOnly`. |
@@ -86,7 +88,11 @@ Mọi đường dẫn có xác thực đều chấp nhận `Authorization: Beare
 | `GET` | `/api/chats/:chat_id/messages` | Bearer hoặc Cookie | `:chat_id`, `?before=`, `?limit=1..100`, `?q=`, `?account=` | Lấy lịch sử tin nhắn hoặc tìm kiếm tin nhắn trong hội thoại khi có `q`. |
 | `GET` | `/api/chats/:chat_id/messages/:message_id/comments` | Bearer hoặc Cookie | `:chat_id`, `:message_id`, `?from=`, `?limit=1..100`, `?account=` | Lấy danh sách bình luận của bài đăng kênh từ nhóm thảo luận liên kết (`409 NO_DISCUSSION` nếu không có). |
 | `POST` | `/api/chats/:chat_id/messages/:message_id/comments` | Bearer hoặc Cookie+CSRF | `:chat_id`, `:message_id`, `text`, `entities`, `format`, `auto_emphasis`, `ai_markup`, `reply_to` | Gửi bình luận vào nhóm thảo luận của bài đăng kênh (`409 NO_DISCUSSION` nếu không có). |
+| `GET` | `/api/backgrounds` | Bearer hoặc Cookie | `?dark=1`, `?account=` | Bộ sưu tập hình nền đã cài của tài khoản (`getInstalledBackgrounds`); ảnh qua `/api/file/<thumb_file>`. |
+| `POST` | `/api/wallpapers/upload` | Bearer hoặc Cookie+CSRF | thân thô JPEG/PNG ≤ 3 MB | Lưu ảnh nền tự gán vào `wallpapers/<sha256>.<đuôi>` (kiểm ruột tệp), trả `{file}` để đặt bằng `file_path`. |
 | `GET` | `/api/chats/:chat_id/info` | Bearer hoặc Cookie | `:chat_id`, `?account=` | Lấy thông tin chi tiết hội thoại (cá nhân/nhóm/kênh), quyền và thông báo. |
+| `GET` | `/api/chats/:chat_id/background` | Bearer hoặc Cookie | `:chat_id`, `?account=` | Hình nền hiện tại của hội thoại (`{background:{dimming, background}}` hoặc `{background:null}`). |
+| `POST` | `/api/chats/:chat_id/background` | Bearer hoặc Cookie+CSRF | `:chat_id`, `background_id` \| `color` \| `gradient` (`from`,`to`,`angle`) \| `file_path`, `dimming` 0–100, `for_both`, `blurred`, `moving`; hoặc `remove: true` (+ `restore_previous`) | Đặt hoặc bỏ hình nền hội thoại qua TDLib (`setChatBackground`/`deleteChatBackground`); `for_both` chỉ có nghĩa ở hội thoại 1-1. |
 | `GET` | `/api/chats/:chat_id/members` | Bearer hoặc Cookie | `:chat_id`, `?q=`, `?limit=1..50`, `?account=` | Liệt kê và tìm kiếm thành viên nhóm/siêu nhóm. |
 | `POST` | `/api/chats/:chat_id/settings` | Bearer hoặc Cookie+CSRF | `:chat_id`, `notification`, `auto_delete` (`seconds`, `confirm: true`), `pin`, `archive`, `mark_unread` | Cập nhật thông báo, ghim, lưu trữ, chưa đọc và tự xoá (đổi `auto_delete` cần `confirm: true`). |
 | `POST` | `/api/chats/:chat_id/clear_history` | Bearer hoặc Cookie+CSRF | `:chat_id`, `confirm: true`, `revoke`, `remove_from_list` | Xoá toàn bộ lịch sử hội thoại (bắt buộc `confirm: true`). |
@@ -120,6 +126,7 @@ Mọi đường dẫn có xác thực đều chấp nhận `Authorization: Beare
 | `POST` | `/api/messages/edit` | Bearer hoặc Cookie+CSRF | `chat_id`, `message_id`, `text`, `parse_mode`, `entities` | Chỉnh sửa nội dung tin nhắn đã gửi. |
 | `POST` | `/api/messages/delete` | Bearer hoặc Cookie+CSRF | `chat_id`, `message_ids`, `revoke` | Xoá tin nhắn trong hội thoại. |
 | `POST` | `/api/messages/forward` | Bearer hoặc Cookie+CSRF | `to_chat_id`, `from_chat_id`, `message_ids` | Chuyển tiếp tin nhắn sang hội thoại khác. |
+| `GET` | `/api/messages/reactions` | Bearer hoặc Cookie | `?chat_id=`, `?message_id=`, `?account=` | Danh sách cảm xúc ĐƯỢC PHÉP của tin (`top`, `recent`, `popular` — chỉ emoji thường, bỏ emoji Premium/tuỳ biến) theo `getMessageAvailableReactions`. |
 | `POST` | `/api/messages/react` | Bearer hoặc Cookie+CSRF | `chat_id`, `message_id`, `emoji`, `on` | Thêm hoặc gỡ biểu cảm phản hồi cho tin nhắn. |
 | `POST` | `/api/resolve` | Bearer hoặc Cookie+CSRF | `peer` (`@username`, `+phone`, hoặc ID số) | Phân giải người nhận thành `chat_id`. |
 | `POST` | `/api/translate` | Bearer hoặc Cookie+CSRF | `text`, `to_language_code` | Dịch văn bản qua dịch vụ dịch tích hợp của Telegram/TDLib. |
