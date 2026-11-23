@@ -1,4 +1,4 @@
-# Tài liệu HTTP REST API — tele-rust (`v0.7.12`)
+# Tài liệu HTTP REST API — tele-rust (`v0.7.13`)
 
 Tài liệu này tổng hợp hợp đồng HTTP REST thực tế được hiện thực trong `src/rest.rs`, `src/ui_auth.rs`, `src/login_http.rs`, `src/account_router.rs`, `src/chat/` và `src/calls.rs`.
 
