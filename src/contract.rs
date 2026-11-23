@@ -136,6 +136,10 @@ pub trait CallControl: Send + Sync + 'static {
     fn audio_in(&self, _id: &str, _pcm: Vec<u8>) -> BoxFut<'_, Result<Value, GwError>> {
         Box::pin(async { Err(GwError::not_found("Không có cuộc gọi này.")) })
     }
+    /// Khung JPEG từ webcam của trình duyệt (≤256 KiB); 404 hết cuộc gọi, 409 chưa active/không dùng camera browser, 429 quá nhanh.
+    fn video_in(&self, _id: &str, _jpeg: Vec<u8>) -> BoxFut<'_, Result<Value, GwError>> {
+        Box::pin(async { Err(GwError::not_found("Không có cuộc gọi này.")) })
+    }
     fn audio_out(&self, _id: &str, _token: &str) -> BoxFut<'_, Result<AudioOut, GwError>> {
         Box::pin(async { Err(GwError::not_found("Không có cuộc gọi này.")) })
     }

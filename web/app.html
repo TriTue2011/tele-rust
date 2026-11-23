@@ -2875,8 +2875,8 @@
   function insecureMicMessage() {
     const reason = window.isSecureContext ? "Trình duyệt hiện không cho truy cập micro tại " + location.origin + "."
       : "Hiện đang mở bằng " + location.origin + ".";
-    return "Trình duyệt chỉ cho dùng micro trên trang HTTPS hoặc localhost. " + reason +
-      " Mở trang qua HTTPS (ví dụ qua Home Assistant/ingress) hoặc chọn nguồn khác.";
+    return "Trình duyệt chỉ cho dùng micro và webcam trên trang HTTPS hoặc localhost. " + reason +
+      " Gateway có sẵn HTTPS cùng cổng: mở https://" + location.host + " (trình duyệt sẽ hỏi tin cậy chứng chỉ một lần), hoặc chọn nguồn khác.";
   }
   function safeCatalogId(id) {
     return /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(id);
@@ -2905,6 +2905,7 @@
       addDeviceOption(select, "none", "Không dùng");
       addDeviceOption(select, "manual", "Nhập URL cửa bộ đàm");
     } else {
+      addDeviceOption(select, "browser", "Webcam của máy này (USB / có sẵn)", !localMicAvailable());
       addDeviceOption(select, "black", "Hình đen");
       addDeviceOption(select, "manual", "Nhập URL camera (RTSP/HTTP)");
     }
@@ -2938,6 +2939,9 @@
     const secureHelp = $("call-device-secure-help");
     secureHelp.textContent = localMicAvailable() ? "" : insecureMicMessage();
     secureHelp.hidden = localMicAvailable();
+    $("device-camera-help").textContent = localMicAvailable()
+      ? "Webcam của máy này gửi hình lên gateway (trình duyệt sẽ hỏi quyền camera). Hoặc chọn Hình đen, thiết bị trong danh mục hay nhập URL."
+      : "Webcam của máy này cần HTTPS: mở https://" + location.host + " (gateway tự bật HTTPS cùng cổng). Hoặc chọn Hình đen / thiết bị / URL.";
     $("call-device-error").textContent = ""; $("call-device-error").hidden = true;
   }
   function choiceFor(kind) {
@@ -2961,6 +2965,7 @@
     }
     if (kind === "mic") return value === "browser" && localMicAvailable() ? { type: value, value } : { type: "silence", value: "silence" };
     if (kind === "speaker") return { type: value, value: value === "browser" ? "browser" : "" };
+    if (value === "browser") return localMicAvailable() ? { type: "browser", value: "browser" } : { type: "black", value: "black" };
     return { type: value, value: "black" };
   }
   function finishDevicePicker(value) {
@@ -3254,7 +3259,7 @@
     $("call-audio-enable").hidden = true;
   }
   function stopBrowserAudio() {
-    stopBrowserMic(); stopBrowserOutput();
+    stopBrowserMic(); stopBrowserOutput(); stopBrowserCamera();
   }
   async function playCallAudio(output) {
     const url = callAudio.src;
@@ -3369,6 +3374,44 @@
       callError("Không truy cập được micro của máy này: " + e.message);
     }
   }
+  // Webcam của máy (USB hoặc có sẵn) → gateway: chụp khung từ <video> vào canvas, gửi JPEG ~10 khung/giây (một khung đang bay tại một thời điểm).
+  let browserCamera = null;
+  function stopBrowserCamera() {
+    const cam = browserCamera; if (!cam) return;
+    browserCamera = null; clearInterval(cam.timer);
+    cam.stream?.getTracks().forEach((track) => track.stop());
+  }
+  function sendCameraFrame(cam, video, canvas) {
+    if (cam.sending || browserCamera !== cam || !video.videoWidth) return;
+    const w = Math.min(640, video.videoWidth), h = Math.round(w * video.videoHeight / video.videoWidth);
+    canvas.width = w; canvas.height = h; canvas.getContext("2d").drawImage(video, 0, 0, w, h);
+    cam.sending = true;
+    canvas.toBlob(async (blob) => {
+      try {
+        if (!blob || browserCamera !== cam) return;
+        const r = await fetch(accountPath("/api/live/video/in/" + encodeURIComponent(cam.id)), {
+          method: "POST", credentials: "same-origin", headers: { "X-Requested-With": "fetch", "Content-Type": "image/jpeg" }, body: blob });
+        if (r.status === 404 || r.status === 409) stopBrowserCamera();      // hết cuộc gọi hoặc không còn dùng camera của trình duyệt
+      } catch (_) { /* mất một khung: khung sau gửi tiếp */ } finally { cam.sending = false; }
+    }, "image/jpeg", 0.7);
+  }
+  async function startBrowserCamera(id) {
+    if (browserCamera?.id === id) return;
+    stopBrowserCamera();
+    const cam = { id, timer: null, sending: false, stream: null };
+    browserCamera = cam;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 15 } }, audio: false });
+      if (browserCamera !== cam) { stream.getTracks().forEach((track) => track.stop()); return; }
+      cam.stream = stream;
+      const video = document.createElement("video"); video.muted = true; video.playsInline = true; video.srcObject = stream;
+      await video.play();
+      const canvas = document.createElement("canvas");
+      cam.timer = setInterval(() => sendCameraFrame(cam, video, canvas), 100);
+    } catch (e) {
+      if (browserCamera === cam) { stopBrowserCamera(); callError("Không truy cập được camera của máy này: " + e.message); }
+    }
+  }
   function syncBrowserAudio(info) {
     if (info.state !== "active") {
       stopBrowserAudio(); return;
@@ -3377,6 +3420,8 @@
     else stopBrowserOutput();
     if (callDeviceSettings?.mic === "browser" && !info.mic_muted && localMicAvailable()) startBrowserMic(info.id);
     else stopBrowserMic();
+    if (callDeviceSettings?.camera === "browser" && info.video && !info.cam_off && localMicAvailable()) startBrowserCamera(info.id);
+    else stopBrowserCamera();
   }
   function clearSnapshotImage(state) {
     $("call-image").removeAttribute("src");
@@ -3493,6 +3538,7 @@
     callError("");
     if (action === "hangup") stopBrowserAudio();
     else if (body.mic_muted === true) stopBrowserMic();
+    if (body.camera_off === true) stopBrowserCamera();
     try {
       const info = await api("POST", "/api/live/" + action, body);
       if (!callsReady || info.id === missingSnapshotId) return;

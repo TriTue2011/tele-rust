@@ -26,7 +26,7 @@ Tài liệu này giữ danh sách tính năng thật và giới hạn của bả
 ## Chưa làm / Giới hạn đã biết
 
 - **Các mục Cài đặt đánh dấu «Sắp có»:** *Thông báo và âm thanh*, *Quyền riêng tư và bảo mật*, *Thư mục hội thoại* và *Thiết bị* (phiên đăng nhập Telegram) chỉ mới có mục điều hướng giữ chỗ, chưa có cấu hình chức năng.
-- **Camera trình duyệt:** Cấu hình chấp nhận `camera: "browser"`, nhưng bật video với nguồn này trả `501 BROWSER_VIDEO_UNAVAILABLE` (chưa có `/api/live/video/in/:call_id`). Hãy dùng `black` hoặc URL RTSP/HTTP.
+- **Camera trình duyệt (webcam USB/có sẵn):** `camera: "browser"` nhận khung JPEG từ trình duyệt qua `POST /api/live/video/in/:call_id` (≤256 KiB mỗi khung, tối đa 30 khung/giây), gateway phát lại thành luồng camera của cuộc gọi; chưa có khung nào thì gửi hình đen. Trình duyệt chỉ cho dùng webcam/mic trên HTTPS hoặc localhost: gateway tự bật HTTPS tự ký trên CÙNG cổng (`https://<máy>:3333`, tắt bằng `GATEWAY_HTTPS=0`).
 - **macOS: chưa hỗ trợ:** Chưa cung cấp workflow dựng hay nhị phân phát hành cho macOS vì tổ hợp TDLib `1.8.69` và NTgCalls `3.0.7` trên macOS chưa được kiểm chứng thực tế trên máy đích.
 - **Kiến trúc `arm64`/`aarch64`:** Ảnh Docker và add-on hiện chỉ dựng cho `linux/amd64` do nhị phân tĩnh NTgCalls `3.0.7` và wheel `tdjson==1.8.69` trên PyPI chỉ có gói `linux/amd64`.
 - **Home Assistant Ingress:** Chưa bật Ingress trên add-on vì gateway đặt header `Content-Security-Policy: ... frame-ancestors 'none'`, dùng đường dẫn gốc tuyệt đối `/api/*` và cookie `Path=/`. Truy cập Web UI qua cổng `3334`.

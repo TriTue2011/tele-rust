@@ -684,11 +684,8 @@ async fn browser_devices_auto_catalog_and_deferred_camera_validate_before_call()
         assert_eq!(f.manager().call_out(body).await.unwrap_err().status,400);
     }
     assert!(f.requests("createCall").is_empty());
-    assert_eq!(f.manager().call_out(json!({"user_id":42,"video":true})).await.unwrap_err().code,"BROWSER_VIDEO_UNAVAILABLE");
-    assert!(f.requests("createCall").is_empty());
-    let c=f.manager().call_out(json!({"user_id":42,"camera":"browser","video":false})).await.unwrap();
-    assert_eq!(f.manager().media(json!({"id":c["id"],"video":true})).await.unwrap_err().status,501);
-    f.manager().hangup(json!({"id":c["id"]})).await.unwrap();
+    // Camera «browser» (webcam trình duyệt) đã được hỗ trợ: không còn chặn 501 BROWSER_VIDEO_UNAVAILABLE.
+    assert!(Devices::default().check_camera(true,false).is_ok());
     for body in [json!({"mic":"http://camera.example/audio"}),json!({"mic":"silence","camera":"rtsp://camera.example/video"}),
         json!({"camera":"black","speaker":R1})] {
         f.manager().settings(body).await.unwrap();

@@ -36,6 +36,8 @@ Bảng dưới đây liệt kê toàn bộ biến môi trường thời gian ch�
 | `VIDEO_PROFILE` | — | `standard` | Độ phân giải video gửi đi (`low` → `480x270@10`; khác → `640x360@15`). |
 | `TELEGRAM_RX_VIDEO` | — | `640x360@15` | Độ phân giải/fps video nhận dạng `WxH@F` (`160–3840 × 120–2160`, `5–60` fps). |
 | `TELEGRAM_RX_ROTATE` | — | `0` | Xoay thêm (độ, theo chiều kim đồng hồ: `0`, `90`, `180`, `270`) lên hình video nhận được, cộng với cờ xoay do bên gửi đặt. Dùng khi một thiết bị gửi sai cờ nên hình bị nghiêng. |
+| `GATEWAY_HTTPS` | — | `1` | `0`/`false` tắt HTTPS tự ký trên cùng cổng HTTP. Bật: gateway nhận cả `http://` và `https://` trên một cổng (chứng chỉ tự ký lưu ở `<data>/tls/`). |
+| `GATEWAY_TLS_NAMES` | — | — | Danh sách tên/IP (phẩy) thêm vào chứng chỉ HTTPS tự ký, ví dụ `172.16.10.200,tele.nha`. Đổi giá trị thì xoá thư mục `<data>/tls/` để sinh lại. |
 | `TTS_VOICE` | — | `vi-VN-HoaiMyNeural` | Tên giọng mặc định cho `edge-tts` (`1–128` ký tự chữ/số/`-`). |
 | `TTS_RATE` | — | `+0%` | Tốc độ đọc mặc định cho `edge-tts` (`+N%` hoặc `-N%`, từ `-100%` đến `+100%`). |
 | `LOG_LEVEL` | — | `INFO` (hoặc `DEBUG` nếu `TELEGRAM_DEBUG=1`) | Mức ghi log ra `stderr`: `DEBUG`, `INFO`, `WARNING`, `WARN`, `ERROR`, `CRITICAL`, `OFF`. |
@@ -143,6 +145,7 @@ Mọi đường dẫn có xác thực đều chấp nhận `Authorization: Beare
 | `POST` | `/api/live/playback` | Bearer hoặc Cookie+CSRF | `id`, `kind` (`file`\|`external`\|`shell`\|`push`), `url`/`cmd` | Đổi kênh phát âm thanh nhận từ bên kia trong lúc đang gọi. |
 | `POST` | `/api/live/say` | Bearer hoặc Cookie+CSRF | `id`, `text` (1–1000 ký tự) hoặc `audio_b64`, `voice`, `rate` | Phát giọng nói TTS hoặc đoạn âm thanh vào mic của cuộc gọi đang hoạt động. |
 | `POST` | `/api/live/audio/in/:call_id` | Bearer hoặc Cookie+CSRF | `:call_id`, thân thô PCM s16le 16 kHz mono ≤64 KiB | Đẩy khung âm thanh mic từ trình duyệt vào nguồn loopback của cuộc gọi. |
+| `POST` | `/api/live/video/in/:call_id` | Bearer hoặc Cookie+CSRF | `:call_id`, thân thô một khung JPEG ≤256 KiB | Đẩy khung webcam của trình duyệt vào cuộc gọi đang dùng `camera: "browser"` (409 nếu chưa active/không dùng camera browser, 429 quá 30 khung/giây). |
 | `GET` | `/api/live/audio/out/:call_id` | Token âm thanh `?t=` (192 bit, hạn 600s) | `:call_id`, `?t=` | Phát luồng WAV PCM 48 kHz mono tiếng từ bên kia (tối đa 2 người nghe). |
 | `GET` | `/api/live/view/:call_id` | Bearer hoặc Cookie | `:call_id` | Luồng MJPEG `multipart/x-mixed-replace` hình video từ bên kia (`409 NO_VIDEO` nếu chưa có khung). |
 | `GET` | `/api/live/snapshot/:call_id` | Bearer hoặc Cookie | `:call_id`, `?account=` | Lấy ảnh JPEG mới nhất từ luồng video cuộc gọi (hạn mức gấp 3 lần API thường). |

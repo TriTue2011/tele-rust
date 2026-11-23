@@ -35,6 +35,9 @@ futures-util = { version = "=0.3.34", default-features = false, features = ["std
 prost = "=0.13.5"
 rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 tokio-rustls = { version = "=0.26.6", default-features = false, features = ["ring", "tls12"] }
+# HTTPS tự ký trên cùng cổng HTTP (mic/webcam của trình duyệt cần ngữ cảnh an toàn): xem src/tls_serve.rs
+rcgen = { version = "=0.13.2", default-features = false, features = ["ring"] }
+hyper-util = { version = "=0.1.19", features = ["server-auto", "tokio", "service", "http1", "http2"] }
 
 [dev-dependencies]
 tower = { version = "=0.5.2", features = ["util"] }

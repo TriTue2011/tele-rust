@@ -15,6 +15,7 @@ pub mod chat;
 pub mod contract;
 mod events;
 pub mod rest;
+mod tls_serve;
 pub mod td;
 pub mod ui_auth;
 pub mod logging;
