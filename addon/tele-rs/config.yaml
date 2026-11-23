@@ -24,6 +24,8 @@ options:
   tg_ui_user: ""
   tg_ui_password: ""
   ui_cookie_secure: false
+  https: true
+  tls_names: ""
   rate_limit_per_minute: 120
   ha_webhook_url: ""
   ha_webhook_token: ""
@@ -48,6 +50,8 @@ schema:
   tg_ui_user: str?
   tg_ui_password: password?
   ui_cookie_secure: bool
+  https: bool
+  tls_names: str?
   rate_limit_per_minute: int(1,10000)?
   ha_webhook_url: str?
   ha_webhook_token: password?

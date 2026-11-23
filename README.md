@@ -84,6 +84,8 @@ volumes:
   tele_rust_data:
 ```
 
+**Mic và webcam của trình duyệt cần HTTPS:** gateway nhận cả `http://` lẫn `https://` trên cùng cổng (chứng chỉ tự ký, trình duyệt hỏi tin cậy một lần) — Docker, Docker Compose và add-on đều dùng được, không cần đổi cổng. Mở `https://<máy>:<cổng>` khi cần dùng mic/webcam.
+
 Đặt sau reverse proxy HTTPS, tự dựng từ mã nguồn, sao lưu: xem [docs/TRIEN-KHAI.md](docs/TRIEN-KHAI.md).
 
 ## 3. Tạo gateway: đăng nhập tài khoản Telegram

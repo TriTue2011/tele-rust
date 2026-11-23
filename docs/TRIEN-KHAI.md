@@ -32,6 +32,8 @@ docker run -d \
   ghcr.io/tritue2011/tele-rust:latest
 ```
 
+**HTTPS cho mic/webcam của trình duyệt:** cùng cổng đó nhận cả `http://` và `https://` (chứng chỉ tự ký, tự sinh lần đầu và lưu ở `/data/tls/` nên nhớ gắn volume `/data`). Trình duyệt chỉ cho dùng mic và webcam trên HTTPS hoặc `localhost`: mở `https://<máy>:3334`, chấp nhận cảnh báo chứng chỉ một lần. Không cần mở thêm cổng hay đổi `docker-compose`/add-on. Tắt bằng `GATEWAY_HTTPS=0`; thêm tên/IP vào chứng chỉ bằng `GATEWAY_TLS_NAMES`.
+
 Lưu ý: Không công bố trực tiếp cổng `3334` ra mạng công cộng mà không có lớp HTTPS và kiểm soát truy cập. Nên lắng nghe ở `127.0.0.1:3334` và đưa qua reverse proxy.
 
 ## 3. Triển khai Add-on Home Assistant

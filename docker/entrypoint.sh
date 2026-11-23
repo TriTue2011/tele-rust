@@ -84,6 +84,8 @@ if [ -r "$OPTIONS_FILE" ]; then
   set_str_opt "tg_ui_user" "TG_UI_USER"
   set_str_opt "tg_ui_password" "TG_UI_PASSWORD"
   set_bool_opt "ui_cookie_secure" "TGGW_UI_COOKIE_SECURE"
+  set_bool_opt "https" "GATEWAY_HTTPS"
+  set_str_opt "tls_names" "GATEWAY_TLS_NAMES"
   set_int_opt "rate_limit_per_minute" "RATE_LIMIT_PER_MINUTE"
   set_str_opt "ha_webhook_url" "HA_WEBHOOK_URL"
   set_str_opt "ha_webhook_token" "HA_WEBHOOK_TOKEN"

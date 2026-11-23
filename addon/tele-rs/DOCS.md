@@ -24,6 +24,8 @@ Mỗi tuỳ chọn trong `config.yaml` được `docker/entrypoint.sh` ánh xạ
 | `tg_ui_user` | `TG_UI_USER` | `""` | Tên đăng nhập web khởi tạo tự động ở lần chạy đầu (cần đặt cùng `tg_ui_password`). |
 | `tg_ui_password` | `TG_UI_PASSWORD` | `""` | Mật khẩu khởi tạo tài khoản web lần đầu (tối thiểu 10 ký tự, không trùng tên đăng nhập). |
 | `ui_cookie_secure` | `TGGW_UI_COOKIE_SECURE` | `false` (`0`) | Bật cờ `Secure` cho cookie phiên khi đặt sau reverse proxy HTTPS. |
+| `https` | `GATEWAY_HTTPS` | `true` (`1`) | Gateway nhận cả `http://` lẫn `https://` trên CÙNG cổng (HTTPS dùng chứng chỉ tự ký). Cần cho mic/webcam của trình duyệt (trình duyệt chỉ cho dùng trên HTTPS hoặc localhost). `false` để tắt. |
+| `tls_names` | `GATEWAY_TLS_NAMES` | `""` | Tên/IP thêm vào chứng chỉ HTTPS tự ký, cách nhau bằng dấu phẩy (ví dụ `192.0.2.10,tele.local`). Đổi giá trị thì xoá thư mục `tls/` trong dữ liệu add-on để sinh lại. |
 | `rate_limit_per_minute` | `RATE_LIMIT_PER_MINUTE` | `120` | Giới hạn số yêu cầu API mỗi phút cho mỗi token/phiên (snapshot gấp 3 lần). |
 | `ha_webhook_url` | `HA_WEBHOOK_URL` | `""` | URL nhận webhook sự kiện gửi về Home Assistant. |
 | `ha_webhook_token` | `HA_WEBHOOK_TOKEN` | `""` | Giá trị header `X-Gateway-Token` gửi kèm yêu cầu webhook. |
