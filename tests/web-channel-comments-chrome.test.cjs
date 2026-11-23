@@ -280,6 +280,23 @@ test('TC-CHANNEL-COMMENTS: hàng bình luận kênh và ngăn bình luận ở 3
     })()`), `touch target ở ${width} px`);
   }
 
+  // 4b. Độ rộng các khung chỉnh được: bình luận mặc định rộng hơn 340 px; mũi tên đổi ±16 px và nhớ vào cookie; nhấp đúp về mặc định.
+  await dimension(1440);
+  const width = (sel) => evaluate(`Math.round(document.querySelector('${sel}').getBoundingClientRect().width)`);
+  const press = (sel, key) => evaluate(`document.querySelector('${sel}').dispatchEvent(new KeyboardEvent('keydown', {key: '${key}', bubbles: true, cancelable: true}))`);
+  const w0 = await width('#comments-drawer');
+  assert.ok(w0 >= 440, `ngăn bình luận mặc định phải rộng hơn 340 px, thấy ${w0}`);
+  await press('#comments-drawer .pane-resizer', 'ArrowLeft');
+  assert.equal(await width('#comments-drawer'), w0 + 16, 'ArrowLeft làm ngăn bình luận rộng thêm 16 px');
+  assert.match(await evaluate('document.cookie'), /tggw_pane_widths=comments%3A\d+/, 'độ rộng được nhớ trong cookie');
+  await evaluate(`document.querySelector('#comments-drawer .pane-resizer').dispatchEvent(new MouseEvent('dblclick', {bubbles: true}))`);
+  assert.equal(await width('#comments-drawer'), w0, 'nhấp đúp trả về độ rộng mặc định');
+  const a0 = await width('aside');
+  await press('aside .pane-resizer', 'ArrowRight');
+  assert.equal(await width('aside'), a0 + 16, 'ArrowRight làm cột danh sách rộng thêm 16 px');
+  await press('aside .pane-resizer', 'ArrowLeft'); await press('aside .pane-resizer', 'ArrowLeft'); await press('aside .pane-resizer', 'ArrowLeft');
+  assert.ok(await width('aside') >= 260, 'cột danh sách không hẹp hơn mức tối thiểu');
+
   // 5. Gửi bình luận mới -> gọi đúng POST /api/chats/-100100/messages/10/comments và tăng số đếm lên 6.
   await evaluate(`{
     const inp = document.getElementById('comments-input');
