@@ -216,6 +216,24 @@
   .rx { display:flex; gap:4px; flex-wrap:wrap; margin-top:3px; }
   .rx span { background:var(--bg); border:1px solid var(--line); border-radius:99px; padding:0 7px; font-size:13px; cursor:pointer; }
   .rx span.mine { border-color:var(--acc); }
+  /* Bảng emoji + thanh cảm xúc (emoji.js dùng chung với Zalo) — ánh xạ sang biến màu của Tele */
+  .ep, .rxpop { --surface:var(--panel); --text:var(--fg); --muted:var(--mut); --hover:color-mix(in srgb, var(--fg) 9%, transparent); --accent:var(--acc); --accent-soft:color-mix(in srgb, var(--acc) 22%, var(--panel)); --surface-2:color-mix(in srgb, var(--fg) 7%, var(--panel)); }
+  .ep { position:fixed; z-index:90; width:min(23.5rem,96vw); height:min(26rem,70vh); display:flex; flex-direction:column; background:var(--panel); color:var(--fg); border:1px solid var(--line); border-radius:14px; box-shadow:0 8px 30px #0006; overflow:hidden; }
+  .ep-q { margin:8px 8px 4px; padding:8px 12px; border-radius:99px; border:1px solid var(--line); background:var(--bg); color:var(--fg); }
+  .ep-tabs { display:flex; justify-content:space-between; padding:0 6px 4px; border-bottom:1px solid var(--line); }
+  .ep-t { border:0; background:none; font-size:18px; padding:4px 6px; border-radius:8px; opacity:.55; } .ep-t.on { opacity:1; background:var(--hover); box-shadow:inset 0 -2px 0 var(--acc); }
+  .ep-scroll { flex:1; overflow-y:auto; padding:0 6px 8px; position:relative; min-height:0; }
+  .ep-h { margin:9px 4px 4px; font-size:12px; font-weight:600; color:var(--mut); position:sticky; top:0; background:var(--panel); padding:2px 0; z-index:1; }
+  .ep-g { display:grid; grid-template-columns:repeat(8,1fr); gap:1px; }
+  .ep-e { border:0; background:none; font-size:23px; height:38px; border-radius:8px; cursor:pointer; line-height:1; } .ep-e:hover, .ep-e:focus-visible { background:var(--hover); }
+  .ep-none { text-align:center; color:var(--mut); padding:32px 16px; }
+  .rxpop { position:fixed; z-index:90; padding:5px 9px; border-radius:99px; border:1px solid var(--line); background:color-mix(in srgb, var(--panel) 86%, transparent); backdrop-filter:blur(14px); box-shadow:0 8px 30px #0005; max-width:min(22rem,94vw); }
+  .rxpop:has(.rx-all:not([hidden])) { border-radius:22px; }
+  .rx { display:grid; gap:4px; } .rx-row { display:flex; align-items:center; justify-content:space-between; gap:2px; }
+  .rx-b { border:0; background:none; font-size:30px; line-height:1; padding:3px 4px; border-radius:10px; cursor:pointer; transition:transform .1s; } .rx-b:hover, .rx-b:focus-visible { transform:scale(1.25); background:var(--hover); }
+  .rx-b.mine { background:var(--accent-soft); outline:2px solid var(--acc); }
+  .rx-more { border:0; border-radius:99px; width:34px; height:34px; background:var(--surface-2); color:var(--mut); cursor:pointer; flex:none; display:inline-flex; align-items:center; justify-content:center; } .rx-more svg { transition:transform .15s; } .rx-more.open svg { transform:rotate(180deg); }
+  .rx-all { display:grid; grid-template-columns:repeat(7,1fr); gap:2px; max-height:224px; overflow-y:auto; padding-top:4px; border-top:1px solid var(--line); }
   .acts { display:none; position:absolute; top:-14px; right:8px; background:var(--panel); border:1px solid var(--line); border-radius:9px; padding:1px 3px; z-index:2; }
   .m:hover .acts, .m:focus-within .acts { display:flex; }
   .acts button { background:transparent; color:var(--mut); padding:2px 6px; font-size:13px; }
@@ -667,7 +685,7 @@
         <small>Enter gửi · Shift+Enter xuống dòng</small>
       </div>
       <div class="compose-row">
-        <button class="icon" id="attach" aria-label="Đính kèm tệp">📎</button><input id="file" type="file" hidden>
+        <button class="icon" id="emoji-btn" type="button" aria-label="Chọn emoji" title="Emoji">😀</button><button class="icon" id="attach" aria-label="Đính kèm tệp">📎</button><input id="file" type="file" hidden>
         <div id="text" class="compose-editor is-empty" contenteditable="true" role="textbox" aria-multiline="true" aria-label="Tin nhắn" data-placeholder="Nhập tin nhắn…" spellcheck="true"></div>
         <button id="send">Gửi</button>
       </div>
@@ -1169,6 +1187,8 @@
 </dialog>
 <div id="toast" role="alert"></div>
 
+<script src="/ui/emoji-data.js"></script>
+<script src="/ui/emoji.js"></script>
 <script>
 (function () {
   "use strict";
@@ -1639,13 +1659,14 @@
       box.appendChild(btn);
       w.appendChild(box);
       const acts = el("div", "acts");
-      const add = (label, title, fn) => { const b = el("button", "", label); b.title = title; b.setAttribute("aria-label", title); b.addEventListener("click", (e) => { e.stopPropagation(); fn(); }); acts.appendChild(b); };
-      add("↩", "Trả lời", () => setReply(m)); add("👍", "Thích", () => react(m, "👍", true));
+      const add = (label, title, fn) => { const b = el("button", "", label); b.title = title; b.setAttribute("aria-label", title); b.addEventListener("click", (e) => { e.stopPropagation(); fn(b); }); acts.appendChild(b); };
+      add("↩", "Trả lời", () => setReply(m)); add("😀", "Thả cảm xúc", (btn) => openReactions(m, btn));
       add("🗑", "Xoá", () => delMsg(m)); w.appendChild(acts);
       return w;
     }
     const group = curKind !== "private";
     const w = el("div", "m" + (m.outgoing ? " out" : "")); w.dataset.id = m.id; w.tabIndex = 0;
+    w.addEventListener("dblclick", (e) => { if (!e.target.closest("a,button,input,video,audio,img.pic")) quickReact(m); });
     if (group && !m.outgoing && m.sender) w.appendChild(el("div", "who", m.sender));
     if (m.reply_to) { const src = msgData.get(m.reply_to); w.appendChild(el("div", "rep", src ? (src.sender ? src.sender + ": " : "") + (src.text || src.summary).slice(0, 80) : "↩ Trả lời tin trước")); }
     const f = m.file;
@@ -1702,8 +1723,8 @@
       w.appendChild(bar);
     }
     const acts = el("div", "acts");
-    const add = (label, title, fn) => { const b = el("button", "", label); b.title = title; b.setAttribute("aria-label", title); b.addEventListener("click", (e) => { e.stopPropagation(); fn(); }); acts.appendChild(b); };
-    add("↩", "Trả lời", () => setReply(m)); add("👍", "Thích", () => react(m, "👍", true));
+    const add = (label, title, fn) => { const b = el("button", "", label); b.title = title; b.setAttribute("aria-label", title); b.addEventListener("click", (e) => { e.stopPropagation(); fn(b); }); acts.appendChild(b); };
+    add("↩", "Trả lời", () => setReply(m)); add("😀", "Thả cảm xúc", (btn) => openReactions(m, btn));
     if (m.text) add("⧉", "Chép", () => { navigator.clipboard && navigator.clipboard.writeText(m.text).then(() => toast("Đã chép")); });
     if (m.outgoing && m.kind === "text") add("✎", "Sửa", () => editMsg(m));
     add("🗑", "Xoá", () => delMsg(m)); w.appendChild(acts);
@@ -2470,6 +2491,7 @@
     });
   }
   $("attach").addEventListener("click", () => $("file").click());
+  $("emoji-btn").addEventListener("click", toggleEmojiPanel);
   $("file").addEventListener("change", async (e) => {
     const f = e.target.files[0]; e.target.value = ""; if (!f || !cur) return;
     if (f.size > 64 * 1024 * 1024) { toast("Tệp vượt 64 MB"); return; }
@@ -2478,6 +2500,50 @@
     try { const buf = await f.arrayBuffer(); await api("POST", "/api/chats/" + cur + "/send_file?kind=" + kind + "&name=" + encodeURIComponent(f.name), buf, true); toast("Đã gửi"); scheduleChats(); }
     catch (er) { toast(er.message); }
   });
+  // ---- Thả cảm xúc: danh sách CẢM XÚC ĐƯỢC PHÉP của hội thoại (Telegram quyết định, không gắn cứng 👍) + bảng emoji đầy đủ khi soạn tin ----
+  // «Dùng gần đây» của bảng emoji nhớ bằng COOKIE (Tele nhớ tuỳ chọn bằng cookie), như thứ tự danh bạ và độ rộng khung.
+  if (window.Emoji) {
+    const emojiCookie = "tggw_emoji=";
+    Emoji.setStorage({
+      get: () => { try { const raw = document.cookie.split(/;\s*/).find((c) => c.startsWith(emojiCookie)); return raw ? decodeURIComponent(raw.slice(emojiCookie.length)) : null; } catch (_) { return null; } },
+      set: (v) => { try { document.cookie = emojiCookie + encodeURIComponent(v) + "; Max-Age=31536000; Path=/; SameSite=Strict" + (location.protocol === "https:" ? "; Secure" : ""); } catch (_) {} },
+    });
+  }
+  let rxPop = null;
+  function closeReactions() { if (rxPop) { rxPop.remove(); rxPop = null; document.removeEventListener("mousedown", rxOutside, true); document.removeEventListener("keydown", rxEsc, true); } }
+  function rxOutside(e) { if (rxPop && !rxPop.contains(e.target) && !e.target.closest(".acts")) closeReactions(); }
+  function rxEsc(e) { if (e.key === "Escape") { e.stopPropagation(); closeReactions(); } }
+  const myReaction = (m) => ((m.reactions || []).find((r) => r.mine) || {}).emoji || "";
+  async function availableReactions(m) {
+    const r = await api("GET", "/api/messages/reactions?chat_id=" + encodeURIComponent(m.chat_id) + "&message_id=" + encodeURIComponent(m.id));
+    const seen = new Set(), all = [];
+    for (const e of [].concat(r.top || [], r.recent || [], r.popular || [])) if (!seen.has(e)) { seen.add(e); all.push(e); }
+    return { top: (r.top || []).slice(0, 7), all };
+  }
+  async function toggleReaction(m, emoji) { await react(m, emoji, emoji !== myReaction(m)); }
+  async function openReactions(m, anchor) {
+    closeReactions();
+    let av; try { av = await availableReactions(m); } catch (e) { return toast(e.message || "Không lấy được danh sách cảm xúc."); }
+    if (!av.all.length) return toast("Cuộc trò chuyện này không cho thả cảm xúc.");
+    if (!window.Emoji) return toast("Không tải được bộ cảm xúc.");
+    const asItem = (e) => ({ key: e, emoji: e, label: e });
+    const bar = Emoji.reactionBar({ quick: (av.top.length ? av.top : av.all.slice(0, 7)).map(asItem), all: av.all.map(asItem), mine: myReaction(m), onPick: (emoji) => { closeReactions(); toggleReaction(m, emoji); } });
+    const pop = el("div", "rxpop"); pop.setAttribute("role", "dialog"); pop.setAttribute("aria-label", "Thả cảm xúc"); pop.appendChild(bar); document.body.appendChild(pop); rxPop = pop;
+    const r = anchor ? anchor.getBoundingClientRect() : { left: innerWidth / 2, top: innerHeight / 2, bottom: innerHeight / 2 };
+    pop.style.left = Math.max(8, Math.min(r.left - pop.offsetWidth + 40, innerWidth - pop.offsetWidth - 8)) + "px";
+    pop.style.top = Math.max(8, r.top - pop.offsetHeight - 8 >= 8 ? r.top - pop.offsetHeight - 8 : Math.min(r.bottom + 8, innerHeight - pop.offsetHeight - 8)) + "px";
+    document.addEventListener("keydown", rxEsc, true); setTimeout(() => document.addEventListener("mousedown", rxOutside, true), 0);
+    const first = pop.querySelector(".rx-b"); if (first) first.focus();
+  }
+  // Nhấp đúp vào tin = thả cảm xúc nhanh đầu tiên được phép (như Telegram); nhấp đúp lần nữa gỡ.
+  async function quickReact(m) { try { const av = await availableReactions(m); const e = myReaction(m) || av.top[0] || av.all[0]; if (e) await toggleReaction(m, e); } catch (e) { toast(e.message || "Không thả được cảm xúc."); } }
+  // Bảng emoji cho ô soạn tin (contenteditable): chèn tại con trỏ, giữ mở để chọn nhiều.
+  function insertEmoji(ch) { const t = $("text"); t.focus(); document.execCommand("insertText", false, ch); }
+  function toggleEmojiPanel() {
+    const open = document.getElementById("emoji-panel"); if (open) { open.__close(); return; }
+    if (!window.Emoji) return toast("Không tải được bảng emoji.");
+    Emoji.open({ anchor: $("emoji-btn"), keepOpen: true, onPick: insertEmoji });
+  }
   async function react(m, emoji, on) { try { await api("POST", "/api/messages/react", { chat_id: m.chat_id, message_id: m.id, emoji: emoji, on: on }); } catch (e) { toast(e.message); } }
   async function editMsg(m) { const t = prompt("Sửa tin nhắn:", m.text); if (t === null || !t.trim() || t === m.text) return;
     try { await api("POST", "/api/messages/edit", { chat_id: m.chat_id, message_id: m.id, text: t }); reloadCurrent(); } catch (e) { toast(e.message); } }

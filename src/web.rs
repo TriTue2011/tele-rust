@@ -17,6 +17,12 @@ pub(crate) async fn qrcode()->Response {
         (header::CACHE_CONTROL,"no-cache")], include_str!("../web/qrcode.min.js")).into_response()
 }
 
+fn script(body:&'static str)->Response {
+    ([(header::CONTENT_TYPE,"text/javascript; charset=utf-8"), (header::X_CONTENT_TYPE_OPTIONS,"nosniff"), (header::CACHE_CONTROL,"no-cache")], body).into_response()
+}
+pub(crate) async fn emoji_js()->Response { script(include_str!("../web/emoji.js")) }
+pub(crate) async fn emoji_data_js()->Response { script(include_str!("../web/emoji-data.js")) }
+
 #[cfg(test)]
 mod tests {
     use super::*;
