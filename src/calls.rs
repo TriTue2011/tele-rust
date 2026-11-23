@@ -934,7 +934,10 @@ impl Actor {
                         if key == "frames" {
                             if c.view["frames"] == 1 { c.log(&format!("NTgCalls: khung hình đầu {w}x{h}")); }
                             c.view["size"] = json!(format!("{w}x{h}"));
-                            c.snapshot.submit(w, h, frame.data, c.id.clone(), self.sender.clone());
+                            let rotation = rx_rotation(frame.frame_data.rotation);
+                            if c.view["frames"] == 1 { c.log(&format!("NTgCalls: cờ xoay khung hình {rotation}°")); }
+                            c.view["rotation"] = json!(rotation);
+                            c.snapshot.submit(w, h, frame.data, c.id.clone(), self.sender.clone(), rotation);
                         }
                     } else {
                         if let Some(audio) = &c.browser_audio { audio.push(&frame.data); }
@@ -1071,6 +1074,14 @@ fn wav(pcm: &[u8]) -> Vec<u8> {
     out.extend_from_slice(&16u32.to_le_bytes()); out.extend_from_slice(&1u16.to_le_bytes()); out.extend_from_slice(&1u16.to_le_bytes());
     out.extend_from_slice(&48000u32.to_le_bytes()); out.extend_from_slice(&96000u32.to_le_bytes()); out.extend_from_slice(&2u16.to_le_bytes()); out.extend_from_slice(&16u16.to_le_bytes());
     out.extend_from_slice(b"data"); out.extend_from_slice(&(pcm.len() as u32).to_le_bytes()); out.extend_from_slice(pcm); out
+}
+
+/// Độ xoay (theo chiều kim đồng hồ) cần áp lên khung hình nhận được: cờ của bên gửi + `TELEGRAM_RX_ROTATE` (0/90/180/270, mặc định 0)
+/// để chỉnh khi một thiết bị gửi sai cờ.
+fn rx_rotation(flag: ntgcalls::VideoRotation) -> u16 {
+    let base = match flag { ntgcalls::VideoRotation::VideoRotation90 => 90, ntgcalls::VideoRotation::VideoRotation180 => 180, ntgcalls::VideoRotation::VideoRotation270 => 270, _ => 0 };
+    let extra = std::env::var("TELEGRAM_RX_ROTATE").ok().and_then(|v| v.trim().parse::<u16>().ok()).filter(|v| v % 90 == 0).unwrap_or(0);
+    (base + extra) % 360
 }
 
 #[cfg(test)]

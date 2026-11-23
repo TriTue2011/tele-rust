@@ -2969,8 +2969,10 @@
     for (const input of Object.values(pickerUrls)) input.value = "";
     if (resolve) resolve(value);
   }
+  let pendingPickerReason = "";
   function openDevicePicker(devices, reason) {
     if (pendingDevicePicker) finishDevicePicker(null);
+    pendingPickerReason = reason;
     renderDevicePicker(devices, reason);
     return new Promise((resolve) => { pendingDevicePicker = resolve; devicePicker.showModal(); });
   }
@@ -3054,6 +3056,7 @@
         const chosen = await openDevicePicker(devices, "incoming");
         if (callInfo?.id !== info.id) return;
         if (chosen) { callDeviceSettings = chosen.settings; callDeviceReady = true; callDeviceManual = true; }
+        else if (callInfo.state !== "ringing") { callDeviceSettings = devices.settings; callDeviceReady = true; callDeviceManual = false; }   // đã được nghe tự động: dùng thiết bị HA đã chọn
       }
     } catch (e) {
       if (callInfo?.id === info.id) callError("Không tải được thiết bị cuộc gọi: " + e.message);
@@ -3110,6 +3113,8 @@
       if (pendingDevicePicker) finishDevicePicker(null);
     }
     callInfo = info;
+    // Cuộc gọi đã được nghe (HA tự nghe máy hoặc thiết bị khác) khi ô chọn thiết bị cho cuộc gọi ĐẾN còn đang mở ⇒ đóng ô, không bắt chọn nữa.
+    if (pendingDevicePicker && pendingPickerReason === "incoming" && info.state !== "ringing") finishDevicePicker(null);
     if (callDeviceId !== info.id) {
       if (info.outgoing && outgoingDevices) {
         callDeviceId = info.id; callDeviceReady = true; callDeviceLoading = false;
