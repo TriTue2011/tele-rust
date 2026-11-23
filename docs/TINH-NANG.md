@@ -1,4 +1,4 @@
-# Tính năng và giới hạn đã biết (tele-rust v0.7.16)
+# Tính năng và giới hạn đã biết (tele-rust v0.7.17)
 
 Tài liệu này giữ danh sách tính năng thật và giới hạn của bản hiện tại (trước đây nằm trong README).
 
