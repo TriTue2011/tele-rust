@@ -234,10 +234,13 @@ mod tests {
         assert_eq!(mic.push(&[]).unwrap_err().status, 400);
         assert_eq!(mic.push(&[1]).unwrap_err().status, 400);
         assert_eq!(mic.push(&vec![0; MAX_PCM + 2]).unwrap_err().status, 413);
-        mic.push(&vec![7; MAX_PCM]).unwrap();
-        assert_eq!(mic.push(&[0, 0]).unwrap_err().status, 429);
-        mic.local.queue.lock().unwrap().pcm.clear();
-        assert_eq!(mic.push(&vec![0; 3200]).unwrap_err().status, 429);
+        // Độ trễ hàng đợi bị chặn ở 160 ms: gửi dư thì bỏ êm (không lỗi), đếm phần bỏ, hàng đợi không vượt trần.
+        mic.push(&vec![7; LAG_MAX_BYTES]).unwrap();
+        mic.push(&[0, 0]).unwrap();
+        assert_eq!(mic.local.queue.lock().unwrap().pcm.len(), LAG_MAX_BYTES);
+        assert_eq!(mic.skipped(), 2);
+        mic.push(&vec![0; MAX_PCM]).unwrap();
+        assert_eq!(mic.local.queue.lock().unwrap().pcm.len(), LAG_MAX_BYTES, "gửi dồn 64 KiB cũng không làm trễ thêm");
         let other = BrowserMic::open().await.unwrap();
         for _ in 0..30 { other.push(&[0, 0]).unwrap(); }
         assert_eq!(other.push(&[0, 0]).unwrap_err().status, 429);
