@@ -1,4 +1,4 @@
-# Mô hình bảo mật — tele-rust (`v0.7.7`)
+# Mô hình bảo mật — tele-rust (`v0.7.8`)
 
 Tài liệu mô tả các cơ chế bảo vệ được triển khai trực tiếp trong mã nguồn Rust và giao diện web của `tele-rust`.
 
