@@ -301,6 +301,9 @@ test('TC-CHANNEL-COMMENTS: hàng bình luận kênh và ngăn bình luận ở 3
   await press('aside .pane-resizer', 'ArrowLeft'); await press('aside .pane-resizer', 'ArrowLeft'); await press('aside .pane-resizer', 'ArrowLeft');
   assert.ok(await width('aside') >= 260, 'cột danh sách không hẹp hơn mức tối thiểu');
 
+  // 4b2. Bài đang xem bình luận được tô sáng (viền + hàng «N bình luận» in đậm); đóng ngăn thì hết; tải lại chat vẫn giữ.
+  assert.equal(await evaluate('document.querySelectorAll("#msgs .m.comments-open").length'), 1, 'phải có đúng một bài được tô sáng');
+  assert.equal(await evaluate('Number(getComputedStyle(document.querySelector("#msgs .m.comments-open .msg-comments-bar")).fontWeight) >= 600'), true, 'hàng bình luận của bài đang xem phải in đậm');
   // 4c. Sự kiện từ máy chủ (message_changed ⇒ tải lại chat; message_interaction ⇒ làm tươi tại chỗ) KHÔNG được đóng ngăn bình luận
   //     đang mở (lỗi «bấm bình luận xong nháy màn hình rồi mất, phải bấm 2–3 lần»).
   const historyCalls = () => evaluate('window.commentsTestCalls.filter((c) => c.method === "GET" && c.pathname === "/api/chats/-100100/messages").length');
@@ -309,6 +312,7 @@ test('TC-CHANNEL-COMMENTS: hàng bình luận kênh và ngăn bình luận ở 3
   await until(`window.commentsTestCalls.filter((c) => c.method === "GET" && c.pathname === "/api/chats/-100100/messages").length > ${before}`);
   await until('document.querySelectorAll("#msgs .m").length >= 1');
   assert.equal(await evaluate('document.getElementById("comments-drawer").hidden'), false, 'tải lại chat làm ngăn bình luận bị đóng');
+  assert.equal(await evaluate('document.querySelectorAll("#msgs .m.comments-open").length'), 1, 'sau tải lại chat vẫn phải tô sáng bài đang xem');
   const before2 = await historyCalls();
   await evaluate(`window.__feedItems = [{id: 902, type: 'message_interaction', chat_id: -100100, message_id: 10}]`);
   await until(`window.commentsTestCalls.filter((c) => c.method === "GET" && c.pathname === "/api/chats/-100100/messages").length > ${before2}`);
@@ -337,6 +341,7 @@ test('TC-CHANNEL-COMMENTS: hàng bình luận kênh và ngăn bình luận ở 3
   // 7. Chuyển sang hội thoại cá nhân -> ngăn bình luận tự đóng, tin nhắn cá nhân không có hàng bình luận.
   await evaluate('document.querySelectorAll("#list .chat")[1].click()');
   await until('document.getElementById("comments-drawer").hidden === true && document.querySelectorAll("#msgs .m").length === 1');
+  assert.equal(await evaluate('document.querySelectorAll("#msgs .m.comments-open").length'), 0, 'đóng ngăn bình luận phải bỏ tô sáng');
   assert.equal(await evaluate('Boolean(document.querySelector("#msgs .m .msg-comments-bar"))'), false);
 
   assert.equal(await evaluate('localStorage.length + sessionStorage.length'), 0);

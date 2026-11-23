@@ -479,6 +479,9 @@
   .ci-warn-banner { margin:0; padding:9px 11px; border-radius:9px; border:1px solid var(--warn-border); background:var(--warn-bg); color:var(--warn-fg); font-size:13px; font-weight:600; line-height:1.4; }
   .msg-comments-bar { display:flex; align-items:center; gap:8px; width:100%; margin-top:5px; padding:6px 2px 2px; min-height:36px; border:0; border-top:1px solid var(--line); border-radius:0; background:transparent; color:var(--acc); font-size:13px; font-weight:600; text-align:left; cursor:pointer; }
   .msg-comments-bar:hover { opacity:.85; }
+  /* Bài đang xem bình luận: viền nổi + hàng «N bình luận» tô màu, in đậm để biết đang xem ở đâu */
+  .m.comments-open { border-color:var(--acc); box-shadow:0 0 0 2px color-mix(in srgb, var(--acc) 40%, transparent); }
+  .m.comments-open .msg-comments-bar { font-weight:700; background:color-mix(in srgb, var(--acc) 16%, transparent); border-radius:8px; }
   .comments-avatars { display:inline-flex; align-items:center; flex:none; }
   .comments-av { width:22px; height:22px; border-radius:50%; display:grid; place-items:center; color:#fff; font-size:10px; font-weight:700; overflow:hidden; position:relative; border:2px solid var(--in); flex:none; }
   .comments-av + .comments-av { margin-left:-7px; }
@@ -1706,6 +1709,7 @@
       const node = renderMessage(m); rendered.set(m.id, node); frag.appendChild(node);
     });
     if (!added) return;
+    if (typeof markCommentsPost === "function") setTimeout(markCommentsPost, 0);   // tin vừa vẽ lại (tải lại chat): giữ tô sáng bài đang xem bình luận
     const more = $("more");
     if (prepend) {
       const firstSep = box.querySelector(".day");                      // tin cũ cùng ngày với dải đầu hiện tại: bỏ dải đó
@@ -2488,7 +2492,7 @@
         const old = rendered.get(m.id), prev = msgData.get(m.id);
         if (!old || !prev || JSON.stringify([m.reactions, m.comments]) === JSON.stringify([prev.reactions, prev.comments])) continue;
         const keep = $("msgs").scrollTop; const node = renderMessage(m);
-        old.replaceWith(node); rendered.set(m.id, node); msgData.set(m.id, m); $("msgs").scrollTop = keep;
+        old.replaceWith(node); rendered.set(m.id, node); msgData.set(m.id, m); $("msgs").scrollTop = keep; markCommentsPost();
       }
     } catch (_) { /* làm tươi không được thì thôi: lần sự kiện sau thử lại */ } finally { interactionBusy = false; }
   }
@@ -5639,6 +5643,13 @@
     $("comments-input").focus();
   }
 
+  function markCommentsPost() {
+    if (typeof document.querySelectorAll !== "function") return;
+    for (const n of document.querySelectorAll("#msgs .comments-open")) n.classList.remove("comments-open");
+    const open = commentsPost && commentsPost.id && typeof rendered !== "undefined" ? rendered.get(commentsPost.id) : null;
+    if (open) open.classList.add("comments-open");
+  }
+
   function closeCommentsDrawer() {
     commentsSeq++;
     commentsPost = null;
@@ -5650,6 +5661,7 @@
     clearCommentReply();
     commentsLocked = false;
     if ($("comments-drawer")) $("comments-drawer").hidden = true;
+    markCommentsPost();
   }
 
   function updatePostCommentsBar(post) {
@@ -5751,6 +5763,7 @@
     commentsPost = m;
     commentsChatId = chatId;
     commentsRootId = 0;
+    markCommentsPost();
     commentsItems = [];
     commentsOldest = 0;
     commentsById.clear();
