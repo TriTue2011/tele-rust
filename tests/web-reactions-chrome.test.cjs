@@ -62,6 +62,11 @@ test('TC-REACTIONS: danh sách cảm xúc theo hội thoại, nhấp đúp, gỡ
   const acts = await evaluate(`[...document.querySelectorAll('#msgs .m')[0].querySelectorAll('.acts button')].map((b) => b.getAttribute('aria-label'))`);
   assert.ok(acts.includes('Thả cảm xúc') && !acts.includes('Thích'), 'thanh công cụ có «Thả cảm xúc», không còn «Thích»: ' + acts);
 
+  // BỐ CỤC: chip cảm xúc dưới tin là viên thuốc NHỎ ôm sát «🔥 2» (CSS .rx của bảng chọn từng đè lên và kéo chip rộng hết bong bóng).
+  const chip = await evaluate(`(() => { const c = document.querySelector('#msgs .m .rx span'), w = c.closest('.m').getBoundingClientRect().width; return { chip: c.getBoundingClientRect().width, bubble: w, grid: getComputedStyle(c.parentElement).display }; })()`);
+  assert.equal(chip.grid, 'flex', 'hàng chip cảm xúc là flex, không phải grid của bảng chọn');
+  assert.ok(chip.chip < 80, 'chip ôm sát nội dung (<80 px), hiện ' + Math.round(chip.chip) + ' px trong bong bóng ' + Math.round(chip.bubble) + ' px');
+
   // 1) danh sách được phép: 7 emoji nhanh đầu, «⌄» mở TOÀN BỘ đã gộp và bỏ trùng; chọn ❤️ ⇒ POST on:true
   await evaluate(`document.querySelectorAll('#msgs .m')[0].querySelector('.acts button[aria-label="Thả cảm xúc"]').click()`);
   await until('Boolean(document.querySelector(".rxpop .rx-b"))');
