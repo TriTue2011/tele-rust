@@ -1,9 +1,9 @@
-# Hướng dẫn triển khai — tele-rust (`v0.7.24`)
+# Hướng dẫn triển khai — tele-rust (`v0.7.25`)
 
 ## 1. Yêu cầu hệ thống
 
 - **Kiến trúc hỗ trợ:** `linux/amd64` (x86_64).
-  - Kiến trúc `arm64`/`aarch64` và **macOS** chưa được hỗ trợ ở phiên bản `v0.7.24` vì bộ thư viện tĩnh NTgCalls `3.0.7` và wheel `tdjson==1.8.69` trên PyPI hiện chỉ được đóng gói và kiểm chứng cho `linux/amd64`.
+  - Kiến trúc `arm64`/`aarch64` và **macOS** chưa được hỗ trợ ở phiên bản `v0.7.25` vì bộ thư viện tĩnh NTgCalls `3.0.7` và wheel `tdjson==1.8.69` trên PyPI hiện chỉ được đóng gói và kiểm chứng cho `linux/amd64`.
 - **Thông số Telegram bắt buộc:** `TG_API_ID` và `TG_API_HASH` (đăng ký ứng dụng tại trang phát triển Telegram).
 - **Khoá quản trị:** `GATEWAY_TOKEN` (khuyến nghị sinh bằng `openssl rand -hex 32`).
 
