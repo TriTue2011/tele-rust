@@ -79,7 +79,9 @@ impl ChatService {
             return Ok(json!({"files": files}));
         };
         if !pack_name_ok(&name) { return Err(GwError::bad_request("Tên ảnh trong gói không hợp lệ.")); }
-        let bytes = tokio::fs::read(dir.join(&name)).await.map_err(|_| GwError::new(404, "PACK_NOT_FOUND", "Không có ảnh này trong gói."))?;
+        let path = dir.join(&name);
+        let bytes = tokio::task::spawn_blocking(move || std::fs::read(path)).await.ok().and_then(Result::ok)
+            .ok_or_else(|| GwError::new(404, "PACK_NOT_FOUND", "Không có ảnh này trong gói."))?;
         if bytes.len() > 1_048_576 { return Err(GwError::bad_request("Ảnh trong gói quá lớn.")); }
         let mime = match name.rsplit('.').next() { Some("png") => "image/png", Some("webp") => "image/webp", _ => "image/jpeg" };
         Ok(json!({"name": name, "mime": mime, "data_b64": base64::engine::general_purpose::STANDARD.encode(bytes)}))
