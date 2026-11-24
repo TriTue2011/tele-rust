@@ -482,6 +482,7 @@ impl ChatService {
                 self.set_chat_background(path_id(id)?, &body).await
             }
             ("POST", ["", "api", "wallpapers", "upload"]) => self.save_wallpaper(&body).await,
+            ("GET", ["", "api", "wallpapers", "pack"]) => self.wallpaper_pack(q.get("name")).await,
             ("GET", ["", "api", "backgrounds"]) => self.installed_backgrounds(q.get("dark").is_some_and(|v| v == "1" || v == "true")).await,
             ("GET", ["", "api", "messages", "reactions"]) => self.available_reactions(q.int("chat_id", 0)?, q.int("message_id", 0)?).await,
             ("GET", ["", "api", "chats", id, "members"]) => self.chat_members(

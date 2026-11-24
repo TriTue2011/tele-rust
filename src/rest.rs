@@ -738,7 +738,7 @@ fn router_with(ctx: Arc<Ctx>) -> Router {
     }
     r = r.route("/api/chats/:chat_id/send_file", route(post, s_id(SendFile, "chat_id")));
     r = r.route("/api/wallpapers/upload", route(post, s(WallpaperUpload)));
-    r = r.route("/api/backgrounds", route(get, s(ChatGet))).route("/api/messages/reactions", route(get, s(ChatGet)))
+    r = r.route("/api/wallpapers/pack", route(get, s(ChatGet))).route("/api/backgrounds", route(get, s(ChatGet))).route("/api/messages/reactions", route(get, s(ChatGet)))
         .route("/api/chats/:chat_id/background", add(route(get, s_id(ChatGet, "chat_id")), post, s_id(ChatPost, "chat_id")));
     // Cuộc gọi → CallControl.
     r = r
