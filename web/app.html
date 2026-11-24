@@ -2653,6 +2653,7 @@
         for (const c of WP_COLORS) { const b = el("button", emojiBg === c ? "on" : ""); b.type = "button"; b.style.background = c; b.setAttribute("aria-label", "Màu nền " + c); b.addEventListener("click", () => { emojiBg = c; make(); }); pickBg.appendChild(b); }
         kids.push(el("h4", "wpd-h", "Biểu tượng lát nền"), grid, el("h4", "wpd-h", "Màu nền"), pickBg);
       } else if (tab === "pack") {
+        kids.push(el("p", "wpd-msg", "Hoạ tiết nhỏ lặp lại đóng gói sẵn trong app Zalo (không phải bộ ảnh đầy khung tải về từ máy chủ mà điện thoại hiện khi đổi chủ đề)."));
         if (packFiles === null) { packFiles = []; api("GET", "/api/wallpapers/pack").then((r) => { packFiles = (r && r.files) || []; drawBody(); }).catch(() => { packFiles = []; }); kids.push(el("p", "wpd-msg", "Đang đọc gói ảnh…")); }
         else if (!packFiles.length) kids.push(el("p", "wpd-msg", "Chưa có ảnh nào. Nhập ảnh nền có sẵn của APK Zalo vào <dữ liệu gateway>/wallpaper-pack bằng: python3 scripts/nhap_hinh_nen_apk.py <Zalo.apk> <thư mục>/.. (ảnh là tài sản của VNG nên không đi kèm app)."));
         else {
