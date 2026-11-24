@@ -437,6 +437,7 @@
     #call-controls { padding:12px 10px calc(12px + env(safe-area-inset-bottom)); gap:8px; } #call-controls button { min-width:calc(50% - 8px); }
   }
   .lazy { display:inline-flex; gap:8px; align-items:center; margin:2px 0; }
+  .vidph { display:inline-block; padding:8px 12px; border-radius:8px; background:var(--bg); color:var(--mut); margin:2px 0; cursor:default; }
   #toast { position:fixed; left:50%; bottom:18px; transform:translateX(-50%); background:#222; color:#fff; padding:8px 14px; border-radius:9px; display:none; z-index:9; max-width:90%; }
   @media (max-width:760px) {
     aside { width:100%; border-right:0; }
@@ -1703,14 +1704,30 @@
     if (m.reply_to) { const src = msgData.get(m.reply_to); w.appendChild(el("div", "rep", src ? (src.sender ? src.sender + ": " : "") + (src.text || src.summary).slice(0, 80) : "↩ Trả lời tin trước")); }
     const f = m.file;
     if (f && f.id && m.kind === "photo") { const i = el("img", "pic"); i.alt = "Ảnh"; blobUrl(f.id).then((u) => { i.src = u; i.onclick = () => window.open(u, "_blank"); }).catch(() => { i.replaceWith(el("div", "txt", m.summary)); }); w.appendChild(i); }
-    else if (f && f.id && (m.kind === "voice" || m.kind === "audio" || m.kind === "video" || m.kind === "animation" || m.kind === "video_note")) {
-      const isVid = !(m.kind === "voice" || m.kind === "audio");
-      const label = isVid ? "🎬 Video" + (f.size ? " · " + fileSize(f.size) : "") : (m.kind === "voice" ? "🎤 " : "🎵 ") + (f.name || "Âm thanh") + (f.duration ? " · " + f.duration + " giây" : "");
-      const row = el("div", "lazy"); const b = el("button", "", "▶ " + (isVid ? "Xem" : "Nghe")); row.appendChild(b); row.appendChild(el("span", "", label));
-      b.addEventListener("click", () => { b.disabled = true; b.textContent = "Đang tải…";
-        blobUrl(f.id).then((u) => { const mEl = el(isVid ? "video" : "audio"); mEl.controls = true; mEl.autoplay = true; mEl.src = u; if (isVid) mEl.playsInline = true; row.replaceWith(mEl); })
-          .catch((e) => { b.disabled = false; b.textContent = "▶ Thử lại";
+    else if (f && f.id && (m.kind === "video" || m.kind === "animation" || m.kind === "video_note")) {
+      // Video hiện trực tiếp trong khung chat (như Zalo), không cần bấm nút: tự tải khi cuộn tới gần (rootMargin 200px),
+      // không tải hết MỌI video của lịch sử hội thoại cùng lúc. TDLib tải nguyên tệp trước khi gateway trả về (không Range từng phần),
+      // nên chỉ tự tải video đang hiện hoặc sắp hiện, không tự tải khi còn ở xa.
+      const label = "🎬 Video" + (f.size ? " · " + fileSize(f.size) : "");
+      const ph = el("div", "lazy vidph", "⏳ " + label);
+      const start = () => { ph.textContent = "⏳ Đang tải video…";
+        blobUrl(f.id).then((u) => { const v = el("video", "vid"); v.controls = true; v.preload = "metadata"; v.playsInline = true; v.src = u; ph.replaceWith(v); })
+          .catch((e) => { ph.textContent = "▶ Thử lại · " + label; ph.onclick = () => { ph.onclick = null; start(); };
             // Mã tệp của TDLib được ĐÁNH LẠI khi gateway khởi động lại ⇒ trang mở từ trước giữ mã cũ: làm mới danh sách để lấy mã mới.
+            toast(e && e.status === 429 ? "Đang tải quá nhiều tệp, thử lại sau vài giây" : "Chưa tải được tệp (" + (e && e.status ? "mã " + e.status : "lỗi mạng") + "). Bấm để thử lại");
+            if (typeof reloadSoon === "function" && !(e && e.status === 429)) reloadSoon(); }); };
+      if (typeof IntersectionObserver === "function") {
+        const io = new IntersectionObserver((entries) => { if (entries.some((en) => en.isIntersecting)) { io.disconnect(); start(); } }, { rootMargin: "200px" });
+        io.observe(ph);
+      } else start();
+      w.appendChild(ph); }
+    else if (f && f.id && (m.kind === "voice" || m.kind === "audio")) {
+      // Thoại/nhạc: giữ nút bấm thủ công — không cần tự phát ngay khi lướt qua lịch sử.
+      const label = (m.kind === "voice" ? "🎤 " : "🎵 ") + (f.name || "Âm thanh") + (f.duration ? " · " + f.duration + " giây" : "");
+      const row = el("div", "lazy"); const b = el("button", "", "▶ Nghe"); row.appendChild(b); row.appendChild(el("span", "", label));
+      b.addEventListener("click", () => { b.disabled = true; b.textContent = "Đang tải…";
+        blobUrl(f.id).then((u) => { const mEl = el("audio"); mEl.controls = true; mEl.autoplay = true; mEl.src = u; row.replaceWith(mEl); })
+          .catch((e) => { b.disabled = false; b.textContent = "▶ Thử lại";
             toast(e && e.status === 429 ? "Đang tải quá nhiều tệp, thử lại sau vài giây" : "Chưa tải được tệp (" + (e && e.status ? "mã " + e.status : "lỗi mạng") + "). Đang làm mới tin nhắn, bấm Thử lại sau giây lát");
             if (typeof reloadSoon === "function" && !(e && e.status === 429)) reloadSoon(); }); });
       w.appendChild(row); }
@@ -2607,7 +2624,9 @@
     if (!cur) return;
     const chatId = cur, isPrivate = curKind === "private";
     const old = document.getElementById("wp-dialog"); if (old) old.remove();
-    let sharedOn = "", emojiPick = SHARED_EMOJI[0], emojiBg = "#e8f0fe", packFiles = null, packOn = "", packThumbs = {}; let dark = isDarkTheme(), tab = "gallery", draft = null, dim = 0, both = false, busy = false, gallery = [], uploadedBlobUrl = "";
+    let sharedOn = "", emojiPick = SHARED_EMOJI[0], emojiBg = "#e8f0fe", packFiles = null, packOn = "", packThumbs = {}; let dark = isDarkTheme(), tab = "shared", draft = null, dim = 0, both = false, busy = false, gallery = [], uploadedBlobUrl = "";
+    // Mặc định mở tab «Mẫu chung» (46 mẫu minh hoạ dùng chung với Zalo), không phải «Bộ sưu tập» (nền thật đồng bộ từ điện thoại —
+    // tài khoản có thể chỉ có vài màu phẳng ở đó): chủ máy chê tab mặc định "chưa được như Zalo" vì Zalo luôn mở sẵn bộ 46 mẫu đẹp.
     const msg = el("p", "wpd-msg"); msg.setAttribute("role", "status");
     const say = (t, bad) => { msg.textContent = t || ""; msg.className = "wpd-msg" + (bad ? " bad" : ""); };
     const preview = el("div", "wpd-preview"); preview.appendChild(el("div", "wpd-s in", "Xin chào! Đây là tin nhận.")); preview.appendChild(el("div", "wpd-s out", "Tin gửi trên hình nền này."));
@@ -2653,6 +2672,7 @@
         for (const c of WP_COLORS) { const b = el("button", emojiBg === c ? "on" : ""); b.type = "button"; b.style.background = c; b.setAttribute("aria-label", "Màu nền " + c); b.addEventListener("click", () => { emojiBg = c; make(); }); pickBg.appendChild(b); }
         kids.push(el("h4", "wpd-h", "Biểu tượng lát nền"), grid, el("h4", "wpd-h", "Màu nền"), pickBg);
       } else if (tab === "pack") {
+        kids.push(el("p", "wpd-msg", "Hoạ tiết nhỏ lặp lại đóng gói sẵn trong app Zalo (không phải bộ ảnh đầy khung tải về từ máy chủ mà điện thoại hiện khi đổi chủ đề)."));
         if (packFiles === null) { packFiles = []; api("GET", "/api/wallpapers/pack").then((r) => { packFiles = (r && r.files) || []; drawBody(); }).catch(() => { packFiles = []; }); kids.push(el("p", "wpd-msg", "Đang đọc gói ảnh…")); }
         else if (!packFiles.length) kids.push(el("p", "wpd-msg", "Chưa có ảnh nào. Nhập ảnh nền có sẵn của APK Zalo vào <dữ liệu gateway>/wallpaper-pack bằng: python3 scripts/nhap_hinh_nen_apk.py <Zalo.apk> <thư mục>/.. (ảnh là tài sản của VNG nên không đi kèm app)."));
         else {

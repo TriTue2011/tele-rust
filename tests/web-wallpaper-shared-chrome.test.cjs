@@ -68,11 +68,10 @@ test('TC-WALLPAPER-SHARED: kho hình nền chung Zalo↔Tele — tab Mẫu chung
   await until('document.getElementById("msgs").classList.contains("wp")');
   await openMenu(0); await evaluate('document.getElementById("ctx-wallpaper").click()');
   await until('Boolean(document.getElementById("wp-dialog")) && document.querySelectorAll(".wpd-t").length >= 4');
-  // tên mã vô nghĩa (aHrFlr08…) không hiện làm chú thích; tên thường vẫn hiện
-  assert.deepEqual(await evaluate('[...document.querySelectorAll(".wpd-t.bg .wpd-cap")].map((c) => c.textContent)'), ['Núi', 'Hoàng hôn'], 'chú thích mã vô nghĩa bị ẩn');
   assert.deepEqual(await evaluate('[...document.querySelectorAll(".wpd-tabs button")].map((b) => b.textContent)'), ['Bộ sưu tập', 'Màu', 'Chuyển màu', 'Mẫu chung', 'Biểu tượng', 'Từ APK']);
-  // tab «Mẫu chung»: 30 mẫu vẽ + 8 chuyển màu, mỗi ô có tên; chọn một mẫu ⇒ vẽ JPEG và tải lên rồi xem trước
-  await evaluate('document.querySelectorAll(".wpd-tabs button")[3].click()');
+  // mặc định mở «Mẫu chung» (46 mẫu minh hoạ, giống Zalo) chứ không phải «Bộ sưu tập» (nền thật đồng bộ từ tài khoản — có thể chỉ vài màu phẳng, khó chọn)
+  assert.match(await evaluate('document.querySelector(".wpd-tabs button.on").textContent'), /Mẫu chung/, 'mặc định mở tab Mẫu chung, không phải Bộ sưu tập');
+  // tab «Mẫu chung» (đã mở sẵn): 30 mẫu vẽ + 8 chuyển màu, mỗi ô có tên; chọn một mẫu ⇒ vẽ JPEG và tải lên rồi xem trước
   await until('document.querySelectorAll("#wp-dialog .wpd-t.bg").length === 38');
   assert.equal(await evaluate('[...document.querySelectorAll("#wp-dialog .wpd-t.bg .wpd-cap")].every((c) => c.textContent.length > 0)'), true, 'mọi mẫu chung có tên');
   assert.equal(await evaluate('window.__calls.some((c) => c.p === "/api/wallpapers/upload")'), false, 'chưa chọn thì chưa tải gì');
@@ -85,6 +84,10 @@ test('TC-WALLPAPER-SHARED: kho hình nền chung Zalo↔Tele — tab Mẫu chung
   await evaluate('window.__calls.length = 0; document.querySelectorAll("#wp-dialog .wpd-t.bg")[31].click()');
   await until('window.__calls.some((c) => c.p === "/api/wallpapers/upload")');
   assert.equal(await evaluate('window.__calls.find((c) => c.p === "/api/wallpapers/upload").jpeg'), true);
+  // tab «Bộ sưu tập»: nền thật đồng bộ từ tài khoản; tên mã vô nghĩa (aHrFlr08…) không hiện làm chú thích, tên thường vẫn hiện
+  await evaluate('document.querySelectorAll(".wpd-tabs button")[0].click()');
+  await until('document.querySelectorAll("#wp-dialog .wpd-t.bg").length === 3');
+  assert.deepEqual(await evaluate('[...document.querySelectorAll(".wpd-t.bg .wpd-cap")].map((c) => c.textContent)'), ['Núi', 'Hoàng hôn'], 'chú thích mã vô nghĩa bị ẩn');
   // tab «Biểu tượng»: 12 biểu tượng + màu nền; chọn ⇒ ảnh lát biểu tượng
   await evaluate('window.__calls.length = 0; document.querySelectorAll(".wpd-tabs button")[4].click()');
   await until('document.querySelectorAll("#wp-dialog .wpd-t.bg").length === 12');
