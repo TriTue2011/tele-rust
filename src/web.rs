@@ -22,6 +22,7 @@ fn script(body:&'static str)->Response {
 }
 pub(crate) async fn emoji_js()->Response { script(include_str!("../web/emoji.js")) }
 pub(crate) async fn emoji_data_js()->Response { script(include_str!("../web/emoji-data.js")) }
+pub(crate) async fn wallpaper_art_js()->Response { script(include_str!("../web/wallpaper-art.js")) }
 
 #[cfg(test)]
 mod tests {

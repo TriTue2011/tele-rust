@@ -692,7 +692,7 @@ fn router_with(ctx: Arc<Ctx>) -> Router {
     for path in ["/","/app.html","/ui/app.html"] {r=r.route(path,on(get,crate::web::app));}
     for path in ["/index.html","/ui/","/ui/index.html"] {r=r.route(path,on(get,crate::web::accounts));}
     r = r.route("/ui/qrcode.min.js", on(get, crate::web::qrcode))
-        .route("/ui/emoji.js", on(get, crate::web::emoji_js)).route("/ui/emoji-data.js", on(get, crate::web::emoji_data_js));
+        .route("/ui/emoji.js", on(get, crate::web::emoji_js)).route("/ui/emoji-data.js", on(get, crate::web::emoji_data_js)).route("/ui/wallpaper-art.js", on(get, crate::web::wallpaper_art_js));
     r = r.route("/ui/api/auth/status", route(get, s(Auth)));
     for action in ["setup", "login", "logout", "logout-all", "password"] {
         r = r.route(&format!("/ui/api/auth/{action}"), route(post, s(Auth)));

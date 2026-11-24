@@ -238,6 +238,7 @@
   .wpd-t.cam { background:var(--acc); color:#fff; }
   .wpd-t.none { background:var(--bg); border:2px dashed var(--line); color:var(--mut); }
   .wpd-t.on { border-color:var(--acc); box-shadow:0 0 0 2px var(--acc); }
+  .wpd-h { margin:6px 0 0; font-size:.8rem; color:var(--mut); font-weight:600; }
   .wpd-sw { display:flex; flex-wrap:wrap; gap:8px; }
   .wpd-sw button { width:2.4rem; height:2.4rem; padding:0; border-radius:50%; border:2px solid var(--line); }
   .wpd-sw button.on { border-color:var(--acc); box-shadow:0 0 0 2px var(--acc); }
@@ -1219,6 +1220,7 @@
 
 <script src="/ui/emoji-data.js"></script>
 <script src="/ui/emoji.js"></script>
+<script src="/ui/wallpaper-art.js"></script>
 <script>
 (function () {
   "use strict";
@@ -2580,11 +2582,26 @@
       img.src = url;
     });
   }
+  // ---- KHO HÌNH NỀN CHUNG Zalo ↔ Tele: 30 mẫu vẽ SVG + 8 mẫu chuyển màu + nền biểu tượng của Zalo; Telegram chỉ nhận ẢNH/màu ⇒ vẽ ra ảnh JPEG rồi tải lên như ảnh tự chọn ----
+  const SHARED_GRADIENTS = [["sunrise", "Bình minh", 160, ["#ffe29f", "#ffa99f", "#ff719a"]], ["ocean", "Đại dương", 160, ["#a1c4fd", "#c2e9fb"]], ["forest", "Rừng xanh", 160, ["#d4fc79", "#96e6a1"]], ["dusk", "Hoàng hôn tím", 160, ["#a18cd1", "#fbc2eb"]],
+    ["peach", "Đào", 160, ["#ffecd2", "#fcb69f"]], ["mint", "Bạc hà", 160, ["#c1f0e8", "#e0f7fa"]], ["night", "Đêm", 160, ["#0f2027", "#203a43", "#2c5364"]], ["aurora", "Cực quang", 160, ["#00c9ff", "#92fe9d"]]];
+  const SHARED_EMOJI = ["🐥", "⛄", "🌸", "🐱", "🐶", "🚀", "🎄", "⚽", "🍜", "❤️", "🌙", "🎮"];
+  const gradientSvg = (angle, stops) => { const a = (angle * Math.PI) / 180, dx = Math.sin(a), dy = -Math.cos(a);
+    return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 700" preserveAspectRatio="none"><defs><linearGradient id="g" x1="' + (0.5 - dx / 2) + '" y1="' + (0.5 - dy / 2) + '" x2="' + (0.5 + dx / 2) + '" y2="' + (0.5 + dy / 2) + '">'
+      + stops.map((c, i) => '<stop offset="' + (stops.length < 2 ? 0 : i / (stops.length - 1)) + '" stop-color="' + c + '"/>').join("") + '</linearGradient></defs><rect width="400" height="700" fill="url(#g)"/></svg>'; };
+  const emojiSvg = (emoji, color) => { const t = "font-size='26' opacity='.22'";
+    return "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 400 700' width='400' height='700'><rect width='400' height='700' fill='" + color + "'/><defs><pattern id='p' width='72' height='72' patternUnits='userSpaceOnUse'><text x='6' y='28' " + t + ">" + emoji + "</text><text x='40' y='62' " + t + " transform='rotate(-14 54 52)'>" + emoji + "</text></pattern></defs><rect width='400' height='700' fill='url(#p)'/></svg>"; };
+  const svgToJpegBlob = (svg, w = 1080, h = 1890) => new Promise((resolve, reject) => {
+    const img = new Image(); img.onload = () => { const c = document.createElement("canvas"); c.width = w; c.height = h; const x = c.getContext("2d"); x.fillStyle = "#ffffff"; x.fillRect(0, 0, w, h); x.drawImage(img, 0, 0, w, h);
+      c.toBlob((b) => (b ? resolve(b) : reject(new Error("Không tạo được ảnh từ mẫu."))), "image/jpeg", 0.9); };
+    img.onerror = () => reject(new Error("Không vẽ được mẫu này.")); img.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg); });
+  // Tên trong bộ sưu tập Telegram đôi khi là mã dài vô nghĩa (aHrFlr08CFILAAAAkr…): không hiện làm chú thích.
+  const niceBgName = (n) => { n = String(n || "").trim(); return n && (/\s/.test(n) || n.length <= 16) && !/^[A-Za-z0-9_-]{12,}$/.test(n) ? n : ""; };
   async function openWallpaperDialog() {
     if (!cur) return;
     const chatId = cur, isPrivate = curKind === "private";
     const old = document.getElementById("wp-dialog"); if (old) old.remove();
-    let dark = isDarkTheme(), tab = "gallery", draft = null, dim = 0, both = false, busy = false, gallery = [], uploadedBlobUrl = "";
+    let sharedOn = "", emojiPick = SHARED_EMOJI[0], emojiBg = "#e8f0fe"; let dark = isDarkTheme(), tab = "gallery", draft = null, dim = 0, both = false, busy = false, gallery = [], uploadedBlobUrl = "";
     const msg = el("p", "wpd-msg"); msg.setAttribute("role", "status");
     const say = (t, bad) => { msg.textContent = t || ""; msg.className = "wpd-msg" + (bad ? " bad" : ""); };
     const preview = el("div", "wpd-preview"); preview.appendChild(el("div", "wpd-s in", "Xin chào! Đây là tin nhận.")); preview.appendChild(el("div", "wpd-s out", "Tin gửi trên hình nền này."));
@@ -2612,11 +2629,23 @@
         for (const b of gallery) {
           const t = tile("bg", b.name || "Hình nền", b.fill ? fillCss(b.fill) : "", same(b.id), () => { draft = { background_id: b.id, bg: b }; paint(); drawBody(); });
           if (!b.fill && (b.thumb_file || b.file)) blobUrl(b.thumb_file || b.file).then((u) => { t.style.backgroundImage = "url(" + JSON.stringify(u) + ")"; }).catch(() => {});
-          if (b.name) t.appendChild(el("span", "wpd-cap", b.name));
+          if (niceBgName(b.name)) t.appendChild(el("span", "wpd-cap", niceBgName(b.name)));
           grid.appendChild(t);
         }
         kids.push(grid, pick);
         if (!gallery.length) kids.push(el("p", "wpd-msg", "Chưa có hình nền nào trong bộ sưu tập của tài khoản này (mở Telegram trên điện thoại → Cài đặt → Giao diện chat để thêm)."));
+      } else if (tab === "shared") {
+        const art = (window.WallpaperArt && WallpaperArt.SAMPLES) || [], grid = el("div", "wpd-grid");
+        const make = async (svg, key) => { if (busy) return; try { say("Đang tạo ảnh…"); const blob = await svgToJpegBlob(svg); await upload(blob); sharedOn = key; await drawBody(); } catch (e) { say(e.message || String(e), true); } };
+        for (const a of art) { const t = tile("bg", a.label, "", sharedOn === "a:" + a.id, () => make(a.svg, "a:" + a.id)); t.style.background = WallpaperArt.css(a.id); t.appendChild(el("span", "wpd-cap", a.label)); grid.appendChild(t); }
+        for (const [id, label, angle, stops] of SHARED_GRADIENTS) { const t = tile("bg", label, "", sharedOn === "g:" + id, () => make(gradientSvg(angle, stops), "g:" + id)); t.style.background = "linear-gradient(" + angle + "deg," + stops.join(",") + ")"; t.appendChild(el("span", "wpd-cap", label)); grid.appendChild(t); }
+        kids.push(grid, el("p", "wpd-msg", "Kho mẫu dùng chung với Zalo. Telegram chỉ nhận ảnh, nên mẫu được vẽ thành ảnh rồi đặt làm hình nền."));
+      } else if (tab === "emoji") {
+        const grid = el("div", "wpd-grid"), pickBg = el("div", "wpd-sw");
+        const make = async () => { if (busy) return; try { say("Đang tạo ảnh…"); await upload(await svgToJpegBlob(emojiSvg(emojiPick, emojiBg))); await drawBody(); } catch (e) { say(e.message || String(e), true); } };
+        for (const x of SHARED_EMOJI) { const t = tile("bg", "Biểu tượng " + x, "", emojiPick === x, () => { emojiPick = x; make(); }); t.textContent = x; t.style.fontSize = "2rem"; grid.appendChild(t); }
+        for (const c of WP_COLORS) { const b = el("button", emojiBg === c ? "on" : ""); b.type = "button"; b.style.background = c; b.setAttribute("aria-label", "Màu nền " + c); b.addEventListener("click", () => { emojiBg = c; make(); }); pickBg.appendChild(b); }
+        kids.push(el("h4", "wpd-h", "Biểu tượng lát nền"), grid, el("h4", "wpd-h", "Màu nền"), pickBg);
       } else if (tab === "color") {
         const sw = el("div", "wpd-sw");
         for (const c of WP_COLORS) { const b = el("button", draft && draft.color === c ? "on" : ""); b.type = "button"; b.style.background = c; b.setAttribute("aria-label", "Màu " + c); b.addEventListener("click", () => { draft = { color: c, preview: c }; paint(); drawBody(); }); sw.appendChild(b); }
@@ -2641,7 +2670,7 @@
       body.replaceChildren(...kids);
     }
     function drawTabs() {
-      tabs.replaceChildren(...[["gallery", "Bộ sưu tập"], ["color", "Màu"], ["gradient", "Chuyển màu"]].map(([id, label]) => { const b = el("button", tab === id ? "on" : "", label); b.type = "button"; b.setAttribute("role", "tab"); b.setAttribute("aria-selected", String(tab === id));
+      tabs.replaceChildren(...[["gallery", "Bộ sưu tập"], ["color", "Màu"], ["gradient", "Chuyển màu"], ["shared", "Mẫu chung"], ["emoji", "Biểu tượng"]].map(([id, label]) => { const b = el("button", tab === id ? "on" : "", label); b.type = "button"; b.setAttribute("role", "tab"); b.setAttribute("aria-selected", String(tab === id));
         b.addEventListener("click", () => { tab = id; drawTabs(); drawBody(); }); return b; }));
     }
     async function upload(f) {

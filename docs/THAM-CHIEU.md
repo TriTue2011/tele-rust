@@ -66,6 +66,7 @@ Mọi đường dẫn có xác thực đều chấp nhận `Authorization: Beare
 | `GET` | `/ui/index.html` | Không | — | Đường dẫn chuẩn tới trang quản lý tài khoản (`web/index.html`). |
 | `GET` | `/ui/emoji.js` | Không | — | Bảng emoji và thanh cảm xúc (mô-đun dùng chung với zalo-rs). |
 | `GET` | `/ui/emoji-data.js` | Không | — | Dữ liệu 1355 emoji (nhóm, tên Anh, từ khoá Việt). |
+| `GET` | `/ui/wallpaper-art.js` | Không | — | Kho hình nền mẫu (30 mẫu vẽ SVG) dùng chung với Zalo: tab «Mẫu chung» của hộp hình nền. |
 | `GET` | `/ui/qrcode.min.js` | Không | — | Phục vụ thư viện tạo mã QR nội bộ (`qrcode-generator` 1.4.4). |
 | `GET` | `/ui/api/auth/status` | Công khai (kiểm cookie nếu có) | Cookie `tggw_session` | Kiểm tra đã thiết lập tài khoản web chưa và trạng thái đăng nhập. |
 | `POST` | `/ui/api/auth/setup` | Token gateway một lần | `token`, `ten`, `mat_khau` (≥10 ký tự) | Tạo tài khoản web lần đầu và cấp cookie phiên `HttpOnly`. |
