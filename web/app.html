@@ -2607,7 +2607,9 @@
     if (!cur) return;
     const chatId = cur, isPrivate = curKind === "private";
     const old = document.getElementById("wp-dialog"); if (old) old.remove();
-    let sharedOn = "", emojiPick = SHARED_EMOJI[0], emojiBg = "#e8f0fe", packFiles = null, packOn = "", packThumbs = {}; let dark = isDarkTheme(), tab = "gallery", draft = null, dim = 0, both = false, busy = false, gallery = [], uploadedBlobUrl = "";
+    let sharedOn = "", emojiPick = SHARED_EMOJI[0], emojiBg = "#e8f0fe", packFiles = null, packOn = "", packThumbs = {}; let dark = isDarkTheme(), tab = "shared", draft = null, dim = 0, both = false, busy = false, gallery = [], uploadedBlobUrl = "";
+    // Mặc định mở tab «Mẫu chung» (46 mẫu minh hoạ dùng chung với Zalo), không phải «Bộ sưu tập» (nền thật đồng bộ từ điện thoại —
+    // tài khoản có thể chỉ có vài màu phẳng ở đó): chủ máy chê tab mặc định "chưa được như Zalo" vì Zalo luôn mở sẵn bộ 46 mẫu đẹp.
     const msg = el("p", "wpd-msg"); msg.setAttribute("role", "status");
     const say = (t, bad) => { msg.textContent = t || ""; msg.className = "wpd-msg" + (bad ? " bad" : ""); };
     const preview = el("div", "wpd-preview"); preview.appendChild(el("div", "wpd-s in", "Xin chào! Đây là tin nhận.")); preview.appendChild(el("div", "wpd-s out", "Tin gửi trên hình nền này."));

@@ -78,7 +78,9 @@ test('TC-WALLPAPER: hình nền hội thoại theo Telegram — áp dụng, bộ
 
   // 2) mở hộp từ menu ⋮ → có ô máy ảnh, ô «không có», 2 hình nền; cả hai bên mặc định tắt (cần Premium)
   await openMenu(0); await evaluate('document.getElementById("ctx-wallpaper").click()');
-  await until('Boolean(document.getElementById("wp-dialog")) && document.querySelectorAll(".wpd-t").length === 4');
+  await until('Boolean(document.getElementById("wp-dialog"))');
+  await evaluate('document.querySelectorAll(".wpd-tabs button")[0].click()'); // mặc định mở «Mẫu chung»; phần này test «Bộ sưu tập» nên chuyển tab trước
+  await until('document.querySelectorAll(".wpd-t").length === 4');
   assert.deepEqual(await evaluate('[...document.querySelectorAll(".wpd-t")].map((b) => b.getAttribute("aria-label"))'), ['Chọn ảnh của tôi', 'Không có hình nền', 'Núi', 'Hoàng hôn']);
   // BỐ CỤC (test logic không thấy được lỗi kiểu «hộp rơi xuống cuối trang, ô nhỏ xíu»): hộp là cửa sổ nổi nằm TRỌN trong màn hình, xem trước và ô chọn đủ to.
   const lay = await evaluate(`(() => { const r = (e) => e.getBoundingClientRect(), box = document.querySelector("#wp-dialog .wpd-box"), t = document.querySelector(".wpd-t.bg") || document.querySelector(".wpd-t"), pv = document.querySelector(".wpd-preview");
@@ -100,7 +102,9 @@ test('TC-WALLPAPER: hình nền hội thoại theo Telegram — áp dụng, bộ
 
   // 3) ban đêm xem bộ sưu tập ban đêm; màu và chuyển màu gửi đúng thân
   await evaluate('window.__calls.length = 0'); await openMenu(0); await evaluate('document.getElementById("ctx-wallpaper").click()');
-  await until('Boolean(document.getElementById("wp-dialog")) && document.querySelectorAll(".wpd-t").length === 4');
+  await until('Boolean(document.getElementById("wp-dialog"))');
+  await evaluate('document.querySelectorAll(".wpd-tabs button")[0].click()'); // mặc định mở «Mẫu chung»; phần này test «Bộ sưu tập» ban đêm
+  await until('document.querySelectorAll(".wpd-t").length === 4');
   await evaluate('document.getElementById("wpd-night").click()');
   await until('document.querySelectorAll(".wpd-t").length === 3');
   assert.equal(await evaluate('window.__calls.filter((c) => c.p === "/api/backgrounds").at(-1).dark'), '1');
@@ -116,6 +120,8 @@ test('TC-WALLPAPER: hình nền hội thoại theo Telegram — áp dụng, bộ
 
   // 4) ảnh tự gán: nén + tải lên thân thô, rồi Lưu gửi file_path
   await evaluate('window.__calls.length = 0'); await openMenu(0); await evaluate('document.getElementById("ctx-wallpaper").click()');
+  await until('Boolean(document.getElementById("wp-dialog"))');
+  await evaluate('document.querySelectorAll(".wpd-tabs button")[0].click()'); // «Bộ sưu tập»: #wpd-file (chọn ảnh của tôi) chỉ render ở tab này
   await until('Boolean(document.getElementById("wpd-file"))');
   await evaluate(`(async () => { const c = document.createElement('canvas'); c.width = 60; c.height = 40; c.getContext('2d').fillRect(0, 0, 60, 40); const b = await new Promise((r) => c.toBlob(r, 'image/png'));
     const dt = new DataTransfer(); dt.items.add(new File([b], 'p.png', { type: 'image/png' })); const i = document.getElementById('wpd-file'); i.files = dt.files; i.dispatchEvent(new Event('change')); })()`);
@@ -127,6 +133,8 @@ test('TC-WALLPAPER: hình nền hội thoại theo Telegram — áp dụng, bộ
   assert.equal(await evaluate('window.__calls.find((c) => c.m === "POST" && /background$/.test(c.p)).body.file_path'), 'ab'.repeat(16) + '.png');
   // ảnh sai loại: báo lỗi, không tải
   await evaluate('window.__calls.length = 0'); await openMenu(0); await evaluate('document.getElementById("ctx-wallpaper").click()');
+  await until('Boolean(document.getElementById("wp-dialog"))');
+  await evaluate('document.querySelectorAll(".wpd-tabs button")[0].click()');
   await until('Boolean(document.getElementById("wpd-file"))');
   await evaluate(`const dt = new DataTransfer(); dt.items.add(new File(['x'], 'a.gif', { type: 'image/gif' })); const i = document.getElementById('wpd-file'); i.files = dt.files; i.dispatchEvent(new Event('change'));`);
   await until('/JPEG hoặc PNG/.test(document.querySelector(".wpd-msg").textContent)');
@@ -135,6 +143,7 @@ test('TC-WALLPAPER: hình nền hội thoại theo Telegram — áp dụng, bộ
   // 5) lưu khi chưa chọn gì ⇒ nhắc; lỗi từ Telegram ⇒ hiện lỗi, giữ hộp; «Bỏ hình nền» gửi remove; Esc đóng
   await evaluate('document.getElementById("wpd-cancel").click()'); await evaluate('window.__calls.length = 0'); await openMenu(2); await evaluate('document.getElementById("ctx-wallpaper").click()');
   await until('Boolean(document.getElementById("wp-dialog"))');
+  await evaluate('document.querySelectorAll(".wpd-tabs button")[0].click()'); // «Bộ sưu tập»: .wpd-t.bg[1] bên dưới phải là hình nền thật (background_id), không phải mẫu chung
   await evaluate('document.getElementById("wpd-save").click()');
   assert.match(await evaluate('document.querySelector(".wpd-msg").textContent'), /chọn một hình nền/);
   assert.equal(await evaluate('window.__calls.some((c) => c.m === "POST")'), false);
@@ -154,6 +163,7 @@ test('TC-WALLPAPER: hình nền hội thoại theo Telegram — áp dụng, bộ
   await until('document.querySelectorAll("#msgs .m").length === 1 && document.getElementById("title").textContent === "Nhóm Bạn"');
   await evaluate('document.getElementById("chat-menu-open").click()'); await until('!document.getElementById("chat-ctx-menu").hidden');
   await evaluate('document.getElementById("ctx-wallpaper").click()'); await until('Boolean(document.getElementById("wp-dialog"))');
+  await evaluate('document.querySelectorAll(".wpd-tabs button")[0].click()'); // «Bộ sưu tập»: cần background_id thật, không phải mẫu chung
   assert.equal(await evaluate('document.getElementById("wpd-both")'), null);
   await evaluate('document.querySelectorAll(".wpd-t.bg")[0].click(); document.getElementById("wpd-save").click()');
   await until('window.__calls.some((c) => c.m === "POST")');
@@ -166,7 +176,9 @@ test('TC-WALLPAPER: hình nền hội thoại theo Telegram — áp dụng, bộ
   assert.equal(await evaluate('document.getElementById("msgs").classList.contains("wp")'), false, 'nền muộn của hội thoại trước không được áp sang hội thoại sau');
   await evaluate('window.__slow42 = false');
   // 8) đổi ngày/đêm trong hộp ⇒ bỏ lựa chọn đang giữ (hình nền ngày/đêm là hai bộ khác nhau)
-  await openMenu(2); await evaluate('document.getElementById("ctx-wallpaper").click()'); await until('document.querySelectorAll(".wpd-t").length >= 3');
+  await openMenu(2); await evaluate('document.getElementById("ctx-wallpaper").click()'); await until('Boolean(document.getElementById("wp-dialog"))');
+  await evaluate('document.querySelectorAll(".wpd-tabs button")[0].click()'); // «Bộ sưu tập»: cần nút «ngày/đêm» và background_id thật
+  await until('document.querySelectorAll(".wpd-t").length >= 3');
   await evaluate('document.querySelectorAll(".wpd-t.bg")[0].click()'); await until('document.getElementById("wpd-night") !== null');
   await evaluate('document.getElementById("wpd-night").click()'); await until('window.__calls.filter((c) => c.p === "/api/backgrounds").length >= 1');
   await evaluate('document.getElementById("wpd-save").click()');
