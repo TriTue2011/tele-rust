@@ -62,6 +62,10 @@ test('TC-REACTIONS: danh sách cảm xúc theo hội thoại, nhấp đúp, gỡ
   const acts = await evaluate(`[...document.querySelectorAll('#msgs .m')[0].querySelectorAll('.acts button')].map((b) => b.getAttribute('aria-label'))`);
   assert.ok(acts.includes('Thả cảm xúc') && !acts.includes('Thích'), 'thanh công cụ có «Thả cảm xúc», không còn «Thích»: ' + acts);
 
+  // Hội thoại ĐANG MỞ trong danh sách: nền đậm hơn hàng thường + vạch nhấn trái + đổ bóng.
+  const on = await evaluate(`(() => { const r = document.querySelector('#list .chat.on'); const g = () => getComputedStyle(r); const a = { bg: g().backgroundColor, sh: g().boxShadow }; r.classList.remove('on'); const b = { bg: g().backgroundColor, sh: g().boxShadow }; r.classList.add('on'); return { a, b }; })()`);
+  assert.notEqual(on.a.bg, on.b.bg, 'hàng đang mở đổi màu nền so với hàng thường');
+  assert.match(on.a.sh, /inset/, 'có vạch nhấn bên trái'); assert.equal(on.b.sh, 'none', 'hàng thường không có bóng');
   // BỐ CỤC: chip cảm xúc dưới tin là viên thuốc NHỎ ôm sát «🔥 2» (CSS .rx của bảng chọn từng đè lên và kéo chip rộng hết bong bóng).
   const chip = await evaluate(`(() => { const c = document.querySelector('#msgs .m .rx span'), w = c.closest('.m').getBoundingClientRect().width; return { chip: c.getBoundingClientRect().width, bubble: w, grid: getComputedStyle(c.parentElement).display }; })()`);
   assert.equal(chip.grid, 'flex', 'hàng chip cảm xúc là flex, không phải grid của bảng chọn');
