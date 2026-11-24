@@ -221,7 +221,9 @@
   .rx span.mine { border-color:var(--acc); }
   /* Hộp «Hình nền hội thoại»: cửa sổ nổi giữa màn hình, xem trước lớn, ô chọn đủ to để thấy hình */
   .wpd { position:fixed; inset:0; z-index:95; display:flex; align-items:center; justify-content:center; padding:12px; background:rgba(0,0,0,.5); }
-  .wpd-box { width:min(42rem,100%); max-height:calc(100vh - 24px); overflow:auto; display:flex; flex-direction:column; gap:10px; padding:14px 16px; background:var(--panel); color:var(--fg); border:1px solid var(--line); border-radius:14px; box-shadow:0 12px 40px #0008; }
+  .wpd-box { width:min(42rem,100%); max-height:calc(100vh - 24px); overflow:hidden; display:flex; flex-direction:column; gap:10px; padding:14px 16px; background:var(--panel); color:var(--fg); border:1px solid var(--line); border-radius:14px; box-shadow:0 12px 40px #0008; }
+  .wpd-box > * { flex:none; } /* chỉ .wpd-body cuộn — Lưu/Huỷ luôn thấy ngay, không phải kéo xuống như Zalo */
+  .wpd-box > .wpd-body { flex:1 1 auto; min-height:0; overflow:auto; }
   .wpd-box h2 { margin:0; font-size:1.1rem; }
   .wpd-row { display:flex; align-items:center; gap:10px; }
   .wpd-row input[type=range] { flex:1; }
@@ -717,6 +719,7 @@
         <small>Enter gửi · Shift+Enter xuống dòng</small>
       </div>
       <div class="compose-row">
+        <button class="icon" id="img-btn" type="button" aria-label="Gửi ảnh" title="Gửi ảnh">🖼️</button><input id="img-file" type="file" accept="image/*" hidden>
         <button class="icon" id="emoji-btn" type="button" aria-label="Chọn emoji" title="Emoji">😀</button><button class="icon" id="attach" aria-label="Đính kèm tệp">📎</button><input id="file" type="file" hidden>
         <div id="text" class="compose-editor is-empty" contenteditable="true" role="textbox" aria-multiline="true" aria-label="Tin nhắn" data-placeholder="Nhập tin nhắn…" spellcheck="true"></div>
         <button id="send">Gửi</button>
@@ -2541,15 +2544,18 @@
     });
   }
   $("attach").addEventListener("click", () => $("file").click());
+  $("img-btn").addEventListener("click", () => $("img-file").click());
   $("emoji-btn").addEventListener("click", toggleEmojiPanel);
-  $("file").addEventListener("change", async (e) => {
-    const f = e.target.files[0]; e.target.value = ""; if (!f || !cur) return;
+  const sendAttachedFile = async (f) => {
+    if (!f || !cur) return;
     if (f.size > 64 * 1024 * 1024) { toast("Tệp vượt 64 MB"); return; }
     const kind = f.type.startsWith("image/") ? "photo" : f.type.startsWith("video/") ? "video" : f.type.startsWith("audio/") ? "audio" : "document";
     toast("Đang gửi " + f.name + "…");
     try { const buf = await f.arrayBuffer(); await api("POST", "/api/chats/" + cur + "/send_file?kind=" + kind + "&name=" + encodeURIComponent(f.name), buf, true); toast("Đã gửi"); scheduleChats(); }
     catch (er) { toast(er.message); }
-  });
+  };
+  $("file").addEventListener("change", (e) => { const f = e.target.files[0]; e.target.value = ""; sendAttachedFile(f); });
+  $("img-file").addEventListener("change", (e) => { const f = e.target.files[0]; e.target.value = ""; sendAttachedFile(f); });
   // ---- Hình nền hội thoại: DÙNG HÌNH NỀN CỦA TELEGRAM qua TDLib (điện thoại thấy giống web) — bộ sưu tập, màu/chuyển màu, ảnh tự gán,
   // «đổi cho cả hai bên», độ tối ban đêm. Gateway giữ ảnh tự gán ≤3 MB rồi đưa cho Telegram.
   const WP_COLORS = ["#ffffff", "#e8f0fe", "#e3f5ea", "#fff4d6", "#fde8ef", "#efe8fb", "#dff4f2", "#cfd8dc", "#90a4ae", "#455a64", "#263238", "#101820", "#0b3d91", "#1b5e20", "#6a1b9a", "#b71c1c", "#e65100", "#ffb300"];
@@ -2630,7 +2636,7 @@
     const msg = el("p", "wpd-msg"); msg.setAttribute("role", "status");
     const say = (t, bad) => { msg.textContent = t || ""; msg.className = "wpd-msg" + (bad ? " bad" : ""); };
     const preview = el("div", "wpd-preview"); preview.appendChild(el("div", "wpd-s in", "Xin chào! Đây là tin nhận.")); preview.appendChild(el("div", "wpd-s out", "Tin gửi trên hình nền này."));
-    const body = el("div"); const tabs = el("div", "wpd-tabs"); tabs.setAttribute("role", "tablist");
+    const body = el("div", "wpd-body"); const tabs = el("div", "wpd-tabs"); tabs.setAttribute("role", "tablist");
     async function paint() {
       let css = "";
       if (draft && draft.preview) css = draft.preview;

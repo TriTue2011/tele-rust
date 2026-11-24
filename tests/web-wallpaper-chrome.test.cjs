@@ -83,13 +83,14 @@ test('TC-WALLPAPER: hình nền hội thoại theo Telegram — áp dụng, bộ
   await until('document.querySelectorAll(".wpd-t").length === 4');
   assert.deepEqual(await evaluate('[...document.querySelectorAll(".wpd-t")].map((b) => b.getAttribute("aria-label"))'), ['Chọn ảnh của tôi', 'Không có hình nền', 'Núi', 'Hoàng hôn']);
   // BỐ CỤC (test logic không thấy được lỗi kiểu «hộp rơi xuống cuối trang, ô nhỏ xíu»): hộp là cửa sổ nổi nằm TRỌN trong màn hình, xem trước và ô chọn đủ to.
-  const lay = await evaluate(`(() => { const r = (e) => e.getBoundingClientRect(), box = document.querySelector("#wp-dialog .wpd-box"), t = document.querySelector(".wpd-t.bg") || document.querySelector(".wpd-t"), pv = document.querySelector(".wpd-preview");
-    return { pos: getComputedStyle(document.getElementById("wp-dialog")).position, box: r(box).toJSON(), tile: r(t).toJSON(), pv: r(pv).toJSON(), w: innerWidth, h: innerHeight }; })()`);
+  const lay = await evaluate(`(() => { const r = (e) => e.getBoundingClientRect(), box = document.querySelector("#wp-dialog .wpd-box"), t = document.querySelector(".wpd-t.bg") || document.querySelector(".wpd-t"), pv = document.querySelector(".wpd-preview"), save = document.getElementById("wpd-save");
+    return { pos: getComputedStyle(document.getElementById("wp-dialog")).position, box: r(box).toJSON(), tile: r(t).toJSON(), pv: r(pv).toJSON(), save: r(save).toJSON(), w: innerWidth, h: innerHeight }; })()`);
   assert.equal(lay.pos, "fixed", "hộp phải là lớp phủ cố định, không nằm cuối trang");
   assert.ok(lay.box.top >= 0 && lay.box.left >= 0 && lay.box.bottom <= lay.h && lay.box.right <= lay.w, "hộp nằm trọn trong màn hình: " + JSON.stringify(lay.box));
   assert.ok(lay.tile.width >= 70 && lay.tile.height >= 90, "ô hình nền đủ to để nhìn (≥70×90 px), hiện " + Math.round(lay.tile.width) + "×" + Math.round(lay.tile.height));
   assert.ok(lay.tile.width >= 110 && lay.tile.height >= 140, 'ô hình nền to như Zalo (≥110×140 px) để dễ nhìn dễ chọn, hiện ' + Math.round(lay.tile.width) + '×' + Math.round(lay.tile.height));
   assert.ok(lay.pv.height >= 120, "ô xem trước cao ≥120 px, hiện " + Math.round(lay.pv.height));
+  assert.ok(lay.save.bottom <= lay.h && lay.save.width > 0, "nút «Lưu» luôn thấy ngay, không phải kéo xuống mới thấy (như Zalo): " + JSON.stringify(lay.save));
   assert.equal(await evaluate('document.getElementById("wpd-both").checked'), false, 'cả hai bên mặc định TẮT: Telegram đòi Premium (PREMIUM_ACCOUNT_REQUIRED)');
   assert.equal(await evaluate('document.getElementById("wpd-dim").value'), '40', 'độ tối hiện tại nạp từ Telegram');
   await until('document.querySelectorAll(".wpd-t.bg")[0].style.backgroundImage.includes("blob:")');
