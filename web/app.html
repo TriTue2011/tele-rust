@@ -2595,13 +2595,19 @@
     const img = new Image(); img.onload = () => { const c = document.createElement("canvas"); c.width = w; c.height = h; const x = c.getContext("2d"); x.fillStyle = "#ffffff"; x.fillRect(0, 0, w, h); x.drawImage(img, 0, 0, w, h);
       c.toBlob((b) => (b ? resolve(b) : reject(new Error("Không tạo được ảnh từ mẫu."))), "image/jpeg", 0.9); };
     img.onerror = () => reject(new Error("Không vẽ được mẫu này.")); img.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg); });
+  // Ảnh lát (APK Zalo) → ảnh nền đầy khung: lặp ô ảnh (phóng 3 lần cho đỡ nhỏ) lên nền trắng rồi xuất JPEG.
+  const tileToJpegBlob = (dataUrl, w = 1080, h = 1890) => new Promise((resolve, reject) => {
+    const img = new Image(); img.onload = () => { const c = document.createElement("canvas"); c.width = w; c.height = h; const x = c.getContext("2d"); x.fillStyle = "#ffffff"; x.fillRect(0, 0, w, h);
+      const tw = Math.max(48, img.width * 3), th = Math.max(48, img.height * 3); for (let y = 0; y < h; y += th) for (let xx = 0; xx < w; xx += tw) x.drawImage(img, xx, y, tw, th);
+      c.toBlob((b) => (b ? resolve(b) : reject(new Error("Không tạo được ảnh từ mẫu."))), "image/jpeg", 0.9); };
+    img.onerror = () => reject(new Error("Không đọc được ảnh trong gói.")); img.src = dataUrl; });
   // Tên trong bộ sưu tập Telegram đôi khi là mã dài vô nghĩa (aHrFlr08CFILAAAAkr…): không hiện làm chú thích.
   const niceBgName = (n) => { n = String(n || "").trim(); return n && (/\s/.test(n) || n.length <= 16) && !/^[A-Za-z0-9_-]{12,}$/.test(n) ? n : ""; };
   async function openWallpaperDialog() {
     if (!cur) return;
     const chatId = cur, isPrivate = curKind === "private";
     const old = document.getElementById("wp-dialog"); if (old) old.remove();
-    let sharedOn = "", emojiPick = SHARED_EMOJI[0], emojiBg = "#e8f0fe"; let dark = isDarkTheme(), tab = "gallery", draft = null, dim = 0, both = false, busy = false, gallery = [], uploadedBlobUrl = "";
+    let sharedOn = "", emojiPick = SHARED_EMOJI[0], emojiBg = "#e8f0fe", packFiles = null, packOn = "", packThumbs = {}; let dark = isDarkTheme(), tab = "gallery", draft = null, dim = 0, both = false, busy = false, gallery = [], uploadedBlobUrl = "";
     const msg = el("p", "wpd-msg"); msg.setAttribute("role", "status");
     const say = (t, bad) => { msg.textContent = t || ""; msg.className = "wpd-msg" + (bad ? " bad" : ""); };
     const preview = el("div", "wpd-preview"); preview.appendChild(el("div", "wpd-s in", "Xin chào! Đây là tin nhận.")); preview.appendChild(el("div", "wpd-s out", "Tin gửi trên hình nền này."));
@@ -2646,6 +2652,18 @@
         for (const x of SHARED_EMOJI) { const t = tile("bg", "Biểu tượng " + x, "", emojiPick === x, () => { emojiPick = x; make(); }); t.textContent = x; t.style.fontSize = "2rem"; grid.appendChild(t); }
         for (const c of WP_COLORS) { const b = el("button", emojiBg === c ? "on" : ""); b.type = "button"; b.style.background = c; b.setAttribute("aria-label", "Màu nền " + c); b.addEventListener("click", () => { emojiBg = c; make(); }); pickBg.appendChild(b); }
         kids.push(el("h4", "wpd-h", "Biểu tượng lát nền"), grid, el("h4", "wpd-h", "Màu nền"), pickBg);
+      } else if (tab === "pack") {
+        if (packFiles === null) { packFiles = []; api("GET", "/api/wallpapers/pack").then((r) => { packFiles = (r && r.files) || []; drawBody(); }).catch(() => { packFiles = []; }); kids.push(el("p", "wpd-msg", "Đang đọc gói ảnh…")); }
+        else if (!packFiles.length) kids.push(el("p", "wpd-msg", "Chưa có ảnh nào. Nhập ảnh nền có sẵn của APK Zalo vào <dữ liệu gateway>/wallpaper-pack bằng: python3 scripts/nhap_hinh_nen_apk.py <Zalo.apk> <thư mục>/.. (ảnh là tài sản của VNG nên không đi kèm app)."));
+        else {
+          const grid = el("div", "wpd-grid");
+          const load = async (f) => { if (packThumbs[f]) return packThumbs[f]; const r = await api("GET", "/api/wallpapers/pack?name=" + encodeURIComponent(f)); packThumbs[f] = "data:" + r.mime + ";base64," + r.data_b64; return packThumbs[f]; };
+          for (const f of packFiles) {
+            const t = tile("bg", f, "", packOn === f, async () => { if (busy) return; try { say("Đang tạo ảnh…"); await upload(await tileToJpegBlob(await load(f))); packOn = f; await drawBody(); } catch (e) { say(e.message || String(e), true); } });
+            t.appendChild(el("span", "wpd-cap", f.replace(/\.[^.]+$/, ""))); load(f).then((u) => { t.style.background = "url(" + JSON.stringify(u) + ") 0 0 / 60px repeat, #f3f4f6"; }).catch(() => {}); grid.appendChild(t);
+          }
+          kids.push(grid);
+        }
       } else if (tab === "color") {
         const sw = el("div", "wpd-sw");
         for (const c of WP_COLORS) { const b = el("button", draft && draft.color === c ? "on" : ""); b.type = "button"; b.style.background = c; b.setAttribute("aria-label", "Màu " + c); b.addEventListener("click", () => { draft = { color: c, preview: c }; paint(); drawBody(); }); sw.appendChild(b); }
@@ -2670,7 +2688,7 @@
       body.replaceChildren(...kids);
     }
     function drawTabs() {
-      tabs.replaceChildren(...[["gallery", "Bộ sưu tập"], ["color", "Màu"], ["gradient", "Chuyển màu"], ["shared", "Mẫu chung"], ["emoji", "Biểu tượng"]].map(([id, label]) => { const b = el("button", tab === id ? "on" : "", label); b.type = "button"; b.setAttribute("role", "tab"); b.setAttribute("aria-selected", String(tab === id));
+      tabs.replaceChildren(...[["gallery", "Bộ sưu tập"], ["color", "Màu"], ["gradient", "Chuyển màu"], ["shared", "Mẫu chung"], ["emoji", "Biểu tượng"], ["pack", "Từ APK"]].map(([id, label]) => { const b = el("button", tab === id ? "on" : "", label); b.type = "button"; b.setAttribute("role", "tab"); b.setAttribute("aria-selected", String(tab === id));
         b.addEventListener("click", () => { tab = id; drawTabs(); drawBody(); }); return b; }));
     }
     async function upload(f) {
