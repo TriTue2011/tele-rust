@@ -9,6 +9,12 @@ use super::{array, int, truth, ChatService, GwError, Reply};
 
 pub(crate) const MAX_WALLPAPER_BYTES: usize = 3 * 1024 * 1024;
 
+/// Tên tệp trong gói ảnh ngoài: chữ/số/_/-, đuôi png/jpg/jpeg/webp (không đường dẫn). Khớp `pack_name_ok` của zalo-rs.
+pub(crate) fn pack_name_ok(name: &str) -> bool {
+    let Some((stem, ext)) = name.rsplit_once('.') else { return false };
+    !stem.is_empty() && stem.len() <= 40 && stem.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-') && matches!(ext, "png" | "jpg" | "jpeg" | "webp")
+}
+
 fn emoji_of(kind: &Value) -> Option<String> {
     (kind["@type"] == "reactionTypeEmoji").then(|| kind["emoji"].as_str().unwrap_or_default().to_owned()).filter(|e| !e.is_empty())
 }
@@ -61,6 +67,26 @@ impl ChatService {
     }
 
     /// Bộ sưu tập hình nền đã cài của tài khoản (ban ngày hoặc ban đêm).
+    /// GÓI ẢNH NGOÀI dùng chung với Zalo (ví dụ 20 ảnh lát `assets/background/bg_*.png` của APK Zalo, nhập bằng scripts/nhap_hinh_nen_apk.py vào `<data>/wallpaper-pack/`).
+    /// Ảnh là tài sản của VNG nên KHÔNG nằm trong kho mã. Không có `name` ⇒ danh sách; có `name` ⇒ ảnh dạng base64 (trình duyệt vẽ lát rồi tải lên như ảnh tự chọn).
+    pub(super) async fn wallpaper_pack(&self, name: Option<String>) -> Reply {
+        use base64::Engine as _;
+        let dir = self.data_dir.join("wallpaper-pack");
+        let Some(name) = name.filter(|n| !n.is_empty()) else {
+            let mut files: Vec<String> = std::fs::read_dir(&dir).into_iter().flatten().flatten()
+                .filter_map(|e| { let n = e.file_name().to_string_lossy().into_owned(); (pack_name_ok(&n) && e.metadata().ok().is_some_and(|m| m.is_file() && m.len() <= 1_048_576)).then_some(n) }).collect();
+            files.sort(); files.truncate(200);
+            return Ok(json!({"files": files}));
+        };
+        if !pack_name_ok(&name) { return Err(GwError::bad_request("Tên ảnh trong gói không hợp lệ.")); }
+        let path = dir.join(&name);
+        let bytes = tokio::task::spawn_blocking(move || std::fs::read(path)).await.ok().and_then(Result::ok)
+            .ok_or_else(|| GwError::new(404, "PACK_NOT_FOUND", "Không có ảnh này trong gói."))?;
+        if bytes.len() > 1_048_576 { return Err(GwError::bad_request("Ảnh trong gói quá lớn.")); }
+        let mime = match name.rsplit('.').next() { Some("png") => "image/png", Some("webp") => "image/webp", _ => "image/jpeg" };
+        Ok(json!({"name": name, "mime": mime, "data_b64": base64::engine::general_purpose::STANDARD.encode(bytes)}))
+    }
+
     pub(super) async fn installed_backgrounds(&self, dark: bool) -> Reply {
         let r = self.request(json!({"@type":"getInstalledBackgrounds","for_dark_theme":dark})).await?;
         Ok(json!({"backgrounds": array(&r["backgrounds"]).iter().map(background_shape).collect::<Vec<_>>()}))

@@ -95,3 +95,23 @@ async fn wallpaper_upload_validates_stores_and_feeds_set_background() {
     post(&chat2, "/api/chats/42/background", "", json!({"file_path":name,"blurred":true,"dimming":25})).await.unwrap();
     let _ = abs;
 }
+
+/// Gói ảnh ngoài (nhập từ APK Zalo): chỉ liệt kê tệp hợp lệ ≤ 1 MB, đọc từng ảnh dạng base64, tên lạ bị từ chối.
+#[tokio::test]
+async fn wallpaper_pack_lists_safe_files_and_serves_base64() {
+    use base64::Engine as _;
+    let (chat, _td) = setup(vec![]);
+    let dir = std::path::Path::new("target/chat-tests/wallpaper-pack");
+    assert_eq!(get(&chat, "/api/wallpapers/pack", "").await.unwrap(), json!({"files": []}), "chưa nhập ⇒ rỗng");
+    std::fs::create_dir_all(dir).unwrap();
+    let png = [137u8, 80, 78, 71, 13, 10, 26, 10];
+    std::fs::write(dir.join("bg_01.png"), png).unwrap();
+    std::fs::write(dir.join("ghi_chu.txt"), b"x").unwrap();
+    std::fs::write(dir.join("to.png"), vec![0u8; 1_048_577]).unwrap();
+    assert_eq!(get(&chat, "/api/wallpapers/pack", "").await.unwrap(), json!({"files": ["bg_01.png"]}), "bỏ tệp không phải ảnh và tệp quá lớn");
+    let one = get(&chat, "/api/wallpapers/pack", "name=bg_01.png").await.unwrap();
+    assert_eq!((one["name"].as_str(), one["mime"].as_str()), (Some("bg_01.png"), Some("image/png")));
+    assert_eq!(base64::engine::general_purpose::STANDARD.decode(one["data_b64"].as_str().unwrap()).unwrap(), png);
+    for bad in ["..%2Fx.png", "a.gif", "a%2Fb.png", "khong-co.png", "to.png"] { assert!(get(&chat, "/api/wallpapers/pack", &format!("name={bad}")).await.is_err(), "{bad}"); }
+    for f in ["bg_01.png", "ghi_chu.txt", "to.png"] { let _ = std::fs::remove_file(dir.join(f)); }
+}

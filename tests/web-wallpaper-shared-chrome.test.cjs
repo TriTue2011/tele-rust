@@ -31,11 +31,13 @@ test('TC-WALLPAPER-SHARED: kho hình nền chung Zalo↔Tele — tab Mẫu chung
   const mock = `
     window.__calls = []; window.__failSet = false;
     const routes = ${JSON.stringify(routes)}; const png = Uint8Array.from(atob(${JSON.stringify(PNG)}), (c) => c.charCodeAt(0));
+    const PNGB64 = ${JSON.stringify(PNG)};
     const gallery = [{ id: '333', name: 'aHrFlr08CFILAAAAkrXGwsGme_YFIJAAAA', kind: 'wallpaper', thumb_file: 8, file: 9, dark: false }, { id: '111', name: 'Núi', kind: 'wallpaper', thumb_file: 8, file: 9, dark: false }, { id: '222', name: 'Hoàng hôn', kind: 'fill', fill: { kind: 'gradient', colors: ['#ff0000', '#0000ff'], angle: 90 } }];
     window.fetch = async (input, init = {}) => {
       const url = new URL(typeof input === 'string' ? input : input.url, location.href), method = (init.method || 'GET').toUpperCase(); let payload = routes[url.pathname] || {}, status = 200;
       if (url.pathname.startsWith('/api/file/')) return new Response(png, { status: 200, headers: { 'Content-Type': 'image/png' } });
       if (url.pathname === '/api/backgrounds') { window.__calls.push({ p: url.pathname, dark: url.searchParams.get('dark') }); payload = { backgrounds: url.searchParams.get('dark') === '1' ? [gallery[0]] : gallery }; }
+      else if (url.pathname === '/api/wallpapers/pack') { payload = url.searchParams.get('name') ? { name: url.searchParams.get('name'), mime: 'image/png', data_b64: PNGB64 } : { files: ['bg_01.png', 'bg_02.png'] }; }
       else if (url.pathname === '/api/wallpapers/upload') { window.__calls.push({ p: url.pathname, m: method, len: init.body.byteLength, jpeg: new Uint8Array(init.body)[0] === 0xFF && new Uint8Array(init.body)[1] === 0xD8 }); payload = { ok: true, file: 'ab'.repeat(16) + '.png' }; }
       else if (/^\\/api\\/chats\\/-?\\d+\\/background$/.test(url.pathname)) {
         if (method === 'GET' && url.pathname === '/api/chats/42/background' && window.__slow42) await new Promise((r) => setTimeout(r, 400));
@@ -68,7 +70,7 @@ test('TC-WALLPAPER-SHARED: kho hình nền chung Zalo↔Tele — tab Mẫu chung
   await until('Boolean(document.getElementById("wp-dialog")) && document.querySelectorAll(".wpd-t").length >= 4');
   // tên mã vô nghĩa (aHrFlr08…) không hiện làm chú thích; tên thường vẫn hiện
   assert.deepEqual(await evaluate('[...document.querySelectorAll(".wpd-t.bg .wpd-cap")].map((c) => c.textContent)'), ['Núi', 'Hoàng hôn'], 'chú thích mã vô nghĩa bị ẩn');
-  assert.deepEqual(await evaluate('[...document.querySelectorAll(".wpd-tabs button")].map((b) => b.textContent)'), ['Bộ sưu tập', 'Màu', 'Chuyển màu', 'Mẫu chung', 'Biểu tượng']);
+  assert.deepEqual(await evaluate('[...document.querySelectorAll(".wpd-tabs button")].map((b) => b.textContent)'), ['Bộ sưu tập', 'Màu', 'Chuyển màu', 'Mẫu chung', 'Biểu tượng', 'Từ APK']);
   // tab «Mẫu chung»: 30 mẫu vẽ + 8 chuyển màu, mỗi ô có tên; chọn một mẫu ⇒ vẽ JPEG và tải lên rồi xem trước
   await evaluate('document.querySelectorAll(".wpd-tabs button")[3].click()');
   await until('document.querySelectorAll("#wp-dialog .wpd-t.bg").length === 38');
@@ -89,6 +91,14 @@ test('TC-WALLPAPER-SHARED: kho hình nền chung Zalo↔Tele — tab Mẫu chung
   await evaluate('document.querySelectorAll("#wp-dialog .wpd-t.bg")[1].click()');
   await until('window.__calls.some((c) => c.p === "/api/wallpapers/upload")');
   assert.equal(await evaluate('window.__calls.find((c) => c.p === "/api/wallpapers/upload").jpeg'), true, 'nền biểu tượng cũng là JPEG');
+  // tab «Từ APK»: gói ảnh ngoài (nhập từ APK Zalo) ⇒ chọn một ảnh lát ⇒ vẽ lát thành JPEG đầy khung rồi tải lên
+  await evaluate('window.__calls.length = 0; document.querySelectorAll(".wpd-tabs button")[5].click()');
+  await until('document.querySelectorAll("#wp-dialog .wpd-t.bg").length === 2');
+  assert.deepEqual(await evaluate('[...document.querySelectorAll("#wp-dialog .wpd-t.bg .wpd-cap")].map((c) => c.textContent)'), ['bg_01', 'bg_02']);
+  await evaluate('document.querySelectorAll("#wp-dialog .wpd-t.bg")[1].click()');
+  await until('window.__calls.some((c) => c.p === "/api/wallpapers/upload")');
+  const pk = await evaluate('window.__calls.find((c) => c.p === "/api/wallpapers/upload")');
+  assert.equal(pk.jpeg, true, 'ảnh lát được vẽ thành JPEG'); assert.ok(pk.len > 5000, 'ảnh đầy khung có nội dung: ' + pk.len);
   // Lưu ⇒ đặt đúng ảnh vừa tải làm hình nền hội thoại
   await evaluate('window.__calls.length = 0; document.getElementById("wpd-save").click()');
   await until('window.__calls.some((c) => /\\/background$/.test(c.p) && c.m === "POST")');
