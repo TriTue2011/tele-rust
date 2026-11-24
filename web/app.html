@@ -216,6 +216,31 @@
   .rx { display:flex; gap:4px; flex-wrap:wrap; margin-top:3px; }
   .rx span { background:var(--bg); border:1px solid var(--line); border-radius:99px; padding:0 7px; font-size:13px; cursor:pointer; }
   .rx span.mine { border-color:var(--acc); }
+  /* Hộp «Hình nền hội thoại»: cửa sổ nổi giữa màn hình, xem trước lớn, ô chọn đủ to để thấy hình */
+  .wpd { position:fixed; inset:0; z-index:95; display:flex; align-items:center; justify-content:center; padding:12px; background:rgba(0,0,0,.5); }
+  .wpd-box { width:min(34rem,100%); max-height:calc(100vh - 24px); overflow:auto; display:flex; flex-direction:column; gap:10px; padding:14px 16px; background:var(--panel); color:var(--fg); border:1px solid var(--line); border-radius:14px; box-shadow:0 12px 40px #0008; }
+  .wpd-box h2 { margin:0; font-size:1.1rem; }
+  .wpd-row { display:flex; align-items:center; gap:10px; }
+  .wpd-row input[type=range] { flex:1; }
+  .wpd-preview { position:relative; height:11rem; flex:none; border-radius:12px; border:1px solid var(--line); background:var(--bg) center/cover no-repeat; display:flex; flex-direction:column; justify-content:flex-end; gap:6px; padding:10px; overflow:hidden; }
+  .wpd-s { max-width:75%; padding:6px 10px; border-radius:12px; font-size:.9rem; box-shadow:0 1px 2px #0003; }
+  .wpd-s.in { align-self:flex-start; background:var(--panel); color:var(--fg); }
+  .wpd-s.out { align-self:flex-end; background:var(--acc); color:#fff; }
+  .wpd-tabs { display:flex; gap:6px; flex-wrap:wrap; }
+  .wpd-tabs button { background:transparent; color:var(--mut); border:1px solid var(--line); padding:6px 12px; }
+  .wpd-tabs button.on { background:var(--acc); color:#fff; border-color:var(--acc); }
+  .wpd-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(5.2rem,1fr)); gap:8px; }
+  .wpd-t { aspect-ratio:3/4; width:100%; padding:0; border:2px solid transparent; border-radius:10px; background:var(--bg) center/cover no-repeat; color:var(--fg); font-size:1.6rem; display:flex; align-items:center; justify-content:center; overflow:hidden; }
+  .wpd-t.cam { background:var(--acc); color:#fff; }
+  .wpd-t.none { background:var(--bg); border:2px dashed var(--line); color:var(--mut); }
+  .wpd-t.on { border-color:var(--acc); box-shadow:0 0 0 2px var(--acc); }
+  .wpd-sw { display:flex; flex-wrap:wrap; gap:8px; }
+  .wpd-sw button { width:2.4rem; height:2.4rem; padding:0; border-radius:50%; border:2px solid var(--line); }
+  .wpd-sw button.on { border-color:var(--acc); box-shadow:0 0 0 2px var(--acc); }
+  .wpd-msg { margin:0; min-height:1.2em; font-size:.85rem; color:var(--mut); }
+  .wpd-msg.bad { color:#d33; }
+  .wpd-act { display:flex; justify-content:flex-end; gap:8px; flex-wrap:wrap; }
+  .wpd input[type=color] { width:3rem; height:2rem; padding:0; border:1px solid var(--line); border-radius:6px; background:transparent; }
   /* Bảng emoji + thanh cảm xúc (emoji.js dùng chung với Zalo) — ánh xạ sang biến màu của Tele */
   .ep, .rxpop { --surface:var(--panel); --text:var(--fg); --muted:var(--mut); --hover:color-mix(in srgb, var(--fg) 9%, transparent); --accent:var(--acc); --accent-soft:color-mix(in srgb, var(--acc) 22%, var(--panel)); --surface-2:color-mix(in srgb, var(--fg) 7%, var(--panel)); }
   .ep { position:fixed; z-index:90; width:min(23.5rem,96vw); height:min(26rem,70vh); display:flex; flex-direction:column; background:var(--panel); color:var(--fg); border:1px solid var(--line); border-radius:14px; box-shadow:0 8px 30px #0006; overflow:hidden; }
@@ -229,7 +254,7 @@
   .ep-none { text-align:center; color:var(--mut); padding:32px 16px; }
   .rxpop { position:fixed; z-index:90; padding:5px 9px; border-radius:99px; border:1px solid var(--line); background:color-mix(in srgb, var(--panel) 86%, transparent); backdrop-filter:blur(14px); box-shadow:0 8px 30px #0005; max-width:min(22rem,94vw); }
   .rxpop:has(.rx-all:not([hidden])) { border-radius:22px; }
-  .rx { display:grid; gap:4px; } .rx-row { display:flex; align-items:center; justify-content:space-between; gap:2px; }
+  .rxpop .rx { display:grid; gap:4px; } .rx-row { display:flex; align-items:center; justify-content:space-between; gap:2px; }
   .rx-b { border:0; background:none; font-size:30px; line-height:1; padding:3px 4px; border-radius:10px; cursor:pointer; transition:transform .1s; } .rx-b:hover, .rx-b:focus-visible { transform:scale(1.25); background:var(--hover); }
   .rx-b.mine { background:var(--accent-soft); outline:2px solid var(--acc); }
   .rx-more { border:0; border-radius:99px; width:34px; height:34px; background:var(--surface-2); color:var(--mut); cursor:pointer; flex:none; display:inline-flex; align-items:center; justify-content:center; } .rx-more svg { transition:transform .15s; } .rx-more.open svg { transform:rotate(180deg); }
