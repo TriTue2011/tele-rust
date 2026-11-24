@@ -448,6 +448,25 @@ async fn browser_devices_and_media_stay_with_the_selected_account() {
 }
 
 #[tokio::test]
+async fn ha_device_url_hidden_from_catalog_but_resolved_when_applied_as_setting() {
+    // Giấu URL khỏi danh mục công khai (notify đọc GET devices không thấy mật khẩu RTSP), nhưng khi trình duyệt CHỌN đúng
+    // mã ẩn danh đó làm camera thật thì gateway phải tra lại URL thật để phát lệnh — không phải gửi mã hex vào ffmpeg.
+    let f=Fixture::new("ha-device-url").await;
+    f.ready("+84900000001").await;
+    let pushed=json!({"mic":[],"speaker":[],"camera":[{"id":"rtsp://user:s3cret@cam.local:554/stream","name":"Camera cổng"}]});
+    assert_eq!(f.send("POST","/api/live/ha_devices",pushed).await.0,200);
+    let catalog=f.send("GET","/api/live/devices",Value::Null).await.1["catalog"].clone();
+    let anon=catalog["camera"][0]["id"].as_str().unwrap().to_owned();
+    assert_ne!(anon,"rtsp://user:s3cret@cam.local:554/stream","danh mục công khai không được lộ URL thật");
+    assert!(anon.len()==32 && anon.bytes().all(|b|b.is_ascii_hexdigit()),"mã ẩn danh phải là hex, không phải URL");
+    let applied=f.send("POST","/api/live/settings",json!({"camera":anon})).await;
+    assert_eq!(applied.0,200,"{applied:?}");
+    let masked=f.send("GET","/api/live/settings",Value::Null).await.1;
+    assert!(masked["camera"].as_str().unwrap().starts_with("rtsp://user:***@cam.local"),"phải dùng đúng URL thật đã tra lại, có che mật khẩu khi hiển thị: {masked}");
+    f.finish().await;
+}
+
+#[tokio::test]
 async fn browser_media_routes_calls_outside_the_recent_ten() {
     let f=Fixture::new("browser-old-call").await;
     f.ready("+84900000001").await;

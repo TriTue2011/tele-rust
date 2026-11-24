@@ -561,8 +561,18 @@ impl Actor {
         }
     }
 
-    fn settings(&mut self, body: Value) -> Reply {
+    fn settings(&mut self, mut body: Value) -> Reply {
         if body.is_null() { return Ok(self.defaults.json(true)); }
+        // Trình duyệt chỉ gửi MÃ ẨN DANH của thiết bị HA (catalog.rs không trả URL thật ra ngoài) — tra lại URL thật TRƯỚC
+        // khi kiểm hợp lệ (update() chỉ chấp nhận test/browser/đường dẫn/URL, không chấp nhận mã ẩn danh dạng hex).
+        // Không khớp mã nào (id HA thường, hoặc giá trị "Nhập URL" người tự gõ) thì giữ nguyên giá trị gốc.
+        if let Some(map) = body.as_object_mut() {
+            for key in ["mic", "camera", "speaker"] {
+                if let Some(id) = map.get(key).and_then(Value::as_str) {
+                    if let Some(url) = catalog::resolve(&self.data_dir, id) { map.insert(key.to_owned(), json!(url)); }
+                }
+            }
+        }
         let mut devices = self.defaults.clone();
         devices.update(&body)?;
         fs::create_dir_all(&self.data_dir).map_err(|_| io_error())?;
