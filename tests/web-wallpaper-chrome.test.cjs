@@ -86,6 +86,7 @@ test('TC-WALLPAPER: hình nền hội thoại theo Telegram — áp dụng, bộ
   assert.equal(lay.pos, "fixed", "hộp phải là lớp phủ cố định, không nằm cuối trang");
   assert.ok(lay.box.top >= 0 && lay.box.left >= 0 && lay.box.bottom <= lay.h && lay.box.right <= lay.w, "hộp nằm trọn trong màn hình: " + JSON.stringify(lay.box));
   assert.ok(lay.tile.width >= 70 && lay.tile.height >= 90, "ô hình nền đủ to để nhìn (≥70×90 px), hiện " + Math.round(lay.tile.width) + "×" + Math.round(lay.tile.height));
+  assert.ok(lay.tile.width >= 110 && lay.tile.height >= 140, 'ô hình nền to như Zalo (≥110×140 px) để dễ nhìn dễ chọn, hiện ' + Math.round(lay.tile.width) + '×' + Math.round(lay.tile.height));
   assert.ok(lay.pv.height >= 120, "ô xem trước cao ≥120 px, hiện " + Math.round(lay.pv.height));
   assert.equal(await evaluate('document.getElementById("wpd-both").checked'), false, 'cả hai bên mặc định TẮT: Telegram đòi Premium (PREMIUM_ACCOUNT_REQUIRED)');
   assert.equal(await evaluate('document.getElementById("wpd-dim").value'), '40', 'độ tối hiện tại nạp từ Telegram');
