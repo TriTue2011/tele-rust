@@ -8,8 +8,8 @@ Gateway **Telegram** (tài khoản người dùng) cho **Home Assistant**: nhắ
 
 > **Tuyên bố miễn trừ trách nhiệm:** Đây là **dự án không chính thức, không liên kết, không được tài trợ hay xác nhận bởi Telegram**. Phần mềm tương tác với mạng Telegram thông qua TDLib (`libtdjson` 1.8.69, nạp động lúc chạy) và NTgCalls (`3.0.7`, liên kết tĩnh). Người dùng tự chịu trách nhiệm khi triển khai và sử dụng với tài khoản của mình.
 
-- **Phiên bản hiện tại:** `v0.7.26` (`Cargo.toml` và `addon/tele-rs/config.yaml`)
-- **Ảnh Docker (`linux/amd64`):** `ghcr.io/tritue2011/tele-rust:latest` (cùng thẻ `:v0.7.26`, `:0.7.26`, `:sha-<commit>`)
+- **Phiên bản hiện tại:** `v0.7.27` (`Cargo.toml` và `addon/tele-rs/config.yaml`)
+- **Ảnh Docker (`linux/amd64`):** `ghcr.io/tritue2011/tele-rust:latest` (cùng thẻ `:v0.7.27`, `:0.7.27`, `:sha-<commit>`)
 - **Chưa hỗ trợ macOS và arm64** (lý do ở [docs/TRIEN-KHAI.md](docs/TRIEN-KHAI.md)).
 
 ## 1. Chuẩn bị: lấy các thông tin cần
