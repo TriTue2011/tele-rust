@@ -275,6 +275,8 @@
   .compose-tools button { background:transparent; color:var(--mut); border:1px solid var(--line); padding:2px 9px; min-height:28px; font-size:13px; border-radius:7px; }
   .compose-tools button:hover { color:var(--acc); border-color:var(--acc); }
   .compose-tools button[aria-pressed="true"], .compose-tools button.active { background:var(--btn-bg); color:var(--btn-fg); border-color:var(--btn-bg); }
+  .fmt-spoiler-glyph { filter:blur(1.2px); }
+  #text tg-spoiler { background:var(--mut); border-radius:3px; padding:0 1px; }
   .compose-tools small { margin-left:auto; color:var(--mut); font-size:12px; }
   .compose-row { display:flex; gap:8px; align-items:flex-end; }
   .compose-editor { flex:1; min-width:0; min-height:40px; max-height:140px; overflow-y:auto; padding:9px 11px; border:1px solid var(--line); border-radius:9px;
@@ -715,6 +717,7 @@
         <button type="button" id="fmt-underline" data-fmt="underline" aria-pressed="false" title="Gạch chân (Ctrl/Cmd+U)" aria-label="Định dạng gạch chân"><u>U</u></button>
         <button type="button" id="fmt-strike" data-fmt="strikethrough" aria-pressed="false" title="Gạch giữa (Ctrl/Cmd+Shift+X)" aria-label="Định dạng gạch giữa"><s>S</s></button>
         <button type="button" id="fmt-code" data-fmt="code" aria-pressed="false" title="Mã nguồn (Ctrl/Cmd+Shift+M)" aria-label="Định dạng mã nguồn">&lt;/&gt;</button>
+        <button type="button" id="fmt-spoiler" data-fmt="spoiler" aria-pressed="false" title="Ẩn chữ nhạy cảm, người nhận bấm mới thấy (Ctrl/Cmd+Shift+P)" aria-label="Định dạng ẩn chữ (spoiler)"><span class="fmt-spoiler-glyph">Sp</span></button>
         <button type="button" id="fmt-clear" data-fmt="clear" title="Xoá định dạng (Ctrl/Cmd+Shift+N)" aria-label="Xoá định dạng">T<sub>x</sub></button>
         <small>Enter gửi · Shift+Enter xuống dòng</small>
       </div>
@@ -1839,19 +1842,20 @@
   }
 
   // ---- định dạng soạn tin -----------------------------------------------------------------------
-  const COMPOSER_FORMATS = { bold: "strong", italic: "em", underline: "u", strikethrough: "s", code: "code" };
+  const COMPOSER_FORMATS = { bold: "strong", italic: "em", underline: "u", strikethrough: "s", code: "code", spoiler: "tg-spoiler" };
   const COMPOSER_BUTTONS = [
     ["fmt-bold", "bold"], ["fmt-italic", "italic"], ["fmt-underline", "underline"],
-    ["fmt-strike", "strikethrough"], ["fmt-code", "code"],
+    ["fmt-strike", "strikethrough"], ["fmt-code", "code"], ["fmt-spoiler", "spoiler"],
   ];
-  const COMPOSER_ALLOWED_TYPES = new Set(["bold", "italic", "underline", "strikethrough", "code", "pre"]);
-  const COMPOSER_FORMAT_ORDER = { bold: 0, italic: 1, underline: 2, strikethrough: 3, code: 4, pre: 5 };
+  const COMPOSER_ALLOWED_TYPES = new Set(["bold", "italic", "underline", "strikethrough", "code", "pre", "spoiler"]);
+  const COMPOSER_FORMAT_ORDER = { bold: 0, italic: 1, underline: 2, strikethrough: 3, code: 4, pre: 5, spoiler: 6 };
   const COMPOSER_TAG_MAP = new Map([
     ["strong", "bold"], ["b", "bold"],
     ["em", "italic"], ["i", "italic"],
     ["u", "underline"],
     ["s", "strikethrough"], ["strike", "strikethrough"], ["del", "strikethrough"],
     ["code", "code"], ["pre", "pre"],
+    ["tg-spoiler", "spoiler"],
   ]);
   const COMPOSER_BLOCK_TAGS = new Set(["div", "p", "li", "blockquote", "pre", "h1", "h2", "h3", "h4", "h5", "h6"]);
   const COMPOSER_SKIP_TAGS = new Set(["script", "style", "noscript", "template"]);
@@ -2163,7 +2167,7 @@
   }
   function cleanEmptyFormatTags(editor) {
     if (typeof editor.querySelectorAll !== "function") return;
-    for (const node of Array.from(editor.querySelectorAll("strong,b,em,i,u,s,strike,del,code"))) {
+    for (const node of Array.from(editor.querySelectorAll("strong,b,em,i,u,s,strike,del,code,tg-spoiler"))) {
       if (!node.textContent && !node.querySelector("br")) node.remove();
     }
   }
@@ -2462,6 +2466,7 @@
         if (key === "x") { e.preventDefault(); applyComposerFormat("strikethrough"); return; }
         if (key === "m") { e.preventDefault(); applyComposerFormat("code"); return; }
         if (key === "n") { e.preventDefault(); applyComposerFormat("clear"); return; }
+        if (key === "p") { e.preventDefault(); applyComposerFormat("spoiler"); return; }
       }
     }
     if (e.key === "Enter" && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) { e.preventDefault(); send(); }
