@@ -7,6 +7,7 @@ use super::{path_id, telegram_error, Binary, ChatService, GwError, Query};
 
 pub(super) const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const TD_FILES: &str = "tdlib/files";
+const UPLOADS: &str = "uploads";
 
 impl ChatService {
     pub(super) async fn binary(&self, path: String, query: String) -> Result<Binary, GwError> {
@@ -50,12 +51,25 @@ impl ChatService {
 
         let root = std::path::absolute(&self.data_dir).map_err(|_| missing())?;
         let path = std::path::absolute(path).map_err(|_| missing())?;
-        let relative = path.strip_prefix(root.join(TD_FILES)).map_err(|_| missing())?;
-        // TDLib lưu media trong thư mục loại tệp, không phục vụ tệp DB ở gốc.
-        if relative.components().count() < 2 { return Err(missing()); }
-        let mime = mime_guess::from_path(relative).first_raw().unwrap_or("text/plain");
+        // Tệp TỰ GỬI (đo thật 25/11: 7/7 video tự gửi 404): TDLib không copy vào kho tdlib/files/ của nó, mà GIỮ
+        // NGUYÊN đường dẫn gốc đã dùng lúc gửi (uploads/chat-...) — strip_prefix(TD_FILES) luôn trượt nên luôn
+        // "missing" dù tệp còn nguyên trên đĩa (xác nhận bằng cách so cỡ byte: 7/7 tệp trong uploads/ khớp đúng
+        // size của 7 tin outgoing đang 404). Thử cả hai gốc hợp lệ; tdlib/files/ giữ nguyên yêu cầu "ít nhất 2 cấp
+        // thư mục" (tệp DB ở gốc không phục vụ); uploads/ là tệp phẳng (chat-....ext ngay trong thư mục) nên không
+        // áp yêu cầu đó.
+        let (sub, relative) = match path.strip_prefix(root.join(TD_FILES)) {
+            Ok(relative) => {
+                if relative.components().count() < 2 { return Err(missing()); }
+                (TD_FILES, relative.to_path_buf())
+            }
+            Err(_) => match path.strip_prefix(root.join(UPLOADS)) {
+                Ok(relative) => (UPLOADS, relative.to_path_buf()),
+                Err(_) => return Err(missing()),
+            },
+        };
+        let mime = mime_guess::from_path(&relative).first_raw().unwrap_or("text/plain");
         let content_type = if mime.starts_with("text/") { format!("{mime}; charset=utf-8") } else { mime.into() };
-        let bytes = read_bounded(root, Path::new(TD_FILES).join(relative), missing).await?;
+        let bytes = read_bounded(root, Path::new(sub).join(relative), missing).await?;
         Ok(Binary {
             bytes, content_type, cache_control: "private, max-age=86400", disposition: None,
         })

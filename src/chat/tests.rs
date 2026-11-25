@@ -311,6 +311,44 @@ async fn downloads_are_bounded_private_and_never_follow_symlinks() {
     fs::remove_dir_all(root).unwrap();
 }
 
+#[tokio::test]
+async fn outgoing_self_sent_files_serve_from_uploads_dir_not_just_tdlib_files() {
+    // Đo thật 25/11: 7/7 video tự gửi trong một hội thoại báo 404 "Tệp chưa tải xong" dù còn nguyên trên đĩa (xác
+    // nhận bằng cách so cỡ byte khớp đúng giữa tin nhắn và tệp trong data/uploads/). Gốc: TDLib không copy tệp tự
+    // gửi vào kho tdlib/files/ của nó — local.path TRỎ THẲNG vào uploads/chat-....ext (đường gốc lúc gửi). Handler
+    // cũ chỉ strip_prefix(tdlib/files/) nên luôn "missing" với mọi tệp tự gửi, bất kể còn hay mất.
+    use axum::{body::{to_bytes, Body}, http::{header, Request}};
+    use std::fs;
+    use tower::ServiceExt;
+    use crate::rest::{self, RestConfig};
+
+    let root = PathBuf::from("target").join(format!("file-test-uploads-{}", std::process::id()));
+    let data = root.join("data");
+    let uploads = data.join("uploads");
+    fs::create_dir_all(&uploads).unwrap();
+    let sent = uploads.join("chat-1-abc123-0_video.mp4");
+    fs::write(&sent, b"video tu gui").unwrap();
+    // Đường thoát khỏi uploads/ (vd ../outside.jpg) vẫn phải bị chặn y hệt tdlib/files/.
+    let outside = root.join("outside.jpg");
+    fs::write(&outside, b"private").unwrap();
+    let req = |id| json!({"@type":"downloadFile","file_id":id,"priority":16,"offset":0,"limit":0,"synchronous":true});
+    let downloaded = |id, path: &Path| ok(req(id), json!({"local":{"path":path,"is_downloading_completed":true}}));
+    let (chat, td) = setup(vec![downloaded(1, &sent), downloaded(2, &outside)]);
+    drop(chat);
+    let chat = ChatService::new(td, "+000123", &data);
+    let app = rest::router(Arc::new(rest::ChuaCo), Arc::new(chat), RestConfig {
+        token: "test-token".into(), rate_limit_per_minute: 120, version: "test".into(),
+    });
+    let get = |uri| app.clone().oneshot(Request::builder().uri(uri)
+        .header(header::AUTHORIZATION, "Bearer test-token").body(Body::empty()).unwrap());
+    let response = get("/api/file/1").await.unwrap();
+    assert_eq!(response.status(), 200, "tệp tự gửi (uploads/) phải phục vụ được, không còn 404");
+    assert_eq!(response.headers()[header::CONTENT_TYPE], "video/mp4");
+    assert_eq!(to_bytes(response.into_body(), 100).await.unwrap(), "video tu gui");
+    assert_eq!(get("/api/file/2").await.unwrap().status(), 404, "đường ngoài uploads/ vẫn bị chặn như trước");
+    fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 fn message_entities_preserve_utf16_offsets_and_keep_only_supported_ranges() {
     let entity = |kind, offset, length| json!({"offset":offset,"length":length,"type":{"@type":kind}});
