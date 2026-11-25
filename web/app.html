@@ -278,10 +278,10 @@
   .fmt-spoiler-glyph { filter:blur(1.2px); }
   #text tg-spoiler { background:var(--mut); border-radius:3px; padding:0 1px; }
   .compose-tools small { margin-left:auto; color:var(--mut); font-size:12px; }
-  .fmt-popover { position:fixed; z-index:6; display:flex; gap:4px; padding:8px; border-radius:10px; border:1px solid var(--line); background:var(--panel); box-shadow:0 12px 32px rgba(0,0,0,.22); }
-  .fmt-popover button { background:transparent; color:var(--mut); border:1px solid var(--line); padding:2px 9px; min-height:28px; font-size:13px; border-radius:7px; }
-  .fmt-popover button:hover { color:var(--acc); border-color:var(--acc); }
-  .fmt-popover button[aria-pressed="true"] { background:var(--btn-bg); color:var(--btn-fg); border-color:var(--btn-bg); }
+  .font-popover .fmt-row { display:flex; gap:4px; flex-wrap:wrap; }
+  .font-popover .fmt-row button { background:transparent; color:var(--mut); border:1px solid var(--line); padding:2px 9px; min-height:36px; font-size:13px; border-radius:7px; }
+  .font-popover .fmt-row button:hover { color:var(--acc); border-color:var(--acc); }
+  .font-popover .fmt-row button[aria-pressed="true"] { background:var(--btn-bg); color:var(--btn-fg); border-color:var(--btn-bg); }
   .compose-row { display:flex; gap:8px; align-items:flex-end; }
   .compose-editor { flex:1; min-width:0; min-height:40px; max-height:140px; overflow-y:auto; padding:9px 11px; border:1px solid var(--line); border-radius:9px;
                     background:var(--bg); color:var(--fg); font-family:var(--chat-font); font-size:var(--chat-font-size); line-height:var(--chat-line-height);
@@ -456,7 +456,7 @@
   }
   .head-btn { min-width:38px; min-height:44px; padding:6px 7px; flex:none; display:inline-flex; align-items:center; justify-content:center; }
   .head-btn svg { width:18px; height:18px; display:block; }
-  button#font-open { font-size:15px; font-weight:700; color:var(--fg); }
+  #fmt-more-open { font-size:15px; font-weight:700; color:var(--fg); }
   .chat-head-peer { display:flex; align-items:center; gap:9px; flex:1; min-width:0; cursor:pointer; min-height:44px; border-radius:8px; padding:2px 4px; }
   .chat-head-peer:hover { background:var(--bg); }
   .chat-head-peer:focus-visible { outline:2px solid var(--acc); outline-offset:1px; }
@@ -485,7 +485,7 @@
     #chat-search-open { display:none; }
     .chat-more-btn { display:none !important; }
   }
-  .font-popover { position:absolute; top:58px; right:8px; z-index:6; width:min(320px, calc(100vw - 16px)); max-width:calc(100% - 16px); padding:14px; border-radius:14px; border:1px solid var(--line); background:var(--panel); color:var(--fg); box-shadow:0 12px 32px rgba(0,0,0,.22); display:flex; flex-direction:column; gap:10px; }
+  .font-popover { position:fixed; z-index:6; width:min(320px, calc(100vw - 16px)); max-width:calc(100% - 16px); padding:14px; border-radius:14px; border:1px solid var(--line); background:var(--panel); color:var(--fg); box-shadow:0 12px 32px rgba(0,0,0,.22); display:flex; flex-direction:column; gap:10px; }
   .font-pop-head { display:flex; align-items:center; justify-content:space-between; gap:8px; }
   .font-pop-head h2 { margin:0; font-size:15px; }
   .font-popover label { display:block; font-weight:600; font-size:12px; margin-bottom:4px; color:var(--mut); }
@@ -618,7 +618,6 @@
       </div>
       <span id="head-autodelete" class="ad-badge head-ad-badge" role="button" tabindex="0" hidden></span>
       <button class="icon head-btn" id="chat-search-open" type="button" aria-label="Tìm kiếm trong hội thoại" aria-expanded="false" aria-controls="chat-search-bar" title="Tìm kiếm">🔍</button>
-      <button class="icon head-btn" id="font-open" type="button" aria-label="Phông chữ khung chat" aria-haspopup="dialog" aria-expanded="false" aria-controls="font-popover" title="Kiểu chữ và cỡ chữ">Aa</button>
       <button class="icon head-btn" id="chat-info-open" type="button" aria-label="Thông tin hội thoại" aria-expanded="false" aria-controls="chat-info-drawer" title="Thông tin hội thoại">ⓘ</button>
       <button class="icon head-btn" id="call-a" type="button" aria-label="Gọi thoại" title="Gọi thoại">📞</button>
       <button class="icon head-btn" id="call-v" type="button" aria-label="Gọi video" title="Gọi video">🎥</button>
@@ -644,10 +643,19 @@
       <button type="button" id="ctx-clear-history" class="ctx-item danger" role="menuitem">Xóa lịch sử</button>
       <button type="button" id="ctx-delete-chat" class="ctx-item danger" role="menuitem">Xóa chat</button>
     </div>
-    <section id="font-popover" class="font-popover" role="dialog" aria-label="Phông chữ khung chat" hidden>
+    <section id="font-popover" class="font-popover" role="dialog" aria-label="Định dạng và phông chữ" hidden>
       <div class="font-pop-head">
-        <h2>Phông chữ khung chat</h2>
-        <button id="font-pop-close" type="button" class="icon" aria-label="Đóng bảng phông chữ">✕</button>
+        <h2>Định dạng và phông chữ</h2>
+        <button id="font-pop-close" type="button" class="icon" aria-label="Đóng bảng định dạng">✕</button>
+      </div>
+      <div class="fmt-row" role="toolbar" aria-label="Định dạng tin nhắn (chọn chữ trước)">
+        <button type="button" id="fmt-bold" data-fmt="bold" aria-pressed="false" title="Đậm (Ctrl/Cmd+B)" aria-label="Định dạng chữ đậm"><strong>B</strong></button>
+        <button type="button" id="fmt-italic" data-fmt="italic" aria-pressed="false" title="Nghiêng (Ctrl/Cmd+I)" aria-label="Định dạng chữ nghiêng"><em>I</em></button>
+        <button type="button" id="fmt-underline" data-fmt="underline" aria-pressed="false" title="Gạch chân (Ctrl/Cmd+U)" aria-label="Định dạng gạch chân"><u>U</u></button>
+        <button type="button" id="fmt-strike" data-fmt="strikethrough" aria-pressed="false" title="Gạch giữa (Ctrl/Cmd+Shift+X)" aria-label="Định dạng gạch giữa"><s>S</s></button>
+        <button type="button" id="fmt-code" data-fmt="code" aria-pressed="false" title="Mã nguồn (Ctrl/Cmd+Shift+M)" aria-label="Định dạng mã nguồn">&lt;/&gt;</button>
+        <button type="button" id="fmt-spoiler" data-fmt="spoiler" aria-pressed="false" title="Ẩn chữ nhạy cảm, người nhận bấm mới thấy (Ctrl/Cmd+Shift+P)" aria-label="Định dạng ẩn chữ (spoiler)"><span class="fmt-spoiler-glyph">Sp</span></button>
+        <button type="button" id="fmt-clear" data-fmt="clear" title="Xoá định dạng (Ctrl/Cmd+Shift+N)" aria-label="Xoá định dạng">T<sub>x</sub></button>
       </div>
       <div>
         <label for="font-pop-family">Kiểu chữ</label>
@@ -716,17 +724,8 @@
     <div id="reply"><span id="reply-txt"></span> <button class="ghost" id="reply-x" aria-label="Bỏ trả lời">✕</button></div>
     <div id="composer" hidden>
       <div class="compose-tools" role="toolbar" aria-label="Định dạng văn bản">
-        <button type="button" id="fmt-bold" data-fmt="bold" aria-pressed="false" title="Đậm (Ctrl/Cmd+B)" aria-label="Định dạng chữ đậm"><strong>B</strong></button>
-        <button type="button" id="fmt-italic" data-fmt="italic" aria-pressed="false" title="Nghiêng (Ctrl/Cmd+I)" aria-label="Định dạng chữ nghiêng"><em>I</em></button>
-        <button type="button" id="fmt-underline" data-fmt="underline" aria-pressed="false" title="Gạch chân (Ctrl/Cmd+U)" aria-label="Định dạng gạch chân"><u>U</u></button>
-        <button type="button" id="fmt-more-open" aria-haspopup="dialog" aria-expanded="false" aria-controls="fmt-popover" title="Thêm định dạng (gạch giữa, mã nguồn, ẩn chữ, xoá định dạng)" aria-label="Thêm định dạng">Aa</button>
+        <button type="button" id="fmt-more-open" aria-haspopup="dialog" aria-expanded="false" aria-controls="font-popover" title="Định dạng và phông chữ" aria-label="Định dạng và phông chữ">Aa</button>
         <small>Enter gửi · Shift+Enter xuống dòng</small>
-      </div>
-      <div id="fmt-popover" class="fmt-popover" role="dialog" aria-label="Thêm định dạng" hidden>
-        <button type="button" id="fmt-strike" data-fmt="strikethrough" aria-pressed="false" title="Gạch giữa (Ctrl/Cmd+Shift+X)" aria-label="Định dạng gạch giữa"><s>S</s></button>
-        <button type="button" id="fmt-code" data-fmt="code" aria-pressed="false" title="Mã nguồn (Ctrl/Cmd+Shift+M)" aria-label="Định dạng mã nguồn">&lt;/&gt;</button>
-        <button type="button" id="fmt-spoiler" data-fmt="spoiler" aria-pressed="false" title="Ẩn chữ nhạy cảm, người nhận bấm mới thấy (Ctrl/Cmd+Shift+P)" aria-label="Định dạng ẩn chữ (spoiler)"><span class="fmt-spoiler-glyph">Sp</span></button>
-        <button type="button" id="fmt-clear" data-fmt="clear" title="Xoá định dạng (Ctrl/Cmd+Shift+N)" aria-label="Xoá định dạng">T<sub>x</sub></button>
       </div>
       <div class="compose-row">
         <button class="icon" id="img-btn" type="button" aria-label="Gửi ảnh" title="Gửi ảnh">🖼️</button><input id="img-file" type="file" accept="image/*" hidden>
@@ -2459,35 +2458,6 @@
     $(id).addEventListener("mousedown", (e) => { e.preventDefault(); saveComposerSelection($("text")); });
     $(id).addEventListener("click", () => applyComposerFormat(kind));
   }
-  // Nút «Aa» mở bảng các định dạng ít dùng hơn (gạch giữa/mã nguồn/ẩn chữ/xoá định dạng) — như Zalo, nhưng B/I/U vẫn
-  // hiện thẳng ngoài thanh công cụ (thao tác nhanh kiểu Word) vì đó là 3 định dạng dùng nhiều nhất. Vị trí tính lại
-  // mỗi lần mở để vừa MỌI cỡ màn hình: bảng mở LÊN TRÊN nút (ô soạn luôn ở đáy màn hình, mở xuống dưới sẽ tràn ra
-  // ngoài), kẹp theo chiều ngang để không tràn mép phải/trái trên điện thoại hẹp.
-  function closeFmtPopover() {
-    const pop = $("fmt-popover");
-    if (pop.hidden) return;
-    pop.hidden = true;
-    $("fmt-more-open").setAttribute("aria-expanded", "false");
-    document.removeEventListener("mousedown", fmtPopoverAway, true);
-    document.removeEventListener("keydown", fmtPopoverEsc, true);
-  }
-  function fmtPopoverAway(e) {
-    const pop = $("fmt-popover"), btn = $("fmt-more-open");
-    if (!pop.contains(e.target) && e.target !== btn && !btn.contains(e.target)) closeFmtPopover();
-  }
-  function fmtPopoverEsc(e) { if (e.key === "Escape") { e.stopPropagation(); closeFmtPopover(); $("fmt-more-open").focus(); } }
-  function toggleFmtPopover() {
-    const pop = $("fmt-popover"), btn = $("fmt-more-open");
-    if (!pop.hidden) { closeFmtPopover(); return; }
-    pop.hidden = false;
-    btn.setAttribute("aria-expanded", "true");
-    const r = btn.getBoundingClientRect();
-    pop.style.bottom = Math.max(8, innerHeight - r.top + 6) + "px";
-    pop.style.left = Math.max(8, Math.min(r.left, innerWidth - 8 - pop.offsetWidth)) + "px";
-    setTimeout(() => document.addEventListener("mousedown", fmtPopoverAway, true), 0);
-    document.addEventListener("keydown", fmtPopoverEsc, true);
-  }
-  $("fmt-more-open").addEventListener("click", toggleFmtPopover);
   $("text").addEventListener("compositionstart", () => { isComposing = true; $("text").classList?.remove("is-empty"); });
   $("text").addEventListener("compositionend", () => { isComposing = false; saveComposerSelection($("text")); syncComposerEmpty($("text")); updateComposerToolbar($("text")); });
   $("text").addEventListener("beforeinput", (e) => {
@@ -5041,13 +5011,20 @@
     }
   }
 
+  // Bảng «Aa» gộp CẢ định dạng tin nhắn (B/I/U/S/mã/ẩn chữ/xoá) LẪN phông+cỡ chữ khung chat trong MỘT bảng, mở từ ô
+  // soạn — giống hệt cách Zalo làm (chủ máy gửi ảnh đối chiếu trực tiếp). Mở LÊN TRÊN nút Aa (ô soạn luôn ở đáy màn
+  // hình, mở xuống dưới sẽ tràn ra ngoài), kẹp theo chiều ngang để không tràn mép phải/trái trên điện thoại hẹp.
   function openFontPopover() {
     syncFontPopover();
+    if (typeof updateComposerToolbar === "function") updateComposerToolbar($("text"));
     $("font-pop-status").textContent = "";
     $("font-pop-error").textContent = "";
-    $("font-popover").hidden = false;
-    $("font-open").setAttribute("aria-expanded", "true");
-    $("font-pop-family").focus();
+    const pop = $("font-popover"), btn = $("fmt-more-open");
+    pop.hidden = false;
+    btn.setAttribute("aria-expanded", "true");
+    const r = btn.getBoundingClientRect();
+    pop.style.bottom = Math.max(8, innerHeight - r.top + 6) + "px";
+    pop.style.left = Math.max(8, Math.min(r.left, innerWidth - 8 - pop.offsetWidth)) + "px";
   }
 
   function closeFontPopover() {
@@ -5058,7 +5035,7 @@
       saveFontPatch({ font_size: appearanceDraft.font_size });
     }
     pop.hidden = true;
-    $("font-open").setAttribute("aria-expanded", "false");
+    $("fmt-more-open").setAttribute("aria-expanded", "false");
   }
 
   function closeChatInfo() {
@@ -5666,7 +5643,7 @@
     else closeChatInfo();
   }
 
-  $("font-open").addEventListener("click", () => {
+  $("fmt-more-open").addEventListener("click", () => {
     if ($("font-popover").hidden) openFontPopover();
     else closeFontPopover();
   });
@@ -6161,7 +6138,7 @@
   });
   document.addEventListener("click", (e) => {
     const pop = $("font-popover");
-    if (pop && !pop.hidden && e.target !== pop && !pop.contains?.(e.target) && e.target !== $("font-open") && !$("font-open").contains?.(e.target)) {
+    if (pop && !pop.hidden && e.target !== pop && !pop.contains?.(e.target) && e.target !== $("fmt-more-open") && !$("fmt-more-open").contains?.(e.target)) {
       closeFontPopover();
     }
     const ctx = $("chat-ctx-menu");

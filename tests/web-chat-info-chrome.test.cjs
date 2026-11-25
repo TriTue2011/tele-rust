@@ -310,7 +310,7 @@ test('TC-CHATINFO-FONT: ngăn thông tin hội thoại và popover phông Aa ở
   await until('document.getElementById("chat-info-drawer").hidden === true');
 
   // 2. Popover phông «Aa» ngay trong khung chat: đổi cỡ chữ làm computed font-size của tin nhắn thay đổi thật.
-  await click('font-open');
+  await click('fmt-more-open');
   await until('document.getElementById("font-popover").hidden === false');
   assert.equal(await evaluate('getComputedStyle(document.querySelector("#msgs .m")).fontSize'), '15px');
   await evaluate(`{

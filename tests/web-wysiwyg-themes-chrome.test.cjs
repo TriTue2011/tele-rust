@@ -186,17 +186,18 @@ test('TC-WYSIWYG-THEMES: trình soạn thảo WYSIWYG B/I/U/S/</>/Tx, paste/IME 
   assert.equal(afterClear.text, 'Xin chào bạn');
   assert.equal(afterClear.tags, 0);
 
-  // 3b. Bảng «Aa» (gạch giữa/mã nguồn/ẩn chữ/xoá định dạng ít dùng hơn, như Zalo) — B/I/U vẫn hiện thẳng ngoài thanh
-  // công cụ (thao tác nhanh kiểu Word). Đóng sẵn khi mới mở ô soạn; mở ra phải nằm TRỌN trong màn hình ở cả 3 cỡ.
-  assert.equal(await evaluate('document.getElementById("fmt-popover").hidden'), true, 'bảng Aa đóng sẵn');
-  assert.equal(await evaluate('document.getElementById("fmt-bold").closest("#fmt-popover")'), null, 'B/I/U vẫn ở ngoài, không bị dồn vào bảng Aa');
+  // 3b. Bảng «Aa» gộp CẢ định dạng tin nhắn (B/I/U/S/mã/ẩn chữ/xoá) LẪN phông+cỡ chữ khung chat trong MỘT bảng, mở từ
+  // ô soạn — giống Zalo (chủ máy gửi ảnh đối chiếu trực tiếp, không còn B/I/U tách riêng ngoài thanh công cụ như bản
+  // trước). Đóng sẵn khi mới mở ô soạn; mở ra phải nằm TRỌN trong màn hình ở cả 3 cỡ.
+  assert.equal(await evaluate('document.getElementById("font-popover").hidden'), true, 'bảng Aa đóng sẵn');
+  assert.equal(await evaluate('document.getElementById("fmt-bold").closest("#font-popover")') !== null, true, 'B/I/U phải nằm TRONG bảng Aa, giống Zalo');
   for (const width of [390, 700, 1440]) {
     await dimension(width);
     await click('fmt-more-open');
-    assert.equal(await evaluate('document.getElementById("fmt-popover").hidden'), false, `bảng Aa phải mở ở ${width}px`);
+    assert.equal(await evaluate('document.getElementById("font-popover").hidden'), false, `bảng Aa phải mở ở ${width}px`);
     assert.equal(await evaluate('document.getElementById("fmt-more-open").getAttribute("aria-expanded")'), 'true');
     assert.ok(await evaluate(`(() => {
-      const r = document.getElementById('fmt-popover').getBoundingClientRect();
+      const r = document.getElementById('font-popover').getBoundingClientRect();
       return r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight;
     })()`), `bảng Aa phải nằm trọn màn hình ${width}px`);
     // Bấm một định dạng BÊN TRONG bảng (đường thật người dùng đi, không gọi thẳng id) vẫn phải áp đúng.
@@ -209,11 +210,11 @@ test('TC-WYSIWYG-THEMES: trình soạn thảo WYSIWYG B/I/U/S/</>/Tx, paste/IME 
     assert.equal(await evaluate('Boolean(document.querySelector("#text code"))'), true, `bấm </> trong bảng Aa phải áp định dạng ở ${width}px`);
     await click('fmt-clear');
     await click('fmt-more-open'); // Aa là nút BẬT/TẮT — đóng lại để vòng lặp sau mở mới đúng, không tắt nhầm.
-    assert.equal(await evaluate('document.getElementById("fmt-popover").hidden'), true, `đóng bảng Aa ở ${width}px`);
+    assert.equal(await evaluate('document.getElementById("font-popover").hidden'), true, `đóng bảng Aa ở ${width}px`);
   }
   await dimension(1440);
   await evaluate('document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }))');
-  assert.equal(await evaluate('document.getElementById("fmt-popover").hidden'), true, 'Esc đóng bảng Aa');
+  assert.equal(await evaluate('document.getElementById("font-popover").hidden'), true, 'Esc đóng bảng Aa');
 
   // 4. Emoji + chữ đậm + chữ nghiêng -> gửi nhận đúng UTF-16 offset và hiển thị trong #msgs không có '**'.
   await evaluate(`(() => {

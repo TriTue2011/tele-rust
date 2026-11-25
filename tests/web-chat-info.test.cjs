@@ -69,6 +69,8 @@ class MockNode extends EventTarget {
   close() { this.open = false; this.dispatchEvent(new Event('close')); }
   focus() { this.focused = true; }
   click() { this.dispatchEvent(new Event('click')); }
+  getBoundingClientRect() { return { top: 700, bottom: 720, left: 20, right: 60, width: 40, height: 20 }; }
+  get offsetWidth() { return 320; }
   find(tag) {
     return this.children.flatMap((c) => (c instanceof MockNode ? [...(c.tag === tag ? [c] : []), ...c.find(tag)] : []));
   }
@@ -273,10 +275,12 @@ function setupHarness(options = {}) {
     clearTimeout,
     structuredClone,
     encodeURIComponent,
+    innerWidth: 390,
+    innerHeight: 844,
   };
 
   for (const id of [
-    'app', 'head', 'title', 'font-open', 'chat-info-open',
+    'app', 'head', 'title', 'fmt-more-open', 'chat-info-open',
     'font-popover', 'font-pop-close', 'font-pop-family', 'font-pop-size', 'font-pop-size-dec',
     'font-pop-size-inc', 'font-pop-size-val', 'font-pop-lh-compact', 'font-pop-lh-normal',
     'font-pop-lh-relaxed', 'font-pop-status', 'font-pop-error', 'font-pop-reset',
@@ -344,7 +348,7 @@ test('web/app.html sạch bảo mật, không nhúng phông ngoài và giữ đ�
   for (const banned of ['innerHTML', 'outerHTML', 'insertAdjacentHTML', 'localStorage', 'sessionStorage', 'gw_token', 'GATEWAY_TOKEN', '@font-face', 'fonts.googleapis', 'fonts.gstatic']) {
     assert.equal(html.includes(banned), false, `không được chứa ${banned}`);
   }
-  assert.match(html, /id="font-open"/);
+  assert.match(html, /id="fmt-more-open"/);
   assert.match(html, /id="chat-info-open"/);
   assert.match(html, /id="font-popover"/);
   assert.match(html, /id="chat-info-drawer"/);
@@ -355,9 +359,9 @@ test('popover phông «Aa» áp ngay, lưu chung và đồng bộ 2 chiều vớ
   const h = setupHarness();
   await h.loadAppearance();
 
-  h.nodes.get('font-open').click();
+  h.nodes.get('fmt-more-open').click();
   assert.equal(h.nodes.get('font-popover').hidden, false);
-  assert.equal(h.nodes.get('font-open').getAttribute('aria-expanded'), 'true');
+  assert.equal(h.nodes.get('fmt-more-open').getAttribute('aria-expanded'), 'true');
 
   // Đổi kiểu chữ, cỡ chữ, giãn dòng từ popover -> áp CSS ngay, đồng bộ sang trang Cài đặt và POST chung.
   h.nodes.get('font-pop-family').value = 'mono';

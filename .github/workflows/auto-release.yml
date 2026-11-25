@@ -1,0 +1,41 @@
+name: Auto Release
+
+# Mỗi lần đẩy lên main (trừ chính bản thân commit phát hành, tránh vòng lặp vô tận): tự tăng patch version,
+# gắn thẻ, tạo GitHub Release — y hệt deploy/phat-hanh.py chạy tay, chỉ bỏ bước build.sh test (cần SSH tới
+# máy dựng ha200 trong mạng LAN riêng, cloud runner không với tới) vì ci.yml đã tự kiểm cargo test cho ĐÚNG
+# commit này trong một workflow riêng chạy song song trên cùng lần push.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: auto-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Tự tăng phiên bản + tag + Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: >-
+      !startsWith(github.event.head_commit.message, 'release: v') &&
+      !contains(github.event.head_commit.message, '[skip release]')
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Cấu hình tác giả commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Tăng phiên bản patch + tag + Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PHAT_HANH_SKIP_BUILD_TEST: "1"
+        run: python3 deploy/phat-hanh.py patch
