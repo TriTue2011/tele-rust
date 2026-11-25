@@ -1727,7 +1727,7 @@
           .catch((e) => { ph.textContent = "▶ Thử lại · " + label; ph.onclick = () => { ph.onclick = null; start(); };
             // Mã tệp của TDLib được ĐÁNH LẠI khi gateway khởi động lại ⇒ trang mở từ trước giữ mã cũ: làm mới danh sách để lấy mã mới.
             toast(e && e.status === 429 ? "Đang tải quá nhiều tệp, thử lại sau vài giây" : "Chưa tải được tệp (" + (e && e.status ? "mã " + e.status : "lỗi mạng") + "). Bấm để thử lại");
-            if (typeof reloadSoon === "function" && !(e && e.status === 429)) reloadSoon(); }); };
+            if (typeof reloadSoon === "function" && !(e && e.status === 429)) reloadSoon(m.id); }); };
       if (typeof IntersectionObserver === "function") {
         const io = new IntersectionObserver((entries) => { if (entries.some((en) => en.isIntersecting)) { io.disconnect(); start(); } }, { rootMargin: "200px" });
         io.observe(ph);
@@ -1741,7 +1741,7 @@
         blobUrl(f.id).then((u) => { const mEl = el("audio"); mEl.controls = true; mEl.autoplay = true; mEl.src = u; row.replaceWith(mEl); })
           .catch((e) => { b.disabled = false; b.textContent = "▶ Thử lại";
             toast(e && e.status === 429 ? "Đang tải quá nhiều tệp, thử lại sau vài giây" : "Chưa tải được tệp (" + (e && e.status ? "mã " + e.status : "lỗi mạng") + "). Đang làm mới tin nhắn, bấm Thử lại sau giây lát");
-            if (typeof reloadSoon === "function" && !(e && e.status === 429)) reloadSoon(); }); });
+            if (typeof reloadSoon === "function" && !(e && e.status === 429)) reloadSoon(m.id); }); });
       w.appendChild(row); }
     else if (f && f.id && m.kind === "document") { const a = el("a", "", "📎 " + (f.name || "Tệp") + (f.size ? " (" + fileSize(f.size) + ")" : "")); a.href = "#"; a.addEventListener("click", (e) => { e.preventDefault(); blobUrl(f.id).then((u) => { const d = document.createElement("a"); d.href = u; d.download = f.name || "tep"; d.click(); }).catch(() => toast("Chưa tải được tệp")); }); w.appendChild(a); }
     else if (m.kind !== "text") w.appendChild(el("div", "txt", m.summary));
@@ -2913,10 +2913,32 @@
     else if (it.type === "send_failed") { toast("Gửi không được: " + it.error); const n = rendered.get(it.old_id); if (n) { n.style.opacity = ".5"; n.title = "Gửi không được: " + it.error; } }
     else if (it.type === "call") watchCall();
     else if (it.type === "deleted" && it.chat_id === cur) it.ids.forEach(removeMsg);
-    else if (it.type === "message_changed" && it.chat_id === cur) { reloadSoon(); }
+    else if (it.type === "message_changed" && it.chat_id === cur) { reloadSoon(it.message_id); }
     else if (it.type === "typing" && it.chat_id === cur) { $("typing").textContent = it.action === "chatActionCancel" ? "" : "đang gõ…"; clearTimeout(typingTimer); typingTimer = setTimeout(() => { $("typing").textContent = ""; }, 5000); }
   }
-  let reloadH = null; function reloadSoon() { clearTimeout(reloadH); reloadH = setTimeout(reloadCurrent, 600); }
+  // Làm mới ĐÚNG tin nhắn đổi tại chỗ (không xoá cả danh sách, không ép cuộn xuống đáy) — trước đây gọi thẳng reloadCurrent()
+  // (= openChat() lại từ đầu): mỗi lần MỘT video/ảnh lỗi tải (vd tệp tự gửi 404 — xem blobUrl) hay một tin đổi nội dung là
+  // cả khung chat bị dựng lại và kéo tụt xuống đáy, xoá sạch phần người dùng đã cuộn lên xem — đúng lỗi chủ máy báo
+  // "không kéo xuống được mà cứ về đầu" (đo 25/11: 7 file tự gửi lỗi 404 trong một hội thoại ⇒ 7 lần kéo tụt khi cuộn qua).
+  let reloadQueue = new Set(), reloadH = null;
+  function reloadSoon(messageId) {
+    if (messageId) reloadQueue.add(messageId);
+    clearTimeout(reloadH); reloadH = setTimeout(refreshChangedMessages, 600);
+  }
+  async function refreshChangedMessages() {
+    if (!cur || !reloadQueue.size) { reloadQueue.clear(); return; }
+    const chat = cur, ids = reloadQueue; reloadQueue = new Set();
+    try {
+      const r = await api("GET", "/api/chats/" + chat + "/messages?limit=40");
+      if (cur !== chat) return;
+      for (const m of r.messages || []) {
+        if (!ids.has(m.id)) continue;
+        const old = rendered.get(m.id); if (!old) continue;
+        const keep = $("msgs").scrollTop; const node = renderMessage(m);
+        old.replaceWith(node); rendered.set(m.id, node); msgData.set(m.id, m); $("msgs").scrollTop = keep; markCommentsPost();
+      }
+    } catch (_) { /* làm mới không được thì thôi: lần sự kiện/khối tải sau thử lại */ }
+  }
 
   // ---- đổi độ rộng các khung (kéo hoặc phím mũi tên; nhớ bằng cookie, như thứ tự danh bạ) --------------------------------
   const PANES = {
