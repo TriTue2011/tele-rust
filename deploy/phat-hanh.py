@@ -146,9 +146,9 @@ def main():
     if git("rev-list", "--count", "HEAD..origin/main") != "0":
         die("main cục bộ tụt sau origin/main, hãy kéo về trước")
     if os.environ.get("PHAT_HANH_SKIP_BUILD_TEST"):
-        # auto-release.yml chạy trong GitHub Actions: build.sh test cần SSH tới máy dựng ha200 (mạng LAN
-        # riêng, cloud runner không với tới), bỏ qua VÌ ci.yml đã tự kiểm cargo test trên cloud runner cho
-        # ĐÚNG commit này rồi (workflow riêng, cùng push). Không bỏ qua khi chạy tay/trên máy có ha200.
+        # auto-release.yml chạy trong GitHub Actions: build.sh test cần SSH tới máy dựng riêng trong mạng LAN
+        # nội bộ (cloud runner không với tới), bỏ qua VÌ ci.yml đã tự kiểm cargo test trên cloud runner cho
+        # ĐÚNG commit này rồi (workflow riêng, cùng push). Không bỏ qua khi chạy tay/trên máy dựng nội bộ.
         print("== bỏ qua ./build.sh test (PHAT_HANH_SKIP_BUILD_TEST=1, ci.yml đã kiểm trên cloud runner)")
     else:
         print("== chạy ./build.sh test (phải mã thoát 0)")

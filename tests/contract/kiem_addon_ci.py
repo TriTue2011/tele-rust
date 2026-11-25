@@ -10,7 +10,7 @@ import yaml
 
 
 ROOT = Path(__file__).resolve().parents[2]
-EXPECTED_WORKFLOWS = {"addon.yml", "ci.yml", "image.yml", "release.yml"}
+EXPECTED_WORKFLOWS = {"addon.yml", "ci.yml", "image.yml", "release.yml", "auto-release.yml"}
 SECRET_ADDON_OPTIONS = {"tg_api_hash", "gateway_token", "tg_ui_password", "ha_webhook_token"}
 ALLOWED_NON_DOC_IPS = {"0.0.0.0", "127.0.0.1"}
 DOC_IP_NETS = [

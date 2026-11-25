@@ -2,7 +2,7 @@ name: Auto Release
 
 # Mỗi lần đẩy lên main (trừ chính bản thân commit phát hành, tránh vòng lặp vô tận): tự tăng patch version,
 # gắn thẻ, tạo GitHub Release — y hệt deploy/phat-hanh.py chạy tay, chỉ bỏ bước build.sh test (cần SSH tới
-# máy dựng ha200 trong mạng LAN riêng, cloud runner không với tới) vì ci.yml đã tự kiểm cargo test cho ĐÚNG
+# máy dựng riêng trong mạng LAN nội bộ, cloud runner không với tới) vì ci.yml đã tự kiểm cargo test cho ĐÚNG
 # commit này trong một workflow riêng chạy song song trên cùng lần push.
 on:
   push:
