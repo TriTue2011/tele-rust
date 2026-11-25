@@ -2,8 +2,8 @@
 
 ## 1. Yêu cầu hệ thống
 
-- **Kiến trúc hỗ trợ:** `linux/amd64` (x86_64).
-  - Kiến trúc `arm64`/`aarch64` và **macOS** chưa được hỗ trợ ở phiên bản `v0.7.34` vì bộ thư viện tĩnh NTgCalls `3.0.7` và wheel `tdjson==1.8.69` trên PyPI hiện chỉ được đóng gói và kiểm chứng cho `linux/amd64`.
+- **Kiến trúc hỗ trợ:** `linux/amd64` và `linux/arm64` (ảnh đa kiến trúc, dựng qua QEMU — NTgCalls `3.0.7` và wheel `tdjson==1.8.69` đều có bản arm64).
+  - **macOS native** (ứng dụng Mac chạy trực tiếp, không qua container) chưa được hỗ trợ — khác với kiến trúc CPU `arm64`: ảnh `linux/arm64` vẫn chạy được trên Apple Silicon qua Docker Desktop/Raspberry Pi, chỉ không có app Mac riêng.
 - **Thông số Telegram bắt buộc:** `TG_API_ID` và `TG_API_HASH` (đăng ký ứng dụng tại trang phát triển Telegram).
 - **Khoá quản trị:** `GATEWAY_TOKEN` (khuyến nghị sinh bằng `openssl rand -hex 32`).
 

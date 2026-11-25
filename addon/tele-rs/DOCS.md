@@ -9,7 +9,7 @@
 
 > **Lưu ý khi kho chuyển sang chế độ riêng tư (private):** Home Assistant Supervisor cần quyền kéo ảnh từ GitHub Container Registry (`ghcr.io/tritue2011/tele-rust`). Hãy tạo GitHub Personal Access Token (classic) chỉ có quyền `read:packages`, sau đó đăng nhập registry trên Home Assistant (ví dụ `ha docker registries add ghcr.io --username <github-user> --password <pat>` hoặc `docker login ghcr.io`) trước khi cài đặt hoặc cập nhật add-on.
 
-> **Phạm vi kiến trúc & Ingress:** Add-on hiện chỉ hỗ trợ kiến trúc **`amd64`** (do thư viện tĩnh NTgCalls `3.0.7` và wheel `tdjson==1.8.69` chưa hỗ trợ `arm64`/`aarch64`). **Ingress chưa được bật** vì gateway áp dụng chính sách bảo mật `frame-ancestors 'none'`, đường dẫn gốc `/api/*` và cookie `Path=/`; hãy truy cập giao diện web trực tiếp qua cổng `3334` (nút **Mở Web UI** hoặc reverse proxy HTTPS).
+> **Phạm vi kiến trúc & Ingress:** Add-on hỗ trợ **`amd64`** và **`aarch64`** (ảnh đa kiến trúc, NTgCalls `3.0.7` và wheel `tdjson==1.8.69` đều có bản arm64). **Ingress chưa được bật** vì gateway áp dụng chính sách bảo mật `frame-ancestors 'none'`, đường dẫn gốc `/api/*` và cookie `Path=/`; hãy truy cập giao diện web trực tiếp qua cổng `3334` (nút **Mở Web UI** hoặc reverse proxy HTTPS).
 
 ## 2. Bảng tuỳ chọn cấu hình (`options`)
 

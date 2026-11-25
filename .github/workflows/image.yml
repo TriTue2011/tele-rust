@@ -18,7 +18,10 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
-# Chỉ dựng linux/amd64: nhị phân tĩnh NTgCalls 3.0.7 và wheel PyPI tdjson==1.8.69 chỉ hỗ trợ linux/amd64.
+# Dựng thử (verify) chỉ amd64 — đủ để kiểm khói, không cần đa kiến trúc cho một lần build cục bộ. Đẩy thật
+# (publish) dựng CẢ amd64 VÀ arm64 qua QEMU: cả NTgCalls 3.0.7 (ntgcalls.linux-arm64-static_libs.zip, xem
+# release GitHub pytgcalls/ntgcalls) và wheel PyPI tdjson==1.8.69 (manylinux2014_aarch64) đều CÓ bản arm64 —
+# trước đây tưởng chỉ amd64 là nhớ nhầm, đã kiểm lại trực tiếp (pip download + GitHub API release assets).
 jobs:
   verify:
     name: Dựng thử và kiểm khói ảnh Docker (amd64)
@@ -164,10 +167,10 @@ jobs:
           done
 
   publish:
-    name: Đẩy ảnh lên GHCR (linux/amd64)
+    name: Đẩy ảnh đa kiến trúc lên GHCR
     needs: verify
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 90
     permissions:
       contents: read
       packages: write
@@ -175,6 +178,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.verify.outputs.ref }}
+
+      - uses: docker/setup-qemu-action@v3
 
       - uses: docker/setup-buildx-action@v3
 
@@ -188,7 +193,7 @@ jobs:
         with:
           context: .
           file: ./Dockerfile
-          platforms: linux/amd64
+          platforms: linux/amd64,linux/arm64
           push: true
           build-args: |
             APP_VERSION=${{ needs.verify.outputs.app_version }}

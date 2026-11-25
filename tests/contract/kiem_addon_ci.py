@@ -103,7 +103,7 @@ def check_addon(cargo_ver: str, src_vars: set[str]) -> dict:
 
     assert str(cfg["version"]) == cargo_ver, f"addon version {cfg['version']} != Cargo.toml {cargo_ver}"
     assert re.fullmatch(r"[a-z0-9_]+", cfg["slug"]), f"slug không hợp lệ: {cfg['slug']}"
-    assert cfg["arch"] == ["amd64"], f"arch phải chỉ gồm amd64 (NTgCalls/TDLib): {cfg['arch']}"
+    assert cfg["arch"] == ["amd64", "aarch64"], f"arch phải đúng amd64+aarch64 (NTgCalls/TDLib đều có bản arm64): {cfg['arch']}"
     assert cfg["image"] == "ghcr.io/tritue2011/tele-rust", f"image không khớp: {cfg['image']}"
     assert not cfg.get("ingress"), "Không bật ingress khi gateway dùng CSP frame-ancestors 'none' và /api/* gốc"
     assert "3334/tcp" in cfg["ports"], "ports thiếu 3334/tcp"
