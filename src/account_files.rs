@@ -4,14 +4,14 @@ use rustix::fs::{open,openat,Mode,OFlags};
 use serde_json::json;
 use crate::contract::{Binary,GwError,TdLink};
 
-pub(crate) async fn download(td:Arc<dyn TdLink>,session:PathBuf,id:i64,stream:bool)->Result<Binary,GwError> {
-    download_with(td, session, id, stream, |file| {
+pub(crate) async fn download(td:Arc<dyn TdLink>,session:PathBuf,uploads:PathBuf,id:i64,stream:bool)->Result<Binary,GwError> {
+    download_with(td, session, uploads, id, stream, |file| {
         // Đặt atime rõ ràng cả trên mount relatime/noatime. TDLib dùng max(atime, mtime).
         file.set_times(FileTimes::new().set_accessed(SystemTime::now()))
     }).await
 }
 
-async fn download_with<F>(td:Arc<dyn TdLink>,session:PathBuf,id:i64,stream:bool,touch:F)->Result<Binary,GwError>
+async fn download_with<F>(td:Arc<dyn TdLink>,session:PathBuf,uploads:PathBuf,id:i64,stream:bool,touch:F)->Result<Binary,GwError>
 where
     F: FnOnce(&File) -> io::Result<()> + Send + 'static,
 {
@@ -30,12 +30,23 @@ where
             GwError::from_tdlib(error)
         } else {mapped}
     })?;
-    if file["local"]["is_downloading_completed"]!=true {return Err(missing());}
-    let root=std::path::absolute(session.join("files")).map_err(|_|missing())?;
-    let path=file["local"]["path"].as_str().ok_or_else(missing)?;
+    // KHÔNG đòi riêng is_downloading_completed=true: downloadFile đã "synchronous":true, TDLib chỉ trả về (không
+    // lỗi) sau khi tải xong/thất bại/bị huỷ — phản hồi thành công với local.path khác rỗng đã đủ nghĩa sẵn sàng.
+    // Tệp TỰ GỬI (tải LÊN, không phải tải XUỐNG) có thể vẫn báo cờ này false dù đã đủ 100% cục bộ (đo thật 25/11:
+    // ảnh tự gửi hết 404 sau khi bỏ cờ này + chấp nhận thêm gốc uploads/ bên dưới; chỉ sửa một trong hai là chưa đủ).
+    let path=file["local"]["path"].as_str().filter(|s|!s.is_empty()).ok_or_else(missing)?;
     let path=std::path::absolute(path).map_err(|_|missing())?;
-    let relative=path.strip_prefix(&root).map_err(|_|missing())?.to_path_buf();
-    if relative.components().count()<2 {return Err(missing());}
+    let session_files=std::path::absolute(session.join("files")).map_err(|_|missing())?;
+    // Tệp TỰ GỬI: TDLib không copy vào kho files/ của phiên, local.path TRỎ THẲNG vào uploads/chat-....ext (đường
+    // gốc lúc gửi, xem chat/files.rs cùng gốc lỗi) — strip_prefix(session/files) luôn trượt với tệp này.
+    let (root,relative)=match path.strip_prefix(&session_files) {
+        Ok(relative)=>{ if relative.components().count()<2 {return Err(missing());} (session_files,relative.to_path_buf()) }
+        Err(_)=>{
+            let root=std::path::absolute(&uploads).map_err(|_|missing())?;
+            let relative=path.strip_prefix(&root).map_err(|_|missing())?.to_path_buf();
+            (root,relative)
+        }
+    };
     let mime=mime_guess::from_path(&relative).first_raw().unwrap_or("text/plain");
     let content_type=if mime.starts_with("text/"){format!("{mime}; charset=utf-8")}else{mime.into()};
     let bytes=tokio::task::spawn_blocking(move || {
@@ -85,16 +96,39 @@ mod tests {
         std::fs::write(b.join("files/documents/test.txt"),b"account b").unwrap();
         std::fs::write(a.join("files/td.binlog"),b"database").unwrap();
         std::os::unix::fs::symlink(std::path::absolute(b.join("files/documents/test.txt")).unwrap(),a.join("files/documents/link.txt")).unwrap();
+        let uploads=root.join("uploads");
         for path in [b.join("files/documents/test.txt"),a.join("files/td.binlog"),a.join("files/documents/link.txt")] {
             let td=Arc::new(Fake(Ok(json!({"local":{"path":std::path::absolute(path).unwrap(),"is_downloading_completed":true}}))));
-            assert_eq!(download(td,a.clone(),1,false).await.unwrap_err().status,404);
+            assert_eq!(download(td,a.clone(),uploads.clone(),1,false).await.unwrap_err().status,404);
         }
         let td=Arc::new(Fake(Ok(json!({"local":{"path":std::path::absolute(a.join("files/documents/test.txt")).unwrap(),"is_downloading_completed":true}}))));
-        let file=download(td,a.clone(),1,false).await.unwrap();
+        let file=download(td,a.clone(),uploads.clone(),1,false).await.unwrap();
         assert_eq!(file.bytes,b"account a");assert_eq!(file.content_type,"text/plain; charset=utf-8");
         let td=Arc::new(Fake(Err(TdError::telegram(400,"/private/session/path"))));
-        let error=download(td,a,1,false).await.unwrap_err();
+        let error=download(td,a,uploads,1,false).await.unwrap_err();
         assert_eq!(error.status,400);assert!(!error.message.contains("/private/session/path"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn outgoing_self_sent_files_serve_from_uploads_even_when_tdlib_reports_not_downloaded() {
+        // Đo thật 25/11: tệp tự gửi (video/ảnh gửi ra từ HA) luôn 404 "Tệp chưa tải xong" — TDLib coi đây là TẢI
+        // LÊN chứ không phải tải xuống nên is_downloading_completed có thể vẫn false, VÀ local.path trỏ ra ngoài
+        // session/files (vào kho uploads/ dùng chung, không phải riêng từng tài khoản).
+        let root=PathBuf::from(format!("target/account-files-uploads-{}",std::process::id()));
+        let session=root.join("tdlib");
+        let uploads=root.join("uploads");
+        std::fs::create_dir_all(&session).unwrap();
+        std::fs::create_dir_all(&uploads).unwrap();
+        let sent=uploads.join("chat-1-abc-0_video.mp4");
+        std::fs::write(&sent,b"video tu gui").unwrap();
+        let outside=root.join("outside.jpg");
+        std::fs::write(&outside,b"private").unwrap();
+        let td=Arc::new(Fake(Ok(json!({"local":{"path":std::path::absolute(&sent).unwrap(),"is_downloading_completed":false}}))));
+        let file=download(td,session.clone(),uploads.clone(),1,false).await.unwrap();
+        assert_eq!(file.bytes,b"video tu gui","tệp tự gửi (uploads/, is_downloading_completed=false) phải phục vụ được");
+        let td=Arc::new(Fake(Ok(json!({"local":{"path":std::path::absolute(&outside).unwrap(),"is_downloading_completed":false}}))));
+        assert_eq!(download(td,session,uploads,1,false).await.unwrap_err().status,404,"đường ngoài cả hai gốc vẫn bị chặn");
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -106,7 +140,7 @@ mod tests {
         let path=session.join("files/documents/test.txt");
         std::fs::write(&path,b"stream bytes").unwrap();
         let td=Arc::new(Fake(Ok(json!({"local":{"path":std::path::absolute(path).unwrap(),"is_downloading_completed":true}}))));
-        let file=download_with(td,session,1,true,|_| Err(io::Error::from(io::ErrorKind::PermissionDenied))).await.unwrap();
+        let file=download_with(td,session,root.join("uploads"),1,true,|_| Err(io::Error::from(io::ErrorKind::PermissionDenied))).await.unwrap();
         assert_eq!(file.bytes,b"stream bytes");
         assert_eq!(file.cache_control,"no-store");
         std::fs::remove_dir_all(root).unwrap();

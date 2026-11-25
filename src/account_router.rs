@@ -593,11 +593,12 @@ impl ChatControl for Accounts {
             if let Some(id)=p.strip_prefix("/api/file/") {
                 let id=id.parse().map_err(|_|GwError::bad_request("file_id phải là số."))?;
                 let entry = e.clone();
+                let uploads = self.config.data_dir.join("uploads");
                 return tokio::spawn(async move {
                     let _access = entry.storage_lock.read().await;
                     if !entry.ready.load(Ordering::Acquire) { return Err(offline()); }
                     let stream = crate::storage::settings_read_only(&entry.session).await["mode"] == "stream";
-                    crate::account_files::download(entry.client.clone(), entry.session.clone(), id, stream).await
+                    crate::account_files::download(entry.client.clone(), entry.session.clone(), uploads, id, stream).await
                 }).await.map_err(|_| offline())?;
             }
             e.chat.bytes(&p,&q).await

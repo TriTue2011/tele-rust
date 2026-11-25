@@ -57,7 +57,7 @@ async fn stream_access_refreshes_expiry_and_skips_auto_download() {
         "sizes":[{"photo":{"id":8,"size":8}}]}}})).await;
     assert_eq!(*cache.downloads.lock().unwrap(), 0);
 
-    let file = crate::account_files::download(cache.clone(), session.clone(), 8, true).await.unwrap();
+    let file = crate::account_files::download(cache.clone(), session.clone(), session.join("uploads"), 8, true).await.unwrap();
     assert_eq!(file.cache_control, "no-store");
     assert_eq!(file.bytes, b"test pic");
     let last_access = fs::metadata(&path).unwrap().accessed().unwrap();
