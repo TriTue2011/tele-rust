@@ -314,9 +314,11 @@ async fn downloads_are_bounded_private_and_never_follow_symlinks() {
 #[tokio::test]
 async fn outgoing_self_sent_files_serve_from_uploads_dir_not_just_tdlib_files() {
     // Đo thật 25/11: 7/7 video tự gửi trong một hội thoại báo 404 "Tệp chưa tải xong" dù còn nguyên trên đĩa (xác
-    // nhận bằng cách so cỡ byte khớp đúng giữa tin nhắn và tệp trong data/uploads/). Gốc: TDLib không copy tệp tự
-    // gửi vào kho tdlib/files/ của nó — local.path TRỎ THẲNG vào uploads/chat-....ext (đường gốc lúc gửi). Handler
-    // cũ chỉ strip_prefix(tdlib/files/) nên luôn "missing" với mọi tệp tự gửi, bất kể còn hay mất.
+    // nhận bằng cách so cỡ byte khớp đúng giữa tin nhắn và tệp trong data/uploads/). HAI gốc cộng lại, thiếu một là
+    // vẫn 404 (đo thật: sửa riêng đường dẫn KHÔNG đủ, vẫn 404 sau khi triển khai — phải sửa cả hai):
+    // (1) TDLib không copy tệp tự gửi vào kho tdlib/files/ của nó — local.path TRỎ THẲNG vào uploads/chat-....ext.
+    // (2) Tệp tự gửi là TẢI LÊN, không phải TẢI XUỐNG — TDLib không chạy qua máy trạng thái "download" cho nó nên
+    //     is_downloading_completed vẫn báo false dù tệp đã đủ 100% cục bộ (test cố tình đặt false để khớp thực tế).
     use axum::{body::{to_bytes, Body}, http::{header, Request}};
     use std::fs;
     use tower::ServiceExt;
@@ -332,7 +334,7 @@ async fn outgoing_self_sent_files_serve_from_uploads_dir_not_just_tdlib_files() 
     let outside = root.join("outside.jpg");
     fs::write(&outside, b"private").unwrap();
     let req = |id| json!({"@type":"downloadFile","file_id":id,"priority":16,"offset":0,"limit":0,"synchronous":true});
-    let downloaded = |id, path: &Path| ok(req(id), json!({"local":{"path":path,"is_downloading_completed":true}}));
+    let downloaded = |id, path: &Path| ok(req(id), json!({"local":{"path":path,"is_downloading_completed":false}}));
     let (chat, td) = setup(vec![downloaded(1, &sent), downloaded(2, &outside)]);
     drop(chat);
     let chat = ChatService::new(td, "+000123", &data);

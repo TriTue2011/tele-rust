@@ -47,7 +47,13 @@ impl ChatService {
         })?;
         let local = &file["local"];
         let path = local["path"].as_str().filter(|s| !s.is_empty()).ok_or_else(missing)?;
-        if local["is_downloading_completed"] != true { return Err(missing()); }
+        // KHÔNG đòi riêng is_downloading_completed=true nữa: downloadFile đã "synchronous":true ở trên — TDLib chỉ
+        // trả về (không lỗi) sau khi tải xong/thất bại/bị huỷ, nên một phản hồi không lỗi với local.path khác rỗng
+        // NGHĨA LÀ tệp đã sẵn sàng. Với tệp TỰ GỬI (tải lên, không phải tải xuống), TDLib không chạy qua máy trạng
+        // thái "download" nên is_downloading_completed có thể vẫn báo false dù tệp đã đầy đủ 100% cục bộ — đòi cờ
+        // này riêng khiến MỌI tệp tự gửi luôn "missing" (đo thật 25/11: vẫn 404 ngay cả sau khi đã sửa đường dẫn
+        // uploads/, vì bị chặn ở đây TRƯỚC khi tới đoạn kiểm đường dẫn). open_beneath()+metadata() bên dưới vẫn là
+        // chốt chặn thật (tệp không mở/đọc được thì vẫn lỗi, không phục vụ nhầm tệp dở dang).
 
         let root = std::path::absolute(&self.data_dir).map_err(|_| missing())?;
         let path = std::path::absolute(path).map_err(|_| missing())?;
