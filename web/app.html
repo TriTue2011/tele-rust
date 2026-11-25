@@ -1374,7 +1374,13 @@
     if (blobs.has(key)) return blobs.get(key);
     const p = fetch(accountPath("/api/file/" + fileId), { credentials: "same-origin" })
       .then((r) => { if (!r.ok) throw Object.assign(new Error("Tệp chưa tải được"), { status: r.status }); return r.blob(); }).then((b) => URL.createObjectURL(b));
-    blobs.set(key, p); p.catch(() => blobs.delete(key)); return p;
+    blobs.set(key, p);
+    // 404 = chắc chắn không có thật (vd tệp tự gửi, gateway chưa phục vụ lại được) — GIỮ promise đã hỏng, không xoá khỏi
+    // đệm, để lần vẽ sau (mỗi khi tin nhắn render lại) khỏi gọi lại /api/file/ y hệt. Lỗi KHÁC (mạng, 5xx) vẫn xoá để thử
+    // lại lần vẽ sau, vì có thể là tạm thời. Thiếu phân biệt này từng khiến mỗi tin 404 bị gọi lại hàng chục lần/phút, kéo
+    // cả app bị giới hạn 429 theo (đo thật trên Network tab 25/11, hàng trăm request lặp cùng 3 file_id).
+    p.catch((e) => { if (!e || e.status !== 404) blobs.delete(key); });
+    return p;
   }
   const avQueue = []; let avBusy = 0;
   function loadAvatar(box, fileId) {

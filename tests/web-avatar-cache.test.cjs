@@ -35,6 +35,25 @@ test('cùng file id ở hai tài khoản KHÔNG được dùng chung ảnh trong
   assert.equal(ctx.calls.length, 2, 'cùng tài khoản + cùng file id thì dùng lại bộ nhớ đệm (không tải lại)');
 });
 
+test('404 (tệp chắc chắn không có thật) KHÔNG gọi lại — lỗi khác (mạng/5xx) vẫn thử lại lần vẽ sau', async () => {
+  // Đo thật trên Network tab 25/11: cùng 3 file_id của video/ảnh tự gửi bị gọi lại hàng chục lần/phút (mỗi lần tin render
+  // lại), kéo cả app bị giới hạn 429 theo — vì blobUrl() XOÁ khỏi đệm MỌI lỗi, kể cả 404 chắc chắn không đổi kết quả.
+  const calls = [];
+  let status = 404;
+  const ctx = vm.createContext({ blobs: new Map(), account: '+84111', calls, URL: { createObjectURL: (b) => 'blob:' + b }, encodeURIComponent,
+    fetch: async (url) => { calls.push(url); return { ok: status === 200, status, blob: async () => 'ok' }; } });
+  vm.runInContext(slice('function accountPath(path) {', '\n  }\n') + '\n  }\n' + slice('async function blobUrl(fileId) {', '\n  const avQueue'), ctx);
+  await assert.rejects(vm.runInContext('blobUrl(999)', ctx));
+  await assert.rejects(vm.runInContext('blobUrl(999)', ctx));
+  await assert.rejects(vm.runInContext('blobUrl(999)', ctx));
+  assert.equal(calls.length, 1, "404 chỉ được gọi fetch ĐÚNG MỘT LẦN, các lần sau dùng lại promise đã hỏng");
+  // lỗi 500 (có thể tạm thời) thì khác — vẫn cho thử lại ở lần vẽ sau.
+  calls.length = 0; status = 500;
+  await assert.rejects(vm.runInContext('blobUrl(1000)', ctx));
+  await assert.rejects(vm.runInContext('blobUrl(1000)', ctx));
+  assert.equal(calls.length, 2, "lỗi khác 404 vẫn phải thử lại, không khoá cứng như 404");
+});
+
 test('đột biến: khoá đệm chỉ theo file id thì test phải đỏ', async () => {
   const mutated = html.replace('const key = account + "|" + fileId;', 'const key = String(fileId);');
   assert.notEqual(mutated, html);
