@@ -107,8 +107,9 @@ def check_addon(cargo_ver: str, src_vars: set[str]) -> dict:
     assert cfg["image"] == "ghcr.io/tritue2011/tele-rust", f"image không khớp: {cfg['image']}"
     # Ingress CHỈ an toàn kèm biến TGGW_HA_INGRESS (src/web.rs::frame_ancestors() đọc biến này để nới CSP đúng lúc
     # chạy add-on) — bật ingress mà thiếu biến này thì add-on nhúng được iframe nhưng CSP vẫn 'none', HA sẽ chặn.
+    # Supervisor thật proxy Ingress CÙNG GỐC với HA nên giá trị đúng ở đây là từ khoá CSP 'self' (có dấu nháy).
     assert cfg.get("ingress") is True, "Add-on phải bật ingress (tab thanh bên HA)"
-    assert cfg.get("environment", {}).get("TGGW_HA_INGRESS") == "1", "Thiếu environment.TGGW_HA_INGRESS=1 — CSP sẽ vẫn chặn iframe dù bật ingress"
+    assert cfg.get("environment", {}).get("TGGW_HA_INGRESS") == "'self'", "Thiếu environment.TGGW_HA_INGRESS='self' — CSP sẽ vẫn chặn iframe dù bật ingress"
     assert "3334/tcp" in cfg["ports"], "ports thiếu 3334/tcp"
     map_entries = {str(item).split(":", 1)[0] for item in cfg["map"]}
     assert "data" in map_entries, f"map thiếu data: {cfg['map']}"

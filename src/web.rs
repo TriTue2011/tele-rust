@@ -1,11 +1,15 @@
 use axum::{http::header,response::{Html,IntoResponse,Response}};
 
-// Add-on HA (Ingress) cần nhúng được trong iframe của HA; bản độc lập (Docker/Compose) giữ "frame-ancestors 'none'"
-// vì không ai nhúng nó cả — chỉ bớt bảo mật đúng chỗ cần, không đổi mặc định cho mọi cách chạy.
-fn frame_ancestors()->&'static str {
-    // Ingress của HA proxy xuyên suốt qua chính máy chủ HA: trình duyệt thấy trang này cùng gốc (origin) với HA,
-    // nên 'self' là đủ — không cần liệt kê domain HA cụ thể (mỗi nhà có domain/IP khác nhau, không đoán được).
-    if std::env::var("TGGW_HA_INGRESS").is_ok_and(|v| v=="1"||v.eq_ignore_ascii_case("true")) { "frame-ancestors 'self'" } else { "frame-ancestors 'none'" }
+// Nhúng tab thanh bên HA cần cho phép ĐÚNG GỐC (origin) của HA nhúng iframe; bản độc lập (Docker/Compose,
+// không ai nhúng) giữ "frame-ancestors 'none'". HA (panel_iframe, HA Container — không có Supervisor/Ingress
+// nên KHÔNG cùng gốc với Tele) và Tele thường ở hai cổng khác nhau trên CÙNG một host ⇒ 'self' KHÔNG đủ (khác
+// gốc theo chuẩn CSP: khác cổng = khác origin) — phải liệt kê đúng gốc HA. TGGW_HA_INGRESS nhận THẲNG gốc đó
+// (vd "http://172.16.10.200:8123"), không phải cờ bật/tắt — đọc lại cho đúng sau khi hiểu nhầm ban đầu.
+fn frame_ancestors()->String {
+    match std::env::var("TGGW_HA_INGRESS") {
+        Ok(origin) if !origin.is_empty() => format!("frame-ancestors {origin}"),
+        _ => "frame-ancestors 'none'".to_string(),
+    }
 }
 fn page(html:&'static str)->Response {
     let mut response=Html(html).into_response();
@@ -48,14 +52,16 @@ mod tests {
     }
 
     #[test]
-    fn ha_ingress_env_relaxes_frame_ancestors_only_for_this_run() {
+    fn ha_ingress_env_sets_exact_origin_only_for_this_run() {
         let old=std::env::var_os("TGGW_HA_INGRESS");
         std::env::remove_var("TGGW_HA_INGRESS");
         assert_eq!(frame_ancestors(),"frame-ancestors 'none'","chưa đặt biến môi trường thì vẫn chặn iframe như cũ");
-        std::env::set_var("TGGW_HA_INGRESS","1");
-        assert_eq!(frame_ancestors(),"frame-ancestors 'self'","bật cờ add-on thì phải cho nhúng cùng gốc với HA");
-        std::env::set_var("TGGW_HA_INGRESS","0");
-        assert_eq!(frame_ancestors(),"frame-ancestors 'none'","đặt giá trị khác 1/true thì vẫn coi như tắt");
+        std::env::set_var("TGGW_HA_INGRESS","'self'");
+        assert_eq!(frame_ancestors(),"frame-ancestors 'self'","Supervisor Ingress thật (cùng gốc HA) dùng từ khoá 'self'");
+        std::env::set_var("TGGW_HA_INGRESS","http://192.0.2.10:8123");
+        assert_eq!(frame_ancestors(),"frame-ancestors http://192.0.2.10:8123","HA Container (panel_iframe, khác gốc) dùng đúng gốc HA");
+        std::env::set_var("TGGW_HA_INGRESS","");
+        assert_eq!(frame_ancestors(),"frame-ancestors 'none'","chuỗi rỗng vẫn coi như tắt");
         match old { Some(v)=>std::env::set_var("TGGW_HA_INGRESS",v), None=>std::env::remove_var("TGGW_HA_INGRESS") }
     }
 }

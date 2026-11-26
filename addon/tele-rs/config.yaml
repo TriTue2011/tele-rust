@@ -17,9 +17,11 @@ panel_icon: "mdi:send"
 panel_title: "Tele Rust"
 panel_admin: true
 # Chỉ bật khi chạy DƯỚI DẠNG ADD-ON (Supervisor tiêm biến này) — docker-compose/Docker độc lập KHÔNG có biến này,
-# giữ CSP frame-ancestors 'none' như cũ. Xem src/web.rs::frame_ancestors().
+# giữ CSP frame-ancestors 'none' như cũ. Supervisor thật proxy Ingress cùng gốc với HA nên 'self' đúng ở đây;
+# HA Container thuần (không Supervisor, dùng panel_iframe) phải đặt đúng gốc HA thay vì 'self' — xem
+# docs/THAM-CHIEU.md và src/web.rs::frame_ancestors().
 environment:
-  TGGW_HA_INGRESS: "1"
+  TGGW_HA_INGRESS: "'self'"
 ports:
   "3334/tcp": 3334
 ports_description:
