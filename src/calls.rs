@@ -1116,19 +1116,44 @@ impl Actor {
 async fn decode_audio(audio: Vec<u8>) -> Result<Vec<u8>, GwError> {
     use std::process::Stdio;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    if audio.is_empty() { return Err(GwError::bad_request("Âm thanh đầu vào trống.")); }
+    let audio_len = audio.len();
     let mut child = tokio::process::Command::new("ffmpeg").args(["-hide_banner","-loglevel","error","-nostdin","-i","pipe:0","-vn","-f","s16le","-ar","48000","-ac","1","pipe:1"])
-        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).kill_on_drop(true).spawn().map_err(|_| GwError::new(501,"AUDIO_UNAVAILABLE","Không chạy được ffmpeg"))?;
+        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true).spawn().map_err(|_| GwError::new(501,"AUDIO_UNAVAILABLE","Không chạy được ffmpeg"))?;
     let mut input = child.stdin.take().unwrap();
     let output = child.stdout.take().unwrap();
+    let err_pipe = child.stderr.take().unwrap();
     let result = tokio::time::timeout(Duration::from_secs(30), async {
-        let write = async { input.write_all(&audio).await?; input.shutdown().await };
-        let read = async { let mut pcm = Vec::new(); output.take(48_000_001).read_to_end(&mut pcm).await?; Ok::<_,std::io::Error>(pcm) };
-        let (_, pcm) = tokio::try_join!(write,read)?;
-        if pcm.is_empty() || pcm.len()>48_000_000 { return Err(std::io::Error::other("Âm thanh trống/quá dài")); }
-        if !child.wait().await?.success() { return Err(std::io::Error::other("ffmpeg không đọc được âm thanh")); }
-        Ok::<_,std::io::Error>(pcm)
+        // ChildStdin::shutdown() không đóng fd/không gửi EOF trên Unix (pipe không có half-close kiểu socket) —
+        // PHẢI drop(input) sau khi ghi xong để ffmpeg nhận EOF, không nó treo vô hạn chờ thêm dữ liệu trên pipe:0.
+        let write = async move { let res = input.write_all(&audio).await; drop(input); res };
+        let read = async move { let mut pcm = Vec::new(); output.take(48_000_001).read_to_end(&mut pcm).await?; Ok::<_,std::io::Error>(pcm) };
+        let read_err = async move { let mut buf = Vec::new(); let _ = err_pipe.take(4096).read_to_end(&mut buf).await; String::from_utf8_lossy(&buf).trim().to_owned() };
+        let (write_res, read_res, stderr) = tokio::join!(write, read, read_err);
+        let pcm = read_res.map_err(|e| { log::warn!("decode_audio: lỗi đọc stdout ffmpeg (input={audio_len}B): {e}"); GwError::bad_request("Lỗi đọc luồng giải mã âm thanh từ ffmpeg.") })?;
+        if pcm.len() > 48_000_000 {
+            let _ = child.kill().await;
+            return Err(GwError::bad_request("Âm thanh quá dài (tối đa 500 giây)."));
+        }
+        let status = child.wait().await.map_err(|e| { log::warn!("decode_audio: không chờ được ffmpeg (input={audio_len}B): {e}"); GwError::bad_request("Lỗi khi chờ ffmpeg kết thúc.") })?;
+        if !status.success() {
+            log::warn!("decode_audio: ffmpeg thoát mã {:?} (input={audio_len}B, stderr={stderr:?})", status.code());
+            return Err(GwError::bad_request("ffmpeg không giải mã được định dạng âm thanh."));
+        }
+        if let Err(e) = write_res {
+            log::warn!("decode_audio: lỗi ghi stdin ffmpeg (input={audio_len}B): {e}");
+            return Err(GwError::bad_request("Lỗi gửi dữ liệu âm thanh tới ffmpeg."));
+        }
+        if pcm.is_empty() {
+            log::warn!("decode_audio: ffmpeg trả PCM rỗng (input={audio_len}B, stderr={stderr:?})");
+            return Err(GwError::bad_request("Âm thanh giải mã ra bị trống."));
+        }
+        Ok::<Vec<u8>, GwError>(pcm)
     }).await;
-    match result { Ok(Ok(pcm)) => Ok(pcm), _ => Err(GwError::bad_request("Không giải mã được âm thanh hoặc âm thanh quá dài")) }
+    match result {
+        Ok(inner) => inner,
+        Err(_) => { log::warn!("decode_audio: quá thời gian 30 giây khi giải mã âm thanh (input={audio_len}B)"); Err(GwError::new(504, "AUDIO_DECODE_TIMEOUT", "Giải mã âm thanh quá thời gian (30 giây).")) }
+    }
 }
 
 fn wav(pcm: &[u8]) -> Vec<u8> {
