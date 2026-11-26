@@ -89,6 +89,7 @@ impl CallManager {
         let protocol = media.protocol().map_err(|_| GwError::new(502, "MEDIA_FAILED", "Không đọc được protocol NTgCalls"))?;
         let (sender, receiver) = mpsc::unbounded_channel();
         let (frame_sender, frame_receiver) = mpsc::channel(3);
+        let (audio_sender, audio_receiver) = mpsc::channel(64);
         let (events, _) = broadcast::channel(256);
         let handle = Arc::new(Handle { sender: sender.clone(), events: events.clone(), shutting_down: AtomicBool::new(false), audio_slots: Arc::new(tokio::sync::Semaphore::new(8)) });
         let (startup_tx, startup_rx) = std::sync::mpsc::sync_channel(1);
@@ -106,12 +107,12 @@ impl CallManager {
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
                     Err(_) => { let _ = startup_tx.send(Err(io_error())); return; }
                 }
-                media.callbacks(sender.clone(), frame_sender);
+                media.callbacks(sender.clone(), frame_sender, audio_sender);
                 let catalog = match catalog::load(&data_dir) { Ok(c) => c, Err(e) => { let _ = startup_tx.send(Err(e)); return; } };
                 let mut actor = Actor { td, media, protocol, p2p, data_dir, defaults, calls: Vec::new(),
                     catalog, handled: HashSet::new(), events, sender, profile: video_profile(&std::env::var("VIDEO_PROFILE").unwrap_or_default()), cast_port };
                 let _ = startup_tx.send(Ok(()));
-                actor.run(receiver, updates, frame_receiver).await;
+                actor.run(receiver, updates, frame_receiver, audio_receiver).await;
             });
         }).map_err(|_| GwError::new(500, "CALL_RUNTIME", "Không tạo được luồng cuộc gọi"))?;
         startup_rx.recv().map_err(|_| runtime_error())??;
@@ -385,7 +386,7 @@ struct Actor {
 }
 
 impl Actor {
-    async fn run(&mut self, mut commands: mpsc::UnboundedReceiver<Command>, mut updates: broadcast::Receiver<Value>, mut frames: mpsc::Receiver<MediaEvent>) {
+    async fn run(&mut self, mut commands: mpsc::UnboundedReceiver<Command>, mut updates: broadcast::Receiver<Value>, mut frames: mpsc::Receiver<MediaEvent>, mut audio_frames: mpsc::Receiver<MediaEvent>) {
         let mut updates_open = true;
         let mut shutdown_ack = None;
         let mut shutdown_deadline = None;
@@ -491,6 +492,7 @@ impl Actor {
                     }
                 },
                 Some(frame) = frames.recv() => self.media_event(frame).await,
+                Some(frame) = audio_frames.recv() => self.media_event(frame).await,
                 _ = expire_frames.tick(), if !self.calls.is_empty() => {
                     for c in &mut self.calls {
                         c.snapshot.expire();

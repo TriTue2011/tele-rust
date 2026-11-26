@@ -62,10 +62,26 @@ pub(super) enum MediaEvent {
     PeerVideo(i64, bool),
 }
 
+pub(super) fn dispatch_playback_frames(
+    id: i64,
+    mode: StreamMode,
+    device: StreamDevice,
+    frames: Vec<Frame>,
+    frame_sender: &mpsc::Sender<MediaEvent>,
+    audio_sender: &mpsc::Sender<MediaEvent>,
+) {
+    if mode == StreamMode::Playback {
+        // Tách kênh tiếng khỏi kênh hình: khung video lớn/dồn dập (kênh 3) không thể làm rớt khung tiếng.
+        // Cả hai đều dùng try_send: không chặn luồng NTgCalls hoặc dồn media vào RAM khi TDLib/ffmpeg chậm.
+        let tx = if matches!(device, StreamDevice::Camera | StreamDevice::Screen) { frame_sender } else { audio_sender };
+        let _ = tx.try_send(MediaEvent::Frames(id, mode, device, frames));
+    }
+}
+
 // Futures cố ý không Send: NTgCalls chỉ Send, không Sync. Toàn bộ Media ở một thread.
 pub(super) trait Media: Send + 'static {
     fn protocol(&self) -> Result<Protocol, String>;
-    fn callbacks(&mut self, sender: mpsc::UnboundedSender<Command>, frames: mpsc::Sender<MediaEvent>);
+    fn callbacks(&mut self, sender: mpsc::UnboundedSender<Command>, frames: mpsc::Sender<MediaEvent>, audio: mpsc::Sender<MediaEvent>);
     fn execute(&mut self, op: MediaOp) -> MediaFuture<'_>;
 }
 
@@ -76,16 +92,13 @@ impl Media for NativeMedia {
         NTgCalls::get_protocol().map_err(|_| "Không đọc được protocol NTgCalls".into())
     }
 
-    fn callbacks(&mut self, sender: mpsc::UnboundedSender<Command>, frame_sender: mpsc::Sender<MediaEvent>) {
+    fn callbacks(&mut self, sender: mpsc::UnboundedSender<Command>, frame_sender: mpsc::Sender<MediaEvent>, audio_sender: mpsc::Sender<MediaEvent>) {
         let tx = sender.clone();
         self.0.on_signaling_data(move |id, data| { let _ = tx.send(Command::Media(MediaEvent::Signaling(id, data))); });
         let tx = sender.clone();
         self.0.on_connection_change(move |id, info| { let _ = tx.send(Command::Media(MediaEvent::Connection(id, info.state))); });
         self.0.on_frames(move |id, mode, device, frames| {
-            if mode == StreamMode::Playback {
-                // Không chặn luồng NTgCalls hoặc dồn video vào RAM khi TDLib/ffmpeg chậm.
-                let _ = frame_sender.try_send(MediaEvent::Frames(id, mode, device, frames));
-            }
+            dispatch_playback_frames(id, mode, device, frames, &frame_sender, &audio_sender);
         });
         let tx = sender.clone();
         self.0.on_remote_source_change(move |id, src| {

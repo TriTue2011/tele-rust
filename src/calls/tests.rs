@@ -40,6 +40,8 @@ impl TdLink for FakeTd {
 struct FakeState {
     ops: Vec<MediaOp>,
     callback: Option<mpsc::UnboundedSender<Command>>,
+    frames: Option<mpsc::Sender<MediaEvent>>,
+    audio: Option<mpsc::Sender<MediaEvent>>,
     fail: Option<&'static str>,
 }
 
@@ -54,7 +56,12 @@ impl Media for FakeMedia {
     fn protocol(&self) -> Result<Protocol, String> {
         Ok(Protocol { min_layer:92,max_layer:92,udp_p2p:true,udp_reflector:true,library_versions:strings(&["8.0.0","9.0.0","12.0.0","13.0.0"]) })
     }
-    fn callbacks(&mut self, sender: mpsc::UnboundedSender<Command>, _: mpsc::Sender<MediaEvent>) { self.0.lock().unwrap().callback=Some(sender); }
+    fn callbacks(&mut self, sender: mpsc::UnboundedSender<Command>, frames: mpsc::Sender<MediaEvent>, audio: mpsc::Sender<MediaEvent>) {
+        let mut s = self.0.lock().unwrap();
+        s.callback = Some(sender);
+        s.frames = Some(frames);
+        s.audio = Some(audio);
+    }
     fn execute(&mut self, op: MediaOp) -> MediaFuture<'_> {
         Box::pin(async move {
             let mut s = self.0.lock().unwrap();
@@ -104,8 +111,11 @@ impl Drop for Fixture {
         if let Some(manager)=self.manager.take() {
             manager.handle.shutting_down.store(true, Ordering::Release);
             sent = manager.handle.sender.send(Command::Shutdown(Some(tx), Instant::now()+Duration::from_secs(3))).is_ok();
-            let callback=self.media.lock().unwrap().callback.take();
-            drop(callback); drop(manager);
+            let (callback, frames, audio) = {
+                let mut s = self.media.lock().unwrap();
+                (s.callback.take(), s.frames.take(), s.audio.take())
+            };
+            drop((callback, frames, audio)); drop(manager);
         }
         if sent { let _ = rx.recv_timeout(Duration::from_secs(3)); }
         for name in ["live_settings.json","live_settings.json.tmp","ha_devices.json"] { let _=fs::remove_file(self.dir.join(name)); }
@@ -739,4 +749,67 @@ fn nguon_truc_tiep_co_co_giam_tre_dung_cho() {
     }
     assert!(!mic_command("silence", "auto").contains("nobuffer") && !mic_command("test", "auto").contains("nobuffer"));
     assert!(!camera_command("black", (640, 360, 15)).contains("nobuffer"));
+}
+
+#[test]
+fn on_frames_separates_audio_and_video_channels_so_full_video_never_drops_audio() {
+    let (frame_tx, mut frame_rx) = mpsc::channel(3);
+    let (audio_tx, mut audio_rx) = mpsc::channel(64);
+    let meta = FrameData { absolute_capture_timestamp_ms: 0, rotation: VideoRotation::VideoRotation0, width: 8, height: 4 };
+    let mk = |bytes: Vec<u8>| vec![Frame { ssrc: 0, data: bytes, frame_data: meta.clone() }];
+
+    // Capture mode bị lọc ở cả hai loại.
+    media::dispatch_playback_frames(42, StreamMode::Capture, StreamDevice::Camera, mk(vec![0; 48]), &frame_tx, &audio_tx);
+    media::dispatch_playback_frames(42, StreamMode::Capture, StreamDevice::Microphone, mk(vec![1, 2]), &frame_tx, &audio_tx);
+    assert!(frame_rx.try_recv().is_err());
+    assert!(audio_rx.try_recv().is_err());
+
+    // Bơm đầy kênh hình (dung lượng 3) + 1 khung hình tràn (Screen cũng đi vào kênh hình).
+    for _ in 0..3 {
+        media::dispatch_playback_frames(42, StreamMode::Playback, StreamDevice::Camera, mk(vec![0; 48]), &frame_tx, &audio_tx);
+    }
+    media::dispatch_playback_frames(42, StreamMode::Playback, StreamDevice::Screen, mk(vec![1; 48]), &frame_tx, &audio_tx);
+
+    // Kênh hình đang đầy cứng, nhưng khung tiếng vẫn đi vào kênh audio riêng mà không rớt.
+    for i in 0..10u8 {
+        media::dispatch_playback_frames(42, StreamMode::Playback, StreamDevice::Microphone, mk(vec![i, 0]), &frame_tx, &audio_tx);
+    }
+
+    let mut got_audio = 0;
+    while let Ok(MediaEvent::Frames(42, StreamMode::Playback, StreamDevice::Microphone, _)) = audio_rx.try_recv() {
+        got_audio += 1;
+    }
+    assert_eq!(got_audio, 10);
+    assert!(audio_rx.try_recv().is_err());
+
+    let mut got_video = 0;
+    while let Ok(MediaEvent::Frames(42, StreamMode::Playback, StreamDevice::Camera | StreamDevice::Screen, _)) = frame_rx.try_recv() {
+        got_video += 1;
+    }
+    assert_eq!(got_video, 3);
+    assert!(frame_rx.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn actor_run_delivers_audio_and_video_from_separate_channels() {
+    let f = Fixture::new(false);
+    f.outgoing(false).await;
+    f.ready(7, 42, true, &["8.0.0"]).await;
+    let (frame_tx, audio_tx) = {
+        let s = f.media.lock().unwrap();
+        (s.frames.clone().unwrap(), s.audio.clone().unwrap())
+    };
+    let meta = FrameData { absolute_capture_timestamp_ms: 0, rotation: VideoRotation::VideoRotation0, width: 8, height: 4 };
+    assert!(audio_tx.try_send(MediaEvent::Frames(42, StreamMode::Playback, StreamDevice::Microphone, vec![Frame { ssrc: 0, data: vec![0, 128, 255, 127], frame_data: meta.clone() }])).is_ok());
+    assert!(frame_tx.try_send(MediaEvent::Frames(42, StreamMode::Playback, StreamDevice::Camera, vec![Frame { ssrc: 0, data: vec![0; 48], frame_data: meta }])).is_ok());
+    let info = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let info = f.info().await;
+            if info["frames_in"] == 1 && info["view"]["frames"] == 1 { break info; }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }).await.unwrap();
+    assert_eq!(info["frame_bytes"], 4);
+    assert_eq!(info["peak"], 32768);
+    assert_eq!(info["view"]["size"], "8x4");
 }
