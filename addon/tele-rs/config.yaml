@@ -11,6 +11,15 @@ init: false
 startup: "application"
 boot: "auto"
 webui: "http://[HOST]:[PORT:3334]"
+ingress: true
+ingress_port: 3334
+panel_icon: "mdi:send"
+panel_title: "Tele Rust"
+panel_admin: true
+# Chỉ bật khi chạy DƯỚI DẠNG ADD-ON (Supervisor tiêm biến này) — docker-compose/Docker độc lập KHÔNG có biến này,
+# giữ CSP frame-ancestors 'none' như cũ. Xem src/web.rs::frame_ancestors().
+environment:
+  TGGW_HA_INGRESS: "1"
 ports:
   "3334/tcp": 3334
 ports_description:

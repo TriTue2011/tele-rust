@@ -38,6 +38,7 @@ Bảng dưới đây liệt kê toàn bộ biến môi trường thời gian ch�
 | `TELEGRAM_RX_ROTATE` | — | `0` | Xoay thêm (độ, theo chiều kim đồng hồ: `0`, `90`, `180`, `270`) lên hình video nhận được, cộng với cờ xoay do bên gửi đặt. Dùng khi một thiết bị gửi sai cờ nên hình bị nghiêng. |
 | `GATEWAY_HTTPS` | — | `1` | `0`/`false` tắt HTTPS tự ký trên cùng cổng HTTP. Bật: gateway nhận cả `http://` và `https://` trên một cổng (chứng chỉ tự ký lưu ở `<data>/tls/`). |
 | `GATEWAY_TLS_NAMES` | — | — | Danh sách tên/IP (phẩy) thêm vào chứng chỉ HTTPS tự ký, ví dụ `192.0.2.10,tele.local`. Đổi giá trị thì xoá thư mục `<data>/tls/` để sinh lại. |
+| `TGGW_HA_INGRESS` | — | — | `1`/`true` nới CSP `frame-ancestors` thành `'self'` để nhúng được trong tab thanh bên Home Assistant (Ingress). CHỈ add-on HA tự đặt biến này (`addon/tele-rs/config.yaml::environment`); bản Docker/Compose độc lập không đặt, giữ `'none'` (không ai nhúng). |
 | `TTS_VOICE` | — | `vi-VN-HoaiMyNeural` | Tên giọng mặc định cho `edge-tts` (`1–128` ký tự chữ/số/`-`). |
 | `TTS_RATE` | — | `+0%` | Tốc độ đọc mặc định cho `edge-tts` (`+N%` hoặc `-N%`, từ `-100%` đến `+100%`). |
 | `LOG_LEVEL` | — | `INFO` (hoặc `DEBUG` nếu `TELEGRAM_DEBUG=1`) | Mức ghi log ra `stderr`: `DEBUG`, `INFO`, `WARNING`, `WARN`, `ERROR`, `CRITICAL`, `OFF`. |
