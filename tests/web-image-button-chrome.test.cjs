@@ -14,7 +14,7 @@ const storagePolicy = { mode: 'local', keep: { private: 604800, groups: 604800, 
   auto_download: Object.fromEntries(['private', 'groups', 'channels'].map((c) => [c, Object.fromEntries(['photo', 'video', 'file', 'voice', 'video_note', 'gif'].map((k) => [k, { on: false, max_bytes: 10485760 }]))])) };
 const msg = (id, extra = {}) => ({ id, chat_id: 42, date: 1700000000 + id, outgoing: false, sender: 'Bình Trần', kind: 'text', text: 'Tin số ' + id, entities: [], summary: 'Tin số ' + id, reply_to: 0, reactions: [], file: null, ...extra });
 
-test('TC-IMG-BTN: nút «Gửi ảnh» riêng (accept image/*), tách khỏi nút đính kèm chung; cả hai cùng gửi qua send_file đúng kind', { timeout: 60000 }, async (t) => {
+test('TC-IMG-BTN: nút «Ảnh/Video» riêng (accept image/* + video/*), tách khỏi nút đính kèm chung; cả hai cùng gửi qua send_file đúng kind', { timeout: 60000 }, async (t) => {
   for (const banned of ['innerHTML', 'outerHTML', 'insertAdjacentHTML', 'document.write', 'localStorage', 'sessionStorage']) assert.equal(html.includes(banned), false, banned);
   const routes = {
     '/ui/api/auth/status': { dang_nhap: true, da_thiet_lap: true },
@@ -56,7 +56,9 @@ test('TC-IMG-BTN: nút «Gửi ảnh» riêng (accept image/*), tách khỏi nú
 
   // nút ảnh riêng, tách khỏi nút đính kèm chung, lọc sẵn image/*
   assert.notEqual(await evaluate('document.getElementById("img-btn")'), null, 'phải có nút «Gửi ảnh» riêng');
-  assert.equal(await evaluate('document.getElementById("img-file").accept'), 'image/*', 'input ẩn của nút ảnh chỉ nhận image/*');
+  // Chủ máy 26/11: nút Ảnh/Video như Zalo — nhận ảnh VÀ video (video gửi thành video xem được), vẫn tách khỏi nút tệp chung.
+  const accept = await evaluate('document.getElementById("img-file").accept');
+  assert.ok(accept.split(',').includes('image/*') && accept.split(',').includes('video/*'), 'nút Ảnh/Video nhận cả image/* và video/*: ' + accept);
   assert.equal(await evaluate('document.getElementById("file").accept'), '', 'input đính kèm chung không lọc loại tệp');
 
   // bấm nút ảnh mở đúng input ẩn tương ứng (không mở input tệp chung)
@@ -75,6 +77,9 @@ test('TC-IMG-BTN: nút «Gửi ảnh» riêng (accept image/*), tách khỏi nú
     const dt = new DataTransfer(); dt.items.add(new File([new Uint8Array([1,2,3,4,5])], "p.png", { type: "image/png" }));
     const i = document.getElementById("img-file"); i.files = dt.files; i.dispatchEvent(new Event("change"));
   `);
+  // Như Zalo: chọn xong vào KHAY chờ (xem trước, gõ chú thích), bấm Gửi mới gửi.
+  await until('document.getElementById("attach-tray") && !document.getElementById("attach-tray").hidden');
+  await evaluate('document.getElementById("send").click()');
   await until('window.__calls.some((c) => c.p === "/api/chats/42/send_file")');
   const sent = await evaluate('window.__calls.find((c) => c.p === "/api/chats/42/send_file")');
   assert.equal(sent.kind, 'photo'); assert.equal(sent.name, 'p.png'); assert.equal(sent.len, 5);

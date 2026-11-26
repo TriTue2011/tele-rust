@@ -7,7 +7,7 @@ arch:
   - amd64
   - aarch64
 image: "ghcr.io/tritue2011/tele-rust"
-init: false
+init: true
 startup: "application"
 boot: "auto"
 webui: "http://[HOST]:[PORT:3334]"

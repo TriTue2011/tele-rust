@@ -107,10 +107,18 @@ impl CallManager {
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
                     Err(_) => { let _ = startup_tx.send(Err(io_error())); return; }
                 }
+                if let Ok(entries) = fs::read_dir(data_dir.join("live")) {
+                    for entry in entries.flatten() {
+                        // Chỉ tệp tạm lời nói «<cuộc>_say_<rev>.pcm|wav» do start_speech sinh — không đụng tệp âm thanh khác trong live/.
+                        if entry.path().extension().is_some_and(|ext| ext == "pcm" || ext == "wav") && entry.file_name().to_string_lossy().contains("_say_") {
+                            let _ = fs::remove_file(entry.path());
+                        }
+                    }
+                }
                 media.callbacks(sender.clone(), frame_sender, audio_sender);
                 let catalog = match catalog::load(&data_dir) { Ok(c) => c, Err(e) => { let _ = startup_tx.send(Err(e)); return; } };
                 let mut actor = Actor { td, media, protocol, p2p, data_dir, defaults, calls: Vec::new(),
-                    catalog, handled: HashSet::new(), events, sender, profile: video_profile(&std::env::var("VIDEO_PROFILE").unwrap_or_default()), cast_port };
+                    catalog, handled: HashSet::new(), handled_order: VecDeque::new(), events, sender, profile: video_profile(&std::env::var("VIDEO_PROFILE").unwrap_or_default()), cast_port };
                 let _ = startup_tx.send(Ok(()));
                 actor.run(receiver, updates, frame_receiver, audio_receiver).await;
             });
@@ -382,6 +390,7 @@ struct Actor {
     calls: Vec<LiveCall>,
     // Tombstone tách khỏi lịch sử hiển thị: prune không làm cuộc gọi cũ sống lại.
     handled: HashSet<i64>,
+    handled_order: VecDeque<i64>,
     events: broadcast::Sender<Value>,
     sender: mpsc::UnboundedSender<Command>,
     profile: (i16, i16, u8),
@@ -389,6 +398,21 @@ struct Actor {
 }
 
 impl Actor {
+    fn record_handled(handled: &mut HashSet<i64>, handled_order: &mut VecDeque<i64>, id: i64) {
+        if handled.insert(id) {
+            handled_order.push_back(id);
+            if handled_order.len() > 256 {
+                if let Some(old) = handled_order.pop_front() {
+                    handled.remove(&old);
+                }
+            }
+        }
+    }
+
+    fn mark_handled(&mut self, id: i64) {
+        Self::record_handled(&mut self.handled, &mut self.handled_order, id);
+    }
+
     async fn run(&mut self, mut commands: mpsc::UnboundedReceiver<Command>, mut updates: broadcast::Receiver<Value>, mut frames: mpsc::Receiver<MediaEvent>, mut audio_frames: mpsc::Receiver<MediaEvent>) {
         let mut updates_open = true;
         let mut shutdown_ack = None;
@@ -701,7 +725,7 @@ impl Actor {
         c.audio_sink = None;
         if let Some(cast) = c.cast.take() { cast.close().await; }
         c.ended = Some(Instant::now());
-        if let Some(id) = c.td_id { self.handled.insert(id); }
+        if let Some(id) = c.td_id { Self::record_handled(&mut self.handled, &mut self.handled_order, id); }
         c.log(why);
         c.pending_signaling.clear();
         if c.media_created {
@@ -713,6 +737,14 @@ impl Actor {
         let _ = fs::remove_file(format!("{}.wav", c.playback_path.to_string_lossy()));
         if let Some(revision) = c.speech_revision.take() {
             let _ = fs::remove_file(self.data_dir.join("live").join(format!("{}_say_{revision}.pcm", c.id)));
+        }
+        if let Ok(entries) = fs::read_dir(self.data_dir.join("live")) {
+            let prefix = format!("{}_", c.id);
+            for entry in entries.flatten() {
+                if entry.file_name().to_string_lossy().starts_with(&prefix) {
+                    let _ = fs::remove_file(entry.path());
+                }
+            }
         }
         let reason = c.td_id.map(|_| sources::mask(why));
         let summary = c.info();
@@ -749,7 +781,7 @@ impl Actor {
                 }
                 if found.is_none() {
                     if matches!(kind, "callStateDiscarded" | "callStateError" | "callStateHangingUp" | "callStateReady" | "callStateExchangingKeys") {
-                        self.handled.insert(id); // Cuộc gọi cũ / đã được thiết bị khác xử lý.
+                        self.mark_handled(id); // Cuộc gọi cũ / đã được thiết bị khác xử lý.
                         return Ok(());
                     }
                     if kind != "callStatePending" || call["is_outgoing"] != false { return Ok(()); }

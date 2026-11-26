@@ -1,0 +1,38 @@
+# tele-rust — ví dụ triển khai bằng Docker Compose với đầy đủ trần tài nguyên (docs/QUY-TAC-TAI-NGUYEN.md).
+#   1) Đổi TG_API_ID, TG_API_HASH, GATEWAY_TOKEN cho phù hợp.
+#   2) docker compose -f docker-compose.example.yml up -d
+services:
+  tele-rust:
+    image: ghcr.io/tritue2011/tele-rust:0.7.46
+    container_name: tele-rust
+    restart: unless-stopped
+    init: true                      # tini làm PID 1: dọn ffmpeg con và tiến trình con mồ côi
+    mem_limit: 1g
+    memswap_limit: 1g               # không cho tràn sang swap
+    cpus: "1.5"
+    pids_limit: 256                 # trần số luồng + tiến trình con
+    stop_grace_period: 10s
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    ports:
+      - "127.0.0.1:3334:3334"
+    volumes:
+      - tele_rust_data:/data
+    environment:
+      TG_API_ID: "${TG_API_ID:-12345}"
+      TG_API_HASH: "${TG_API_HASH:-}"
+      GATEWAY_TOKEN: "${GATEWAY_TOKEN:-}"
+      TGGW_UI_COOKIE_SECURE: "0"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3334/health >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  tele_rust_data:

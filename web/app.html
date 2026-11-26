@@ -271,19 +271,36 @@
   .m:hover .acts, .m:focus-within .acts { display:flex; }
   .acts button { background:transparent; color:var(--mut); padding:2px 6px; font-size:13px; }
   #typing { height:18px; padding:0 14px; color:var(--mut); font-size:12px; }
-  #composer { display:flex; flex-direction:column; gap:6px; padding:8px 10px; border-top:1px solid var(--line); background:var(--panel); }
+  #composer { display:flex; flex-direction:column; gap:4px; padding:6px 10px 8px; border-top:1px solid var(--line); background:var(--panel); }
+  .attach-tray { display:flex; gap:8px; flex-wrap:wrap; align-items:center; padding:6px 8px; border-bottom:1px solid var(--line); background:var(--bg); border-radius:8px; margin-bottom:4px; }
+  .attach-tray[hidden] { display:none; }
+  .tray-item { position:relative; width:56px; height:56px; border-radius:8px; overflow:hidden; border:1px solid var(--line); background:var(--panel); display:grid; place-items:center; flex:none; }
+  .tray-item img, .tray-item video { width:100%; height:100%; object-fit:cover; display:block; }
+  .tray-badge { position:absolute; bottom:2px; left:2px; background:rgba(0,0,0,.68); color:#fff; font-size:10px; line-height:1; padding:2px 4px; border-radius:4px; font-weight:600; pointer-events:none; }
+  .tray-file { display:flex; flex-direction:column; align-items:center; font-size:10px; padding:2px; text-align:center; overflow-wrap:anywhere; color:var(--fg); }
+  .tray-x { position:absolute; top:2px; right:2px; width:18px; height:18px; border-radius:50%; border:0; background:rgba(0,0,0,.65); color:#fff; font-size:11px; line-height:1; cursor:pointer; display:grid; place-items:center; padding:0; }
+  .tray-x:hover { background:#000; }
+  .tray-hint { font-size:12px; color:var(--mut); margin-left:4px; }
+  .recbar { flex:1; display:flex; align-items:center; gap:8px; min-height:38px; padding:0 12px; border-radius:8px; background:color-mix(in srgb, #dc3545 12%, var(--panel)); color:#dc3545; font-weight:500; font-size:13px; }
+  .recbar .rdot { width:8px; height:8px; border-radius:50%; background:#dc3545; animation:pulse 1s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
   .compose-tools { display:flex; align-items:center; gap:4px; flex-wrap:wrap; }
-  .compose-tools button { background:transparent; color:var(--mut); border:1px solid var(--line); padding:2px 9px; min-height:28px; font-size:13px; border-radius:7px; }
-  .compose-tools button:hover { color:var(--acc); border-color:var(--acc); }
+  .compose-tools button { background:transparent; color:var(--mut); border:1px solid transparent; padding:2px 8px; min-height:32px; font-size:15px; border-radius:7px; cursor:pointer; }
+  .compose-tools button:hover { color:var(--acc); border-color:var(--line); background:var(--bg); }
   .compose-tools button[aria-pressed="true"], .compose-tools button.active { background:var(--btn-bg); color:var(--btn-fg); border-color:var(--btn-bg); }
+  .compose-tools small.compose-hint { margin-left:auto; color:var(--mut); font-size:12px; }
   .fmt-spoiler-glyph { filter:blur(1.2px); }
   #text tg-spoiler { background:var(--mut); border-radius:3px; padding:0 1px; }
-  .compose-tools small { margin-left:auto; color:var(--mut); font-size:12px; }
   .font-popover .fmt-row { display:flex; gap:4px; flex-wrap:wrap; }
   .font-popover .fmt-row button { background:transparent; color:var(--mut); border:1px solid var(--line); padding:2px 9px; min-height:36px; font-size:13px; border-radius:7px; }
   .font-popover .fmt-row button:hover { color:var(--acc); border-color:var(--acc); }
   .font-popover .fmt-row button[aria-pressed="true"] { background:var(--btn-bg); color:var(--btn-fg); border-color:var(--btn-bg); }
-  .compose-row { display:flex; gap:8px; align-items:flex-end; }
+  .compose-row { display:flex; gap:6px; align-items:flex-end; }
+  .compose-row button.icon { width:38px; height:38px; min-height:38px; padding:0; display:grid; place-items:center; font-size:18px; border-radius:8px; border:1px solid transparent; background:transparent; color:var(--mut); cursor:pointer; flex:none; }
+  .compose-row button.icon:hover { color:var(--acc); border-color:var(--line); background:var(--bg); }
+  #btn-like { font-size:20px; }
+  #btn-like:hover { transform:scale(1.1); }
+  #send { min-height:38px; padding:0 16px; font-weight:600; border-radius:8px; flex:none; }
   .compose-editor { flex:1; min-width:0; min-height:40px; max-height:140px; overflow-y:auto; padding:9px 11px; border:1px solid var(--line); border-radius:9px;
                     background:var(--bg); color:var(--fg); font-family:var(--chat-font); font-size:var(--chat-font-size); line-height:var(--chat-line-height);
                     white-space:pre-wrap; word-wrap:break-word; overflow-wrap:anywhere; }
@@ -454,6 +471,12 @@
     #app:not(.chatting):not(.locked) main { display:none; }
     .back { display:inline-block; }
     .m { max-width:88%; }
+    #composer { padding:6px 8px calc(6px + env(safe-area-inset-bottom)); }
+    .compose-tools { gap:2px; }
+    .compose-tools button { min-height:36px; min-width:36px; padding:2px 6px; }
+    .compose-tools small.compose-hint { display:none; }
+    .compose-row { gap:4px; }
+    .compose-row button.icon { min-width:40px; min-height:40px; }
   }
   .head-btn { min-width:38px; min-height:44px; padding:6px 7px; flex:none; display:inline-flex; align-items:center; justify-content:center; }
   .head-btn svg { width:18px; height:18px; display:block; }
@@ -724,15 +747,21 @@
     <div id="typing" hidden></div>
     <div id="reply"><span id="reply-txt"></span> <button class="ghost" id="reply-x" aria-label="Bỏ trả lời">✕</button></div>
     <div id="composer" hidden>
-      <div class="compose-tools" role="toolbar" aria-label="Định dạng văn bản">
-        <button type="button" id="fmt-more-open" aria-haspopup="dialog" aria-expanded="false" aria-controls="font-popover" title="Định dạng và phông chữ" aria-label="Định dạng và phông chữ">Aa</button>
-        <small>Enter gửi · Shift+Enter xuống dòng</small>
+      <div id="attach-tray" class="attach-tray" hidden></div>
+      <div class="compose-tools" role="toolbar" aria-label="Công cụ soạn tin">
+        <button class="icon" id="img-btn" type="button" aria-label="Ảnh/Video" title="Ảnh/Video">🖼️</button><input id="img-file" type="file" accept="image/*,video/*,.mp4,.mov,.webm,.mkv,.3gp" multiple hidden>
+        <button class="icon" id="attach" type="button" aria-label="Tệp" title="Tệp">📎</button><input id="file" type="file" multiple hidden>
+        <button class="icon" id="btn-sticker" type="button" aria-label="Sticker" title="Sticker">🏷️</button>
+        <button class="icon" id="btn-rec" type="button" aria-label="Mic ghi âm" title="Mic ghi âm">🎙️</button>
+        <button class="icon" id="btn-app" type="button" aria-label="Ứng dụng" title="Ứng dụng">📱</button>
+        <small class="compose-hint">Enter gửi · Shift+Enter xuống dòng</small>
       </div>
       <div class="compose-row">
-        <button class="icon" id="img-btn" type="button" aria-label="Gửi ảnh" title="Gửi ảnh">🖼️</button><input id="img-file" type="file" accept="image/*" hidden>
-        <button class="icon" id="emoji-btn" type="button" aria-label="Chọn emoji" title="Emoji">😀</button><button class="icon" id="attach" aria-label="Đính kèm tệp">📎</button><input id="file" type="file" hidden>
-        <div id="text" class="compose-editor is-empty" contenteditable="true" role="textbox" aria-multiline="true" aria-label="Tin nhắn" data-placeholder="Nhập tin nhắn…" spellcheck="true"></div>
-        <button id="send">Gửi</button>
+        <button class="icon" type="button" id="fmt-more-open" aria-haspopup="dialog" aria-expanded="false" aria-controls="font-popover" title="Định dạng và phông chữ" aria-label="Aa định dạng">Aa</button>
+        <div id="text" class="compose-editor is-empty" contenteditable="true" role="textbox" aria-multiline="true" aria-label="Nhập tin nhắn…" data-placeholder="Nhập tin nhắn…" spellcheck="true"></div>
+        <button class="icon" id="emoji-btn" type="button" aria-label="Chọn emoji" title="Emoji">😀</button>
+        <button class="icon" id="btn-like" type="button" aria-label="Gửi nhanh 👍" title="Gửi 👍">👍</button>
+        <button id="send" type="button" aria-label="Gửi tin nhắn" title="Gửi" hidden>Gửi</button>
       </div>
     </div>
   </main>
@@ -1819,6 +1848,7 @@
   }
   async function openChat(c) {
     cur = c.id; curKind = c.kind; replyTo = 0; $("reply").style.display = "none";
+    if (typeof pendingFiles !== "undefined") pendingFiles = []; if (typeof renderTray === "function") renderTray(); if (typeof updateSendButtons === "function") updateSendButtons();
     $("app").classList.add("chatting"); $("gate").hidden = true; $("placeholder").hidden = true; $("head").hidden = false; $("msgs").hidden = false; $("typing").hidden = false; $("composer").hidden = false;
     $("title").textContent = c.title; $("call-a").hidden = $("call-v").hidden = c.kind !== "private";
     if (tab === "chats") renderList(chats.length ? chats : [c], false);
@@ -2078,6 +2108,7 @@
     if (!ed || isComposing) return;
     const { text } = extractComposerContent(ed);
     ed.classList?.toggle("is-empty", !text);
+    if (typeof updateSendButtons === "function") updateSendButtons();
   }
   function nodeHasFormatKind(editor, node, kind) {
     let curNode = node?.nodeType === 3 ? node.parentNode : node;
@@ -2431,16 +2462,170 @@
     lastComposerRange = null;
     syncComposerEmpty(t);
     updateComposerToolbar(t);
+    if (typeof updateSendButtons === "function") updateSendButtons();
   }
 
   // ---- gửi / sửa / xoá --------------------------------------------------------------------------
+  let pendingFiles = [];
+  const isVideoFile = (f) => {
+    if (!f) return false;
+    if (typeof f.type === "string" && f.type.startsWith("video/")) return true;
+    return /\.(mp4|mov|webm|m4v|mkv|3gp|avi|wmv|ts)$/i.test(f.name || "");
+  };
+  const isPhotoFile = (f) => {
+    if (!f) return false;
+    if (typeof f.type === "string" && f.type.startsWith("image/")) return true;
+    return /\.(jpe?g|png|webp|gif|bmp|heic|heif)$/i.test(f.name || "");
+  };
+  const isVoiceFile = (f) => {
+    if (!f) return false;
+    if (typeof f.type === "string" && (f.type.startsWith("audio/ogg") || f.type.startsWith("audio/opus"))) return true;
+    return /\.(ogg|oga|opus)$/i.test(f.name || "");
+  };
+  const isAudioFile = (f) => {
+    if (!f) return false;
+    if (typeof f.type === "string" && f.type.startsWith("audio/")) return true;
+    return /\.(mp3|m4a|aac|flac|wav)$/i.test(f.name || "");
+  };
+
+  function updateSendButtons() {
+    const ed = $("text");
+    const hasText = Boolean(ed && (ed.textContent || "").trim().length > 0);
+    const hasFiles = Boolean(pendingFiles && pendingFiles.length > 0);
+    const has = hasText || hasFiles;
+    const btnSend = $("send");
+    const btnLike = $("btn-like");
+    if (btnSend) btnSend.hidden = !has;
+    if (btnLike) btnLike.hidden = Boolean(has);
+  }
+
+  function renderTray() {
+    const tray = $("attach-tray");
+    if (!tray) return;
+    tray.hidden = !pendingFiles.length;
+    if (typeof tray.replaceChildren === "function") tray.replaceChildren();
+    else tray.textContent = "";
+    if (!pendingFiles.length) return;
+    for (let i = 0; i < pendingFiles.length; i++) {
+      const f = pendingFiles[i];
+      const item = document.createElement("div");
+      item.className = "tray-item";
+      const isVid = isVideoFile(f);
+      const isPic = isPhotoFile(f);
+      if (isPic) {
+        const img = document.createElement("img");
+        try { img.src = URL.createObjectURL(f); } catch (_) {}
+        img.alt = f.name || "Ảnh";
+        item.appendChild(img);
+      } else if (isVid) {
+        const vid = document.createElement("video");
+        try { vid.src = URL.createObjectURL(f); } catch (_) {}
+        vid.muted = true;
+        vid.playsInline = true;
+        vid.preload = "metadata";
+        item.appendChild(vid);
+        const badge = document.createElement("span");
+        badge.className = "tray-badge";
+        badge.textContent = "🎬 Video";
+        item.appendChild(badge);
+      } else {
+        const fileCard = document.createElement("span");
+        fileCard.className = "tray-file";
+        const icon = document.createElement("span");
+        icon.textContent = "📎";
+        fileCard.appendChild(icon);
+        const nameSpan = document.createElement("span");
+        nameSpan.textContent = (f.name || "Tệp").slice(0, 16);
+        fileCard.appendChild(nameSpan);
+        item.appendChild(fileCard);
+      }
+      const btnX = document.createElement("button");
+      btnX.className = "tray-x";
+      btnX.type = "button";
+      btnX.setAttribute("aria-label", "Bỏ " + (f.name || "tệp"));
+      btnX.textContent = "✕";
+      btnX.addEventListener("click", () => {
+        pendingFiles.splice(i, 1);
+        renderTray();
+        updateSendButtons();
+      });
+      item.appendChild(btnX);
+      tray.appendChild(item);
+    }
+    const hint = document.createElement("div");
+    hint.className = "tray-hint";
+    hint.textContent = pendingFiles.length + " tệp · gõ chú thích rồi bấm Gửi";
+    tray.appendChild(hint);
+  }
+
+  function stageFiles(files) {
+    if (!cur) { toast("Hãy mở một cuộc trò chuyện trước."); return; }
+    if (!files || !files.length) return;
+    pendingFiles = pendingFiles.concat([...files]).slice(0, 20);
+    renderTray();
+    updateSendButtons();
+    const ed = $("text");
+    if (ed && typeof ed.focus === "function") ed.focus();
+  }
+
+  const sendAttachedFiles = async (list, caption) => {
+    if (!list || !list.length || !cur) return;
+    const single = list.length === 1;
+    for (let i = 0; i < list.length; i++) {
+      const f = list[i];
+      if (f.size > 64 * 1024 * 1024) { toast("Tệp " + (f.name || "") + " vượt 64 MB"); continue; }
+      const kind = isVideoFile(f) ? "video" : isPhotoFile(f) ? "photo" : isVoiceFile(f) ? "voice" : isAudioFile(f) ? "audio" : "document";
+      const fileCap = (single && caption) ? caption : "";
+      toast("Đang gửi " + (list.length > 1 ? (i + 1) + "/" + list.length + ": " : "") + (f.name || "tệp") + "…");
+      try {
+        const buf = typeof f.arrayBuffer === "function" ? await f.arrayBuffer() : f;
+        let url = "/api/chats/" + cur + "/send_file?kind=" + kind + "&name=" + encodeURIComponent(f.name || "file.bin");
+        if (fileCap) url += "&caption=" + encodeURIComponent(fileCap);
+        if (replyTo) url += "&reply_to=" + replyTo;
+        await api("POST", url, buf, true);
+        toast("Đã gửi " + (f.name || ""));
+        scheduleChats();
+      } catch (er) { toast(er.message); }
+    }
+    if (caption && !single) {
+      try {
+        await api("POST", "/api/chats/" + cur + "/send", { text: caption, reply_to: replyTo });
+        scheduleChats();
+      } catch (_) {}
+    }
+    replyTo = 0;
+    if ($("reply")) $("reply").style.display = "none";
+  };
+  const sendAttachedFile = async (f) => { if (f) await sendAttachedFiles([f], ""); };
+
+  async function sendQuickLike() {
+    if (!cur) return;
+    try {
+      const m = await api("POST", "/api/chats/" + cur + "/send", { text: "👍", reply_to: replyTo });
+      replyTo = 0;
+      if ($("reply")) $("reply").style.display = "none";
+      if (m && m.id) appendMessages([Object.assign({}, m, { outgoing: true, date: m.date || Date.now() / 1000 })], false);
+      scheduleChats();
+    } catch (e) { toast(e.message); }
+  }
+
   function setReply(m) { replyTo = m.id; $("reply").style.display = "block"; $("reply-txt").textContent = "↩ " + ((m.text || m.summary).slice(0, 60)); $("text").focus(); }
   $("reply-x").addEventListener("click", () => { replyTo = 0; $("reply").style.display = "none"; });
   async function send() {
     const t = $("text");
     if (!t || !cur || isComposing) return;
     const parsed = extractComposerContent(t);
-    if (!parsed.text.trim()) return;
+    const caption = parsed.text.trim();
+    if (pendingFiles.length > 0) {
+      const list = [...pendingFiles];
+      pendingFiles = [];
+      renderTray();
+      clearComposer(t);
+      updateSendButtons();
+      await sendAttachedFiles(list, caption);
+      return;
+    }
+    if (!caption) return;
     const body = parsed.entities.length
       ? { text: parsed.text, entities: parsed.entities, reply_to: replyTo }
       : { text: parsed.text, reply_to: replyTo };
@@ -2455,6 +2640,7 @@
     catch (e) { toast(e.message); } finally { $("send").disabled = false; t.focus(); }
   }
   $("send").addEventListener("click", send);
+  if ($("btn-like")) $("btn-like").addEventListener("click", sendQuickLike);
   for (const [id, kind] of [...COMPOSER_BUTTONS, ["fmt-clear", "clear"]]) {
     $(id).addEventListener("mousedown", (e) => { e.preventDefault(); saveComposerSelection($("text")); });
     $(id).addEventListener("click", () => applyComposerFormat(kind));
@@ -2526,6 +2712,12 @@
   $("text").addEventListener("paste", (e) => {
     const ed = $("text");
     if (!ed || isComposing || !e.clipboardData) return;
+    const clipFiles = [...(e.clipboardData.files || [])];
+    if (clipFiles.length) {
+      e.preventDefault();
+      stageFiles(clipFiles);
+      return;
+    }
     e.preventDefault();
     const payload = extractPastePayload(e.clipboardData);
     if (!payload.text) return;
@@ -2561,19 +2753,106 @@
       }
     });
   }
-  $("attach").addEventListener("click", () => $("file").click());
-  $("img-btn").addEventListener("click", () => $("img-file").click());
-  $("emoji-btn").addEventListener("click", toggleEmojiPanel);
-  const sendAttachedFile = async (f) => {
-    if (!f || !cur) return;
-    if (f.size > 64 * 1024 * 1024) { toast("Tệp vượt 64 MB"); return; }
-    const kind = f.type.startsWith("image/") ? "photo" : f.type.startsWith("video/") ? "video" : f.type.startsWith("audio/") ? "audio" : "document";
-    toast("Đang gửi " + f.name + "…");
-    try { const buf = await f.arrayBuffer(); await api("POST", "/api/chats/" + cur + "/send_file?kind=" + kind + "&name=" + encodeURIComponent(f.name), buf, true); toast("Đã gửi"); scheduleChats(); }
-    catch (er) { toast(er.message); }
-  };
-  $("file").addEventListener("change", (e) => { const f = e.target.files[0]; e.target.value = ""; sendAttachedFile(f); });
-  $("img-file").addEventListener("change", (e) => { const f = e.target.files[0]; e.target.value = ""; sendAttachedFile(f); });
+  if ($("attach")) $("attach").addEventListener("click", () => $("file")?.click());
+  if ($("img-btn")) $("img-btn").addEventListener("click", () => $("img-file")?.click());
+  if ($("emoji-btn")) $("emoji-btn").addEventListener("click", toggleEmojiPanel);
+  if ($("file")) $("file").addEventListener("change", (e) => { const f = [...(e.target.files || [])]; e.target.value = ""; if (f.length) stageFiles(f); });
+  if ($("img-file")) $("img-file").addEventListener("change", (e) => { const f = [...(e.target.files || [])]; e.target.value = ""; if (f.length) stageFiles(f); });
+  if ($("btn-sticker")) $("btn-sticker").addEventListener("click", toggleEmojiPanel);
+  if ($("btn-app")) $("btn-app").addEventListener("click", () => toast("Tiện ích hội thoại: Định dạng Aa, Gửi ảnh/video, Đính kèm tệp, Ghi âm"));
+
+  let audioRecorder = null;
+  async function toggleRecord() {
+    const btn = $("btn-rec");
+    if (audioRecorder) { audioRecorder.stop(); return; }
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      toast("Trình duyệt không hỗ trợ micro.");
+      return;
+    }
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (e) {
+      toast("Không mở được micro: " + (e.message || e));
+      return;
+    }
+    const mime = ["audio/webm;codecs=opus", "audio/webm", "audio/ogg", "audio/mp4"].find((m) => window.MediaRecorder && MediaRecorder.isTypeSupported(m));
+    const rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+    const chunks = [];
+    let cancelled = false;
+    const started = Date.now();
+    const ed = $("text");
+    const bar = document.createElement("div");
+    bar.className = "recbar";
+    const dot = document.createElement("span");
+    dot.className = "rdot";
+    const timerSpan = document.createElement("span");
+    timerSpan.textContent = "00:00";
+    const spacer = document.createElement("span");
+    spacer.style.flex = "1";
+    const cancelBtn = document.createElement("button");
+    cancelBtn.type = "button";
+    cancelBtn.className = "ghost";
+    cancelBtn.style.color = "inherit";
+    cancelBtn.textContent = "Huỷ";
+    cancelBtn.addEventListener("click", () => { cancelled = true; rec.stop(); });
+    bar.appendChild(dot); bar.appendChild(timerSpan); bar.appendChild(spacer); bar.appendChild(cancelBtn);
+
+    const timer = setInterval(() => {
+      const sec = Math.floor((Date.now() - started) / 1000);
+      const m = String(Math.floor(sec / 60)).padStart(2, "0");
+      const s = String(sec % 60).padStart(2, "0");
+      timerSpan.textContent = m + ":" + s;
+    }, 500);
+
+    if (ed) { ed.hidden = true; ed.after(bar); }
+    if (btn) { btn.textContent = "⏹"; btn.setAttribute("aria-label", "Dừng và gửi"); }
+
+    rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+    rec.onstop = async () => {
+      clearInterval(timer);
+      stream.getTracks().forEach((tr) => tr.stop());
+      bar.remove();
+      if (ed) ed.hidden = false;
+      if (btn) { btn.textContent = "🎙️"; btn.setAttribute("aria-label", "Mic ghi âm"); }
+      audioRecorder = null;
+      if (cancelled || !chunks.length || !cur) return;
+      const blob = new Blob(chunks, { type: rec.mimeType || "audio/webm" });
+      const f = new File([blob], "voice.ogg", { type: blob.type });
+      await sendAttachedFiles([f], "");
+    };
+    audioRecorder = rec;
+    rec.start();
+  }
+  if ($("btn-rec")) $("btn-rec").addEventListener("click", toggleRecord);
+
+  const mainPane = document.querySelector?.("main");
+  if (mainPane && typeof mainPane.addEventListener === "function") {
+    mainPane.addEventListener("dragover", (e) => { if (cur) e.preventDefault(); });
+    mainPane.addEventListener("drop", (e) => {
+      if (cur && e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) {
+        e.preventDefault();
+        stageFiles(e.dataTransfer.files);
+      }
+    });
+  }
+
+  if (typeof window !== "undefined") {
+    window.__COMPOSER_TEST_HOOK__ = {
+      getPending: () => pendingFiles,
+      stageFiles,
+      renderTray,
+      updateSendButtons,
+      sendAttachedFiles,
+      sendQuickLike,
+      send,
+      isVideoFile,
+      isPhotoFile,
+      isVoiceFile,
+      isAudioFile,
+    };
+  }
+  updateSendButtons();
   // ---- Hình nền hội thoại: DÙNG HÌNH NỀN CỦA TELEGRAM qua TDLib (điện thoại thấy giống web) — bộ sưu tập, màu/chuyển màu, ảnh tự gán,
   // «đổi cho cả hai bên», độ tối ban đêm. Gateway giữ ảnh tự gán ≤3 MB rồi đưa cho Telegram.
   const WP_COLORS = ["#ffffff", "#e8f0fe", "#e3f5ea", "#fff4d6", "#fde8ef", "#efe8fb", "#dff4f2", "#cfd8dc", "#90a4ae", "#455a64", "#263238", "#101820", "#0b3d91", "#1b5e20", "#6a1b9a", "#b71c1c", "#e65100", "#ffb300"];

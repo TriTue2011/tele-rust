@@ -143,7 +143,7 @@ fn local_actor(f: &Fixture) -> (Actor, mpsc::UnboundedReceiver<Command>) {
     let (sender,commands) = mpsc::unbounded_channel();
     let (events,_) = broadcast::channel(256);
     (Actor { td:f.td.clone(), media:Box::new(media), protocol, p2p:false, data_dir:f.dir.clone(), defaults:Devices::default(),
-        calls:vec![], catalog:catalog::empty(), handled:HashSet::new(), events, sender, profile:(640,360,15), cast_port:None }, commands)
+        calls:vec![], catalog:catalog::empty(), handled:HashSet::new(), handled_order:VecDeque::new(), events, sender, profile:(640,360,15), cast_port:None }, commands)
 }
 
 #[test]
@@ -769,7 +769,7 @@ fn history_pruning_never_prunes_live_calls_or_forgets_handled_ids() {
     // Kiểm tra qua actor thuần, không cần thread hay NTgCalls thật.
     let (updates,_)=broadcast::channel(1); let (sender,_)=mpsc::unbounded_channel(); let (events,_)=broadcast::channel(1);
     let media=FakeMedia(Arc::new(Mutex::new(FakeState::default()))); let protocol=media.protocol().unwrap();
-    let mut actor=Actor {td:Arc::new(FakeTd{requests:Arc::new(Mutex::new(Vec::new())),updates,early:Mutex::new(None),fail:Mutex::new(None)}),media:Box::new(media),protocol,p2p:false,data_dir:"data".into(),defaults:Devices::default(),catalog:catalog::empty(),calls:vec![],handled:HashSet::from([99]),events,sender,profile:(640,360,15),cast_port:None};
+    let mut actor=Actor {td:Arc::new(FakeTd{requests:Arc::new(Mutex::new(Vec::new())),updates,early:Mutex::new(None),fail:Mutex::new(None)}),media:Box::new(media),protocol,p2p:false,data_dir:"data".into(),defaults:Devices::default(),catalog:catalog::empty(),calls:vec![],handled:HashSet::from([99]),handled_order:VecDeque::from([99]),events,sender,profile:(640,360,15),cast_port:None};
     for i in 0..27 { let mut c=LiveCall::new(100+i,true,false,Devices::default(),Path::new("data")); c.state="ended"; c.ended=Some(Instant::now()); actor.calls.push(c); }
     actor.calls.push(LiveCall::new(1,true,false,Devices::default(),Path::new("data")));
     actor.prune(); assert_eq!(actor.calls.len(),21); assert_eq!(actor.calls[0].user_id,107); assert_eq!(actor.calls.last().unwrap().state,"dialing"); assert!(actor.handled.contains(&99));
@@ -855,4 +855,93 @@ async fn actor_run_delivers_audio_and_video_from_separate_channels() {
     assert_eq!(info["frame_bytes"], 4);
     assert_eq!(info["peak"], 32768);
     assert_eq!(info["view"]["size"], "8x4");
+}
+
+#[test]
+fn mark_handled_caps_history_at_256() {
+    let (updates, _) = broadcast::channel(1);
+    let (sender, _) = mpsc::unbounded_channel();
+    let (events, _) = broadcast::channel(1);
+    let media = FakeMedia(Arc::new(Mutex::new(FakeState::default())));
+    let protocol = media.protocol().unwrap();
+    let mut actor = Actor {
+        td: Arc::new(FakeTd {
+            requests: Arc::new(Mutex::new(Vec::new())),
+            updates,
+            early: Mutex::new(None),
+            fail: Mutex::new(None),
+        }),
+        media: Box::new(media),
+        protocol,
+        p2p: false,
+        data_dir: "data".into(),
+        defaults: Devices::default(),
+        catalog: catalog::empty(),
+        calls: vec![],
+        handled: HashSet::new(),
+        handled_order: VecDeque::new(),
+        events,
+        sender,
+        profile: (640, 360, 15),
+        cast_port: None,
+    };
+    for id in 0..300 {
+        actor.mark_handled(id);
+    }
+    assert_eq!(actor.handled.len(), 256);
+    assert_eq!(actor.handled_order.len(), 256);
+    assert!(!actor.handled.contains(&0));
+    assert!(!actor.handled.contains(&43));
+    assert!(actor.handled.contains(&44));
+    assert!(actor.handled.contains(&299));
+}
+
+#[tokio::test]
+async fn actor_end_cleans_up_call_live_files() {
+    let temp_dir = std::env::temp_dir().join(format!("tele_test_clean_{}", std::process::id()));
+    let live_dir = temp_dir.join("live");
+    let _ = fs::create_dir_all(&live_dir);
+    let (updates, _) = broadcast::channel(1);
+    let (sender, _) = mpsc::unbounded_channel();
+    let (events, _) = broadcast::channel(1);
+    let media = FakeMedia(Arc::new(Mutex::new(FakeState::default())));
+    let protocol = media.protocol().unwrap();
+    let mut actor = Actor {
+        td: Arc::new(FakeTd {
+            requests: Arc::new(Mutex::new(Vec::new())),
+            updates,
+            early: Mutex::new(None),
+            fail: Mutex::new(None),
+        }),
+        media: Box::new(media),
+        protocol,
+        p2p: false,
+        data_dir: temp_dir.clone(),
+        defaults: Devices::default(),
+        catalog: catalog::empty(),
+        calls: vec![],
+        handled: HashSet::new(),
+        handled_order: VecDeque::new(),
+        events,
+        sender,
+        profile: (640, 360, 15),
+        cast_port: None,
+    };
+    let c = LiveCall::new(101, true, false, Devices::default(), &temp_dir);
+    let cid = c.id.clone();
+    actor.calls.push(c);
+
+    let f1 = live_dir.join(format!("{cid}_in.pcm"));
+    let f2 = live_dir.join(format!("{cid}_say_1.pcm"));
+    let f_other = live_dir.join("other_say_1.pcm");
+    fs::write(&f1, b"in").unwrap();
+    fs::write(&f2, b"say").unwrap();
+    fs::write(&f_other, b"other").unwrap();
+
+    actor.end(0, "test finished").await;
+
+    assert!(!f1.exists());
+    assert!(!f2.exists());
+    assert!(f_other.exists());
+    let _ = fs::remove_dir_all(&temp_dir);
 }

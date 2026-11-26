@@ -166,6 +166,7 @@ impl EventBridge {
 
 impl Drop for EventBridge {
     fn drop(&mut self) {
+        self.worker.abort();
         if let Some(webhook) = &self.webhook { webhook.abort(); }
     }
 }
