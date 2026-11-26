@@ -4,12 +4,19 @@ name: Auto Release
 # gắn thẻ, tạo GitHub Release — y hệt deploy/phat-hanh.py chạy tay, chỉ bỏ bước build.sh test (cần SSH tới
 # máy dựng riêng trong mạng LAN nội bộ, cloud runner không với tới) vì ci.yml đã tự kiểm cargo test cho ĐÚNG
 # commit này trong một workflow riêng chạy song song trên cùng lần push.
+#
+# BÀI HỌC 26/11: thẻ do GITHUB_TOKEN tự đẩy KHÔNG kích hoạt lại workflow Image/CI (GitHub tự chặn push do
+# GITHUB_TOKEN gây ra kích hoạt lại workflow khác, tránh vòng lặp vô hạn) — mọi bản v0.7.33–v0.7.36 vì vậy
+# CHƯA từng có ảnh dựng riêng cho đúng thẻ, chỉ có ảnh của lần đẩy main TRƯỚC ĐÓ (bằng PAT cá nhân, có kích
+# hoạt thật). Sửa: KHÔNG dựa vào push:tags kích hoạt image.yml nữa — chủ động gọi workflow_dispatch của nó
+# ngay sau khi tạo thẻ (lệnh workflow_dispatch qua API, không phải push, nên GITHUB_TOKEN gọi được bình thường).
 on:
   push:
     branches: [main]
 
 permissions:
   contents: write
+  actions: write
 
 concurrency:
   group: auto-release-${{ github.ref }}
@@ -39,3 +46,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PHAT_HANH_SKIP_BUILD_TEST: "1"
         run: python3 deploy/phat-hanh.py patch
+
+      - name: Tự kích hoạt dựng ảnh cho đúng thẻ vừa tạo (push:tags bị GitHub chặn cascade từ GITHUB_TOKEN)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VER=$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          gh workflow run image.yml --ref main -f tag="v${VER}"
