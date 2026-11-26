@@ -680,6 +680,30 @@ async fn browser_audio_uses_decoded_frames_and_never_logs_tokens() {
 }
 
 #[tokio::test]
+async fn audio_out_after_connect_switches_file_playback_to_external() {
+    // AI mở luồng nghe SAU khi cuộc gọi đã nối, loa không cấu hình (kind="file" — đúng ca AI bật, connect_now bỏ loa):
+    // phải đổi Playback sang External để khung tiếng tới on_frames, không thì tiếng chảy hết vào file, AI điếc.
+    let f=Fixture::new(false);
+    f.manager().settings(json!({"speaker":""})).await.unwrap();
+    let c=f.outgoing(false).await;let id=c["id"].as_str().unwrap();
+    assert_eq!(c["playback"]["kind"],"file");
+    f.ready(7,42,true,&["8.0.0"]).await;
+    let before=f.ops().len();
+    let response=f.manager().media(json!({"id":id,"action":"audio_out"})).await.unwrap();
+    let token=response["audio_out"]["url"].as_str().unwrap().split("?t=").nth(1).unwrap().to_owned();
+    let ops=f.ops();
+    assert_eq!(ops.len(),before+1);
+    assert!(matches!(ops.last().unwrap(),MediaOp::Sources(_,StreamMode::Playback,d) if d.microphone.as_ref().unwrap().media_source==MediaSource::External));
+    let mut stream=f.manager().audio_out(id,&token).await.unwrap();
+    let metadata=FrameData{absolute_capture_timestamp_ms:0,rotation:VideoRotation::VideoRotation0,width:0,height:0};
+    f.emit(MediaEvent::Frames(42,StreamMode::Playback,StreamDevice::Microphone,vec![Frame{ssrc:0,data:vec![5,6,7,8],frame_data:metadata}])).await;
+    assert_eq!(stream.audio.recv().await.unwrap(),[5,6,7,8]);
+    // mở lần hai không đổi nguồn lần nữa
+    f.manager().media(json!({"id":id,"action":"audio_out"})).await.unwrap();
+    assert_eq!(f.ops().len(),before+1);
+}
+
+#[tokio::test]
 async fn browser_devices_auto_catalog_and_deferred_camera_validate_before_call() {
     let f=Fixture::new(false);
     assert_eq!(f.manager().settings(Value::Null).await.unwrap()["auto"],false);

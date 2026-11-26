@@ -862,18 +862,19 @@ impl Actor {
         if body["action"] == "audio_out" {
             let first_open = self.calls[i].browser_audio.is_none();
             if first_open { self.calls[i].browser_audio = Some(browser_audio::BrowserAudio::new()?); }
-            // Mới mở lần đầu + đang nối thẳng loa vật lý ("push"): đổi Playback sang "external" (on_frames) và TỰ
-            // spawn ffmpeg-loa thay NTgCalls, để tiếng vào được CẢ AI lẫn loa — xem audio_sink.rs.
-            if first_open && self.calls[i].playback_kind == "push" && self.calls[i].audio_sink.is_none() && self.calls[i].media_created {
-                let url = self.calls[i].playback_cmd.clone();
-                match audio_sink::AudioSink::spawn_push(&url) {
-                    Ok(sink) => {
-                        self.calls[i].audio_sink = Some(sink);
-                        let desc = self.calls[i].playback()?;
-                        self.media.execute(MediaOp::Sources(self.calls[i].user_id, StreamMode::Playback, desc)).await.map_err(|_| media_error())?;
+            // Mới mở lần đầu: LUÔN đổi Playback sang "external" (on_frames) để AI nghe được, BẤT KỂ kind — đo thật 26/11:
+            // AI bật thì connect_now bỏ loa nên kind thường là "file", nếu chỉ đổi khi kind=="push" thì tiếng (5MB/cuộc)
+            // vẫn chảy vào file, AI điếc. Chỉ khi có loa thật ("push") mới TỰ spawn ffmpeg-loa để tee — xem audio_sink.rs.
+            if first_open && self.calls[i].media_created {
+                if self.calls[i].playback_kind == "push" && self.calls[i].audio_sink.is_none() {
+                    let url = self.calls[i].playback_cmd.clone();
+                    match audio_sink::AudioSink::spawn_push(&url) {
+                        Ok(sink) => self.calls[i].audio_sink = Some(sink),
+                        Err(err) => self.calls[i].log(&format!("audio_sink: không spawn được ffmpeg loa ({})", err.message)),
                     }
-                    Err(err) => self.calls[i].log(&format!("audio_sink: không spawn được ffmpeg loa ({})", err.message)),
                 }
+                let desc = self.calls[i].playback()?;
+                self.media.execute(MediaOp::Sources(self.calls[i].user_id, StreamMode::Playback, desc)).await.map_err(|_| media_error())?;
             }
             let c = &mut self.calls[i];
             return Ok(json!({"audio_out":c.browser_audio.as_mut().unwrap().descriptor(&c.id)?}));
