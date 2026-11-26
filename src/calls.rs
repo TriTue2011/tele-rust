@@ -347,10 +347,13 @@ impl LiveCall {
     fn playback_with(&self, kind: &str, cmd: &str, cast: Option<&cast::CastSink>) -> Result<ntgcalls::MediaDescription, GwError> {
         let path = self.playback_path.to_string_lossy();
         if kind == "browser" { return playback_description("external", "", &path, self.view_on); }
-        // AI đang nghe (browser_audio đã mở) VÀ loa là "push" (nối thẳng loa vật lý): đổi sang "external" để NTgCalls
-        // giao khung tiếng qua on_frames thay vì tự spawn ffmpeg nội bộ — audio_sink.rs tự spawn+ghi loa thay, cho
-        // tiếng vào CẢ browser_audio lẫn loa từ cùng một nguồn (xem audio_sink.rs để biết lý do).
-        if kind == "push" && self.browser_audio.is_some() { return playback_description("external", "", &path, self.view_on); }
+        // AI đang nghe (browser_audio đã mở): LUÔN đổi sang "external" để NTgCalls giao khung tiếng qua on_frames
+        // thay vì tự xử lý nội bộ — bất kể kind là gì (không chỉ "push"). Quan trọng: khi AI bật, connect_now loại
+        // trừ mic/speaker (tránh tranh tiếng, xem _answer_by_rule phía HA) nên loa KHÔNG BAO GIỜ là "push" lúc này
+        // — nếu chỉ kiểm kind=="push" thì AI sẽ "điếc" đúng lúc cần nghe nhất (đo thật 26/11: frames_in=0 trở lại
+        // sau khi sửa connect_now loại trừ speaker). audio_sink.rs chỉ thật sự spawn tiến trình loa khi kind gốc
+        // LÀ "push" (xem set_media/set_playback) — call không có loa thật thì audio_sink=None, chỉ tee cho AI thôi.
+        if self.browser_audio.is_some() { return playback_description("external", "", &path, self.view_on); }
         if let Some(cast) = cast { return playback_description("shell", &cast.encoder_command(), &path, self.view_on); }
         playback_description(kind, cmd, &path, self.view_on)
     }
