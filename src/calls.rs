@@ -9,6 +9,7 @@ mod sources;
 mod snapshot;
 mod browser;
 mod browser_audio;
+mod audio_sink;
 mod catalog;
 pub(crate) mod trace;
 pub mod versions;
@@ -257,6 +258,7 @@ struct LiveCall {
     browser_mic: Option<browser::BrowserMic>,
     browser_cam: Option<browser::BrowserCam>,
     browser_audio: Option<browser_audio::BrowserAudio>,
+    audio_sink: Option<audio_sink::AudioSink>,
     cam_off: bool,
     view_on: bool,
     peer_video: bool,
@@ -288,7 +290,7 @@ impl LiveCall {
         let playback_path = data_dir.join("live").join(format!("{id}_in.pcm"));
         let mut c = Self { id, td_id: None, user_id, outgoing, video, state: if outgoing { "dialing" } else { "ringing" },
             accepted: false, ready_done: false, media_created: false, pending_signaling: Vec::new(), devices, mic_source, playback_kind, playback_cmd,
-            playback_path, playback_final: None, cast: None, browser_mic: None, browser_cam: None, browser_audio: None, cam_off: false, view_on: video, peer_video: false,
+            playback_path, playback_final: None, cast: None, browser_mic: None, browser_cam: None, browser_audio: None, audio_sink: None, cam_off: false, view_on: video, peer_video: false,
             view: json!({"frames":0,"jpeg":0,"size":"","dropped":0,"bad":0}), snapshot: Default::default(), trace: None, sig: [0;4], frames_in: 0, frame_bytes: 0,
             peak: 0, error: String::new(), emojis: json!([]), started: Instant::now(), active: None, ended: None,
             events: VecDeque::new(), capture_revision: 0, speech_revision: None, speech_pending: false };
@@ -344,6 +346,10 @@ impl LiveCall {
     fn playback_with(&self, kind: &str, cmd: &str, cast: Option<&cast::CastSink>) -> Result<ntgcalls::MediaDescription, GwError> {
         let path = self.playback_path.to_string_lossy();
         if kind == "browser" { return playback_description("external", "", &path, self.view_on); }
+        // AI đang nghe (browser_audio đã mở) VÀ loa là "push" (nối thẳng loa vật lý): đổi sang "external" để NTgCalls
+        // giao khung tiếng qua on_frames thay vì tự spawn ffmpeg nội bộ — audio_sink.rs tự spawn+ghi loa thay, cho
+        // tiếng vào CẢ browser_audio lẫn loa từ cùng một nguồn (xem audio_sink.rs để biết lý do).
+        if kind == "push" && self.browser_audio.is_some() { return playback_description("external", "", &path, self.view_on); }
         if let Some(cast) = cast { return playback_description("shell", &cast.encoder_command(), &path, self.view_on); }
         playback_description(kind, cmd, &path, self.view_on)
     }
@@ -687,6 +693,7 @@ impl Actor {
         c.browser_mic = None;
         c.browser_cam = None;
         c.browser_audio = None;
+        c.audio_sink = None;
         if let Some(cast) = c.cast.take() { cast.close().await; }
         c.ended = Some(Instant::now());
         if let Some(id) = c.td_id { self.handled.insert(id); }
@@ -848,8 +855,22 @@ impl Actor {
         let i = self.find(&body)?;
         if self.calls[i].state == "ended" { return Err(missing()); }
         if body["action"] == "audio_out" {
+            let first_open = self.calls[i].browser_audio.is_none();
+            if first_open { self.calls[i].browser_audio = Some(browser_audio::BrowserAudio::new()?); }
+            // Mới mở lần đầu + đang nối thẳng loa vật lý ("push"): đổi Playback sang "external" (on_frames) và TỰ
+            // spawn ffmpeg-loa thay NTgCalls, để tiếng vào được CẢ AI lẫn loa — xem audio_sink.rs.
+            if first_open && self.calls[i].playback_kind == "push" && self.calls[i].audio_sink.is_none() && self.calls[i].media_created {
+                let url = self.calls[i].playback_cmd.clone();
+                match audio_sink::AudioSink::spawn_push(&url) {
+                    Ok(sink) => {
+                        self.calls[i].audio_sink = Some(sink);
+                        let desc = self.calls[i].playback()?;
+                        self.media.execute(MediaOp::Sources(self.calls[i].user_id, StreamMode::Playback, desc)).await.map_err(|_| media_error())?;
+                    }
+                    Err(err) => self.calls[i].log(&format!("audio_sink: không spawn được ffmpeg loa ({})", err.message)),
+                }
+            }
             let c = &mut self.calls[i];
-            if c.browser_audio.is_none() { c.browser_audio = Some(browser_audio::BrowserAudio::new()?); }
             return Ok(json!({"audio_out":c.browser_audio.as_mut().unwrap().descriptor(&c.id)?}));
         }
         if !["mic","mic_muted","camera","camera_off","video"].iter().any(|k| body.get(*k).is_some()) && !matches!(body["mic_format"].as_str(),Some("auto"|"s16le16k")) {
@@ -911,6 +932,9 @@ impl Actor {
         c.check_playback(&kind, &cmd, self.cast_port)?;
         if c.cast.is_some() && kind == c.playback_kind && cmd == c.playback_cmd { return Ok(c.info()); }
         let mut next_cast = None;
+        // AI đang nghe (browser_audio mở) + đổi sang loa "push" mới: cần spawn lại audio_sink CHO ĐÚNG url mới
+        // trước khi báo Sources — playback_with tự chọn "external" khi thấy browser_audio, nhưng không tự spawn.
+        let next_sink = if c.browser_audio.is_some() && kind == "push" { Some(audio_sink::AudioSink::spawn_push(&cmd)?) } else { None };
         if c.media_created {
             next_cast = LiveCall::open_cast(&kind, &cmd).await?;
             let desc = c.playback_with(&kind, &cmd, next_cast.as_ref())?;
@@ -921,6 +945,7 @@ impl Actor {
         if let Some(cast) = &mut next_cast {
             cast.start(cast::target(&cmd).unwrap(), self.cast_port.unwrap(), &c.id);
         }
+        c.audio_sink = next_sink;
         c.cast = next_cast;
         c.playback_kind = kind;
         if c.playback_kind == "push" { c.devices.speaker = cmd.clone(); }
@@ -976,6 +1001,7 @@ impl Actor {
                         }
                     } else {
                         if let Some(audio) = &c.browser_audio { audio.push(&frame.data); }
+                        if let Some(sink) = &c.audio_sink { sink.push(frame.data.clone()); }
                         if c.frames_in == 0 { c.log("NTgCalls: khung tiếng đầu"); }
                         c.frames_in += 1; c.frame_bytes += frame.data.len() as u64;
                         for sample in frame.data.chunks_exact(2).take(960) { c.peak = c.peak.max((i16::from_le_bytes([sample[0],sample[1]]) as i32).abs()); }

@@ -55,6 +55,22 @@ pub fn speaker_command(url: &str) -> Result<String, GwError> {
     Ok(format!("ffmpeg -hide_banner -loglevel error -fflags nobuffer -flags low_delay -probesize 32 -analyzeduration 0 -f s16le -ar 48000 -ac 1 -i pipe:0 {out} -flush_packets 1 -method POST -chunked_post 1 -content_type application/octet-stream {}", quote(url)))
 }
 
+/// Cùng lệnh với `speaker_command()` nhưng dạng argv trực tiếp (không qua chuỗi shell) — dùng khi CHÍNH Rust tự
+/// spawn tiến trình (audio_sink.rs), không giao cho NTgCalls chạy qua `sh -c`.
+pub(super) fn speaker_args(url: &str) -> Result<Vec<String>, GwError> {
+    let m = speaker_re().captures(url).ok_or_else(|| GwError::bad_request("speaker không phải cửa bộ đàm r1_speaker / dahua_talk"))?;
+    let codec: &[&str] = if &m[1] == "duplex" { &["-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", "-f", "s16le"] }
+        else { &["-ac", "1", "-ar", "8000", "-c:a", "pcm_alaw", "-f", "alaw"] };
+    let mut args: Vec<String> = ["-hide_banner", "-loglevel", "error", "-fflags", "nobuffer", "-flags", "low_delay",
+        "-probesize", "32", "-analyzeduration", "0", "-f", "s16le", "-ar", "48000", "-ac", "1", "-i", "pipe:0"]
+        .iter().map(|s| s.to_string()).collect();
+    args.extend(codec.iter().map(|s| s.to_string()));
+    args.extend(["-flush_packets", "1", "-method", "POST", "-chunked_post", "1", "-content_type", "application/octet-stream"]
+        .iter().map(|s| s.to_string()));
+    args.push(url.to_owned());
+    Ok(args)
+}
+
 pub(super) fn video_profile(value: &str) -> (i16, i16, u8) {
     if value.trim().eq_ignore_ascii_case("low") { (480, 270, 10) } else { (640, 360, 15) }
 }
