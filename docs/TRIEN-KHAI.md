@@ -1,4 +1,4 @@
-# Hướng dẫn triển khai — tele-rust (`v0.7.45`)
+# Hướng dẫn triển khai — tele-rust (`v0.7.46`)
 
 ## 1. Yêu cầu hệ thống
 
