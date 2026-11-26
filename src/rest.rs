@@ -693,6 +693,9 @@ fn router_with(ctx: Arc<Ctx>) -> Router {
     for path in ["/index.html","/ui/","/ui/index.html"] {r=r.route(path,on(get,crate::web::accounts));}
     r = r.route("/ui/qrcode.min.js", on(get, crate::web::qrcode))
         .route("/ui/emoji.js", on(get, crate::web::emoji_js)).route("/ui/emoji-data.js", on(get, crate::web::emoji_data_js)).route("/ui/wallpaper-art.js", on(get, crate::web::wallpaper_art_js));
+    for path in ["/favicon.ico", "/favicon.png", "/ui/favicon.ico"] {
+        r = r.route(path, on(get, crate::web::favicon));
+    }
     r = r.route("/ui/api/auth/status", route(get, s(Auth)));
     for action in ["setup", "login", "logout", "logout-all", "password"] {
         r = r.route(&format!("/ui/api/auth/{action}"), route(post, s(Auth)));
@@ -1525,5 +1528,20 @@ mod tests {
         }
         let error = result.err().expect("thiếu token phải từ chối cấu hình");
         assert!(error.contains("GATEWAY_TOKEN") && error.contains("chưa đặt"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn favicon_route_returns_png_without_auth_and_rejects_post() {
+        let (app, call, chat) = app();
+        for path in ["/favicon.ico", "/favicon.png", "/ui/favicon.ico"] {
+            let response = app.clone().oneshot(req("GET", path, None, Body::empty())).await.unwrap();
+            assert_eq!(response.status(), 200);
+            assert_eq!(response.headers()[header::CONTENT_TYPE], "image/png");
+            assert_eq!(response.headers()[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
+            let bytes = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+            assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
+            assert_eq!(send(&app, req("POST", path, None, Body::empty())).await.0, 405);
+        }
+        assert_eq!((call.count(), chat.count()), (0, 0));
     }
 }

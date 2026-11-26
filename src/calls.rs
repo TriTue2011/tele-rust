@@ -317,7 +317,7 @@ impl LiveCall {
         json!({"id":self.id,"user_id":self.user_id,"outgoing":self.outgoing,"video":self.video,
             "state":self.state,"emojis":self.emojis,"error":self.error,"seconds":(duration*10.0).round()/10.0,
             "peer_video":self.peer_video,"view":self.view,"diag":{},"sig":{"tx_n":self.sig[0],"tx_b":self.sig[1],"rx_n":self.sig[2],"rx_b":self.sig[3]},
-            "cpu_max":0.0,"mic_muted":self.devices.mic=="silence","cam_off":self.cam_off,"frames_in":self.frames_in,"frame_bytes":self.frame_bytes,"peak":self.peak,
+            "cpu_max":0.0,"mic_muted":self.devices.mic=="silence","saying":self.speech_revision.is_some(),"cam_off":self.cam_off,"frames_in":self.frames_in,"frame_bytes":self.frame_bytes,"peak":self.peak,
             "playback":{"kind":self.playback_kind,"bytes":self.playback_size(),"speaker_configured":!self.devices.speaker.is_empty()},"events":self.events.iter().skip(self.events.len().saturating_sub(40)).collect::<Vec<_>>()})
     }
 
@@ -712,7 +712,7 @@ impl Actor {
         let _ = fs::remove_file(&c.playback_path);
         let _ = fs::remove_file(format!("{}.wav", c.playback_path.to_string_lossy()));
         if let Some(revision) = c.speech_revision.take() {
-            let _ = fs::remove_file(self.data_dir.join("live").join(format!("{}_say_{revision}.wav", c.id)));
+            let _ = fs::remove_file(self.data_dir.join("live").join(format!("{}_say_{revision}.pcm", c.id)));
         }
         let reason = c.td_id.map(|_| sources::mask(why));
         let summary = c.info();
@@ -1085,20 +1085,21 @@ impl Actor {
     async fn start_speech(&mut self, i: usize, pcm: &[u8]) -> Reply {
         let seconds = pcm.len() as f64/96_000.0;
         let revision = self.calls[i].capture_revision+1;
-        let path = self.data_dir.join("live").join(format!("{}_say_{revision}.wav",self.calls[i].id));
+        let path = self.data_dir.join("live").join(format!("{}_say_{revision}.pcm",self.calls[i].id));
         let mut file = OpenOptions::new().create(true).truncate(true).write(true).mode(0o600).open(&path).map_err(|_| io_error())?;
-        file.write_all(&wav(pcm)).map_err(|_| io_error())?;
+        file.write_all(pcm).map_err(|_| io_error())?;
         let c = &mut self.calls[i];
         let (mic,fmt) = (c.devices.mic.clone(), c.devices.mic_format.clone());
-        c.devices.mic = path.to_string_lossy().into_owned(); c.devices.mic_format = "auto".into(); c.capture_revision += 1;
+        c.devices.mic = path.to_string_lossy().into_owned(); c.devices.mic_format = "s16le48k".into(); c.capture_revision += 1;
         c.speech_revision = Some(revision);
         let (id,revision) = (c.id.clone(),c.capture_revision);
         if let Err(e) = self.capture(i).await {
             self.calls[i].devices.mic = mic; self.calls[i].devices.mic_format = fmt; self.calls[i].speech_revision = None; let _ = fs::remove_file(path); return Err(e);
         }
+        self.calls[i].log(&format!("say: phát {:.1}s qua nguồn mic tạm (rev {revision}), trả mic sau {:.1}s", seconds, seconds + SAY_TAIL_S));
         let tx = self.sender.clone();
         tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_secs_f64(seconds+0.4)).await;
+            tokio::time::sleep(Duration::from_secs_f64(seconds + SAY_TAIL_S)).await;
             let _ = tx.send(Command::RestoreMic(id,revision,mic,fmt,path));
         });
         Ok(json!({"seconds":(seconds*10.0).round()/10.0}))
@@ -1111,11 +1112,18 @@ impl Actor {
                 self.calls[i].devices.mic = mic;
                 self.calls[i].devices.mic_format = fmt;
                 if self.capture(i).await.is_err() { self.calls[i].log("không trả được nguồn mic sau say"); }
+                else { self.calls[i].log(&format!("say xong: trả nguồn mic (rev {revision})")); }
             }
         }
         let _ = fs::remove_file(path);
     }
 }
+
+/// Thời gian giữ nguồn mic tạm THÊM sau thời lượng PCM để bù trễ khởi động thật sau khi đã bật `-re`, bỏ `LIVE_IN`
+/// và đọc thẳng `.pcm` thô (`-f s16le -ar 48000 -ac 1`): không còn ~1,35 s probe WAV, chỉ còn trễ spawn `sh`+`ffmpeg`
+/// và xả đệm NTgCalls (~0,2–0,5 s). Chọn 0,8 s (>= trễ khởi động thật kể cả lúc tải vừa) thay vì 2,0 s để không tạo
+/// khoảng lặng dư quá dài sau mỗi lượt nói; HA poll trường `"saying"` nên không lệch nhịp hay dính 409 CALL_BUSY.
+const SAY_TAIL_S: f64 = 0.8;
 
 async fn decode_audio(audio: Vec<u8>) -> Result<Vec<u8>, GwError> {
     use std::process::Stdio;

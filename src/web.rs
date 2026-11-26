@@ -35,6 +35,10 @@ fn script(body:&'static str)->Response {
 pub(crate) async fn emoji_js()->Response { script(include_str!("../web/emoji.js")) }
 pub(crate) async fn emoji_data_js()->Response { script(include_str!("../web/emoji-data.js")) }
 pub(crate) async fn wallpaper_art_js()->Response { script(include_str!("../web/wallpaper-art.js")) }
+pub(crate) async fn favicon()->Response {
+    ([(header::CONTENT_TYPE,"image/png"), (header::X_CONTENT_TYPE_OPTIONS,"nosniff"),
+        (header::CACHE_CONTROL,"public, max-age=86400")], include_bytes!("../web/icon.png").as_slice()).into_response()
+}
 
 #[cfg(test)]
 mod tests {
@@ -49,6 +53,16 @@ mod tests {
             assert!(csp.contains("connect-src 'self'"));
             assert!(csp.contains("frame-ancestors 'none'"),"mặc định (không chạy add-on) phải chặn nhúng iframe: {csp}");
         }
+    }
+
+    #[tokio::test]
+    async fn favicon_serves_embedded_png_with_nosniff() {
+        let response = favicon().await;
+        assert_eq!(response.status(), 200);
+        assert_eq!(response.headers()[header::CONTENT_TYPE], "image/png");
+        assert_eq!(response.headers()[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
+        let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024).await.unwrap();
+        assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
     }
 
     #[test]

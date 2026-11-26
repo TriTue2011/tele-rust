@@ -36,14 +36,25 @@ pub(super) fn quote(s: &str) -> String {
 /// và có thể làm ffmpeg không nhận ra định dạng của luồng không phải PCM thô.
 pub(super) const LIVE_IN: &str = "-fflags nobuffer -flags low_delay -probesize 65536 -analyzeduration 500000";
 
+fn is_local_file(spec: &str) -> bool {
+    !spec.contains("://")
+}
+
 pub fn mic_command(spec: &str, fmt: &str) -> String {
     let base = "ffmpeg -hide_banner -loglevel error -nostdin";
     let out = "-f s16le -ac 1 -ar 48000 pipe:1";
     match spec {
         "silence" | "browser" => format!("{base} -re -f lavfi -i \"anullsrc=r=48000:cl=mono\" {out}"),
         "" | "test" => format!("{base} -re -f lavfi -i \"sine=frequency=440:sample_rate=48000\" -af volume=0.25 {out}"),
-        _ if fmt == "s16le16k" => format!("{base} {LIVE_IN} -f s16le -ar 16000 -ac 1 -i {} {out}", quote(spec)),
         _ if spec.starts_with("rtsp://") || spec.starts_with("rtsps://") => format!("{base} {LIVE_IN} -rtsp_transport tcp -i {} -vn {out}", quote(spec)),
+        // Tệp cục bộ: đọc theo thời gian thực (-re), KHÔNG gắn LIVE_IN (tránh probe ~1,35 s và tránh xả burst vào pipe rồi EOF sớm).
+        _ if is_local_file(spec) => match fmt {
+            "s16le48k" => format!("{base} -re -f s16le -ar 48000 -ac 1 -i {} {out}", quote(spec)),
+            "s16le16k" => format!("{base} -re -f s16le -ar 16000 -ac 1 -i {} {out}", quote(spec)),
+            _ if spec.ends_with(".pcm") => format!("{base} -re -f s16le -ar 48000 -ac 1 -i {} {out}", quote(spec)),
+            _ => format!("{base} -re -i {} -vn {out}", quote(spec)),
+        },
+        _ if fmt == "s16le16k" => format!("{base} {LIVE_IN} -f s16le -ar 16000 -ac 1 -i {} {out}", quote(spec)),
         _ => format!("{base} {LIVE_IN} -i {} -vn {out}", quote(spec)),
     }
 }
