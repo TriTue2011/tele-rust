@@ -34,7 +34,9 @@ Gateway **Telegram** (tài khoản người dùng) cho **Home Assistant**: nhắ
 
 ### Cách A: Add-on Home Assistant (HAOS / Supervised)
 
-1. **Cài đặt → Tiện ích bổ sung → Cửa hàng tiện ích bổ sung → ba chấm góc trên → Kho lưu trữ**, thêm `https://github.com/TriTue2011/tele-rust`.
+1. **Cài đặt → Tiện ích bổ sung → Cửa hàng tiện ích bổ sung → ba chấm góc trên → Kho lưu trữ**, thêm `https://github.com/TriTue2011/has-addons`
+   (kho gộp add-on chính thức, Supervisor đọc icon/phiên bản từ đây — xác nhận thật trên máy có Supervisor 26/11; kho `tele-rust` này vẫn add được
+   trực tiếp nếu muốn bản lẻ, nhưng icon ở đó KHÔNG tự đồng bộ theo phiên bản, dễ bị cũ).
 2. Cài **Tele Rust**. Ở tab **Cấu hình** điền `tg_api_id`, `tg_api_hash`, `gateway_token` (tuỳ chọn `tg_ui_password`), rồi khởi động.
 3. Nếu kho được chuyển sang chế độ riêng tư, xem mục private trong [docs/TRIEN-KHAI.md](docs/TRIEN-KHAI.md).
 
