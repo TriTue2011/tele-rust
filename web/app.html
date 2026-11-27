@@ -1415,8 +1415,22 @@
     // đệm, để lần vẽ sau (mỗi khi tin nhắn render lại) khỏi gọi lại /api/file/ y hệt. Lỗi KHÁC (mạng, 5xx) vẫn xoá để thử
     // lại lần vẽ sau, vì có thể là tạm thời. Thiếu phân biệt này từng khiến mỗi tin 404 bị gọi lại hàng chục lần/phút, kéo
     // cả app bị giới hạn 429 theo (đo thật trên Network tab 25/11, hàng trăm request lặp cùng 3 file_id).
-    p.catch((e) => { if (!e || e.status !== 404) blobs.delete(key); });
+    // 400 = Telegram từ chối MÃ TỆP: mã file của TDLib chỉ sống trong một phiên chạy gateway — gateway khởi động lại (cập nhật bản)
+    // thì trang đang mở giữ mã cũ, gọi lại bao nhiêu cũng 400 (console 27/11: /api/file/1949 400 lặp). Giữ lỗi trong đệm (không gọi
+    // lại mã cũ) và làm mới danh sách + cuộc trò chuyện đang mở MỘT lần để lấy mã tệp mới.
+    p.catch((e) => { if (e && e.status === 400) { refreshStaleFiles(); return; } if (!e || e.status !== 404) blobs.delete(key); });
     return p;
+  }
+  let staleFilesAt = 0;
+  function refreshStaleFiles() {
+    if (Date.now() - staleFilesAt < 60000) return;      // tối đa 1 lần/phút: mã mới vẫn hỏng thì không lặp
+    staleFilesAt = Date.now();
+    setTimeout(() => {
+      blobs.clear();
+      if (typeof scheduleChats === "function") scheduleChats();
+      const c = (typeof chats !== "undefined" ? chats : []).find((x) => x.id === cur);
+      if (c && typeof openChat === "function") openChat(c).catch(() => {});
+    }, 300);
   }
   const avQueue = []; let avBusy = 0;
   function loadAvatar(box, fileId) {
