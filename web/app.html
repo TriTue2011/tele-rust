@@ -1418,7 +1418,7 @@
     // 400 = Telegram từ chối MÃ TỆP: mã file của TDLib chỉ sống trong một phiên chạy gateway — gateway khởi động lại (cập nhật bản)
     // thì trang đang mở giữ mã cũ, gọi lại bao nhiêu cũng 400 (console 27/11: /api/file/1949 400 lặp). Giữ lỗi trong đệm (không gọi
     // lại mã cũ) và làm mới danh sách + cuộc trò chuyện đang mở MỘT lần để lấy mã tệp mới.
-    p.catch((e) => { if (e && e.status === 400) { refreshStaleFiles(); return; } if (!e || e.status !== 404) blobs.delete(key); });
+    p.catch((e) => { if (e && (e.status === 400 || e.status === 410)) { refreshStaleFiles(); return; } if (!e || e.status !== 404) blobs.delete(key); });
     return p;
   }
   let staleFilesAt = 0;

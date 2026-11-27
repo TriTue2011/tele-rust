@@ -26,6 +26,10 @@ where
         }
         let mapped=GwError::from_tdlib(error.clone());
         if error.code.is_some() && mapped.retry_after_seconds.is_none() {
+            // Lý do thật vào NHẬT KÝ (che đường dẫn cục bộ) — trước đây chỉ còn «Telegram từ chối: 400», không chẩn đoán được (27/11).
+            let reason=redact_paths(&error.message);
+            log::warn!("downloadFile {id}: Telegram {} — {reason}", error.code.unwrap_or_default());
+            if let Some(gone)=classify_file_error(error.code, &error.message) {return gone;}
             error.message.clear();
             GwError::from_tdlib(error)
         } else {mapped}
@@ -63,6 +67,28 @@ where
         Ok(bytes)
     }).await.map_err(|_|missing())??;
     Ok(Binary{bytes,content_type,cache_control:if stream {"no-store"} else {"private, max-age=86400"},disposition:None})
+}
+
+/// Che mọi đoạn giống đường dẫn (chứa «/») trong thông điệp TDLib trước khi ghi nhật ký.
+fn redact_paths(message:&str)->String {
+    message.split(' ').map(|w| if w.contains('/') {"<đường>"} else {w}).collect::<Vec<_>>().join(" ")
+}
+
+/// Lỗi 400 của downloadFile theo LÝ DO, để giao diện xử lý đúng thay vì gọi lại mãi:
+/// - mã tệp không tồn tại trong phiên này (TDLib cấp lại số mỗi lần khởi động) ⇒ 410 FILE_ID_STALE: trang phải tải lại tin để lấy mã mới;
+/// - tệp không tải được nữa (đã xoá, hết hạn, không cho tải) ⇒ 404 FILE_UNAVAILABLE: đừng thử lại.
+/// Lỗi khác giữ nguyên đường cũ.
+fn classify_file_error(code:Option<i64>,message:&str)->Option<GwError> {
+    if code!=Some(400) {return None;}
+    let m=message.to_ascii_lowercase();
+    // «File not found» = TDLib không biết mã này trong phiên hiện tại (đo 27/11: mã 1826 do trang mở trước lần khởi động lại gateway).
+    if m.contains("invalid file id") || m.contains("wrong file id") || m.contains("file_id_invalid") || m.contains("file not found") {
+        return Some(GwError::new(410,"FILE_ID_STALE","Mã tệp đã cũ — tải lại cuộc trò chuyện để lấy mã mới."));
+    }
+    if m.contains("can't download") || m.contains("cannot download") || m.contains("file is not") || m.contains("expired") {
+        return Some(GwError::new(404,"FILE_UNAVAILABLE","Telegram không còn cho tải tệp này."));
+    }
+    None
 }
 
 fn open_beneath(root:&Path,relative:&Path)->io::Result<File> {
@@ -108,6 +134,20 @@ mod tests {
         let error=download(td,a,uploads,1,false).await.unwrap_err();
         assert_eq!(error.status,400);assert!(!error.message.contains("/private/session/path"));
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn file_400_is_classified_by_tdlib_reason_without_leaking_paths() {
+        let root=PathBuf::from(format!("target/account-files-cls-{}",std::process::id()));
+        let (a,uploads)=(root.join("a"),root.join("uploads"));
+        for (msg,status) in [("Invalid file identifier",410),("Wrong file identifier/access hash",410),
+                             ("Can't download file /p/x.jpg",404),("File not found",410),("Something else /secret",400)] {
+            let td=Arc::new(Fake(Err(TdError::telegram(400,msg))));
+            let e=download(td,a.clone(),uploads.clone(),7,false).await.unwrap_err();
+            assert_eq!(e.status,status,"{msg}");
+            assert!(!e.message.contains("/p/x.jpg") && !e.message.contains("/secret"),"{msg}");
+        }
+        assert_eq!(redact_paths("Can't open /a/b c"),"Can't open <đường> c");
     }
 
     #[tokio::test]
