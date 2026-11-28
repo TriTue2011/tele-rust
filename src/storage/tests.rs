@@ -499,3 +499,71 @@ async fn manual_clear_all_and_type_skip_forever_chats_while_chat_scope_clears_ta
     assert_eq!(kept.len(), 500);
     assert!(kept.iter().all(|f| f.chat_id == 43));
 }
+
+#[tokio::test]
+async fn trim_cache_does_not_over_delete_below_max_cache_bytes_when_file_tight() {
+    let mut files: Vec<FakeFile> = (0..5_000_u64).map(|i| FakeFile {
+        chat_id: 10, file_type: "fileTypePhoto", bytes: 200 * 1024, age_s: 100_000 + i,
+    }).collect();
+    files.extend((0..95_000_u64).map(|i| FakeFile {
+        chat_id: 10, file_type: "fileTypePhoto", bytes: 1_627, age_s: 1 + i,
+    }));
+    let td = FakeStore { files: Mutex::new(files), ..Default::default() };
+    let mut policy = storage_settings::safe_default();
+    policy["keep"] = json!({"private": null, "groups": null, "channels": null});
+    policy["max_cache_bytes"] = json!(1024 * 1024 * 1024_u64);
+    policy["exceptions"] = json!([]);
+
+    let mut report = Report::new();
+    run(&td, &policy, &mut report).await.unwrap();
+    let remaining_bytes: u64 = td.files.lock().unwrap().iter().map(|f| f.bytes).sum();
+    assert!(remaining_bytes >= 900 * 1024 * 1024_u64);
+}
+
+#[tokio::test]
+async fn run_cancellable_rechecks_budget_after_batch_flush_and_splits_by_type() {
+    let gib = 1024 * 1024 * 1024_u64;
+    let td = FakeStore {
+        files: Mutex::new(vec![
+            FakeFile { chat_id: 1, file_type: "fileTypeVideo", bytes: 4 * gib, age_s: 100_000 },
+            FakeFile { chat_id: 2, file_type: "fileTypePhoto", bytes: gib, age_s: 100_000 },
+            FakeFile { chat_id: 2, file_type: "fileTypeVideo", bytes: gib, age_s: 100_000 },
+            FakeFile { chat_id: 2, file_type: "fileTypeDocument", bytes: gib, age_s: 100_000 },
+            FakeFile { chat_id: 2, file_type: "fileTypeAudio", bytes: gib, age_s: 100_000 },
+        ]),
+        ..Default::default()
+    };
+    td.chats.lock().unwrap().insert(1, json!({"@type":"chatTypePrivate"}));
+    td.chats.lock().unwrap().insert(2, json!({"@type":"chatTypePrivate"}));
+
+    let mut policy = storage_settings::safe_default();
+    policy["keep"] = json!({"private": 86400, "groups": null, "channels": null});
+    policy["max_cache_bytes"] = Value::Null;
+
+    let mut report = Report::new();
+    run(&td, &policy, &mut report).await.unwrap();
+    let json = report.json();
+    assert_eq!(json["freed_bytes"], 5 * gib);
+    assert_eq!(json["limited"], true);
+    assert_eq!(json["remaining_bytes"], 3 * gib);
+}
+
+#[tokio::test]
+async fn check_cache_paths_allows_symlinked_data_root_and_rejects_session_symlinks() {
+    let base = std::env::temp_dir().join(format!("tggw-storage-paths-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&base);
+    let real = base.join("real");
+    let sess = real.join("tdlib/sess");
+    fs::create_dir_all(sess.join("files/photos")).unwrap();
+    let link = base.join("link");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+
+    assert!(check_cache_paths(&link.join("tdlib/sess")).await.is_ok());
+
+    let outside = base.join("outside");
+    fs::create_dir_all(&outside).unwrap();
+    std::os::unix::fs::symlink(&outside, sess.join("files/videos")).unwrap();
+    assert_eq!(check_cache_paths(&link.join("tdlib/sess")).await.unwrap_err().code, "STORAGE_CACHE_PATH");
+
+    fs::remove_dir_all(&base).unwrap();
+}

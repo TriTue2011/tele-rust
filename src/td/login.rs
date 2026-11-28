@@ -117,8 +117,23 @@ pub(crate) fn ensure_session_dir(session: &Path) -> io::Result<Vec<u8>> {
     if !key_path.exists() {
         let mut raw = [0u8; 16];
         fs::File::open("/dev/urandom")?.read_exact(&mut raw)?;
-        let mut f = fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&key_path)?;
-        f.write_all(hex(&raw).as_bytes())?;
+        let tmp = session.join(format!(".khoa.tmp.{}", hex(&raw[..8])));
+        let write_tmp = (|| -> io::Result<()> {
+            let mut f = fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&tmp)?;
+            f.write_all(hex(&raw).as_bytes())?;
+            f.sync_all()
+        })();
+        if let Err(e) = write_tmp {
+            let _ = fs::remove_file(&tmp);
+            return Err(e);
+        }
+        let linked = fs::hard_link(&tmp, &key_path);
+        let _ = fs::remove_file(&tmp);
+        match linked {
+            Ok(()) => (),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => (),
+            Err(e) => return Err(e),
+        }
     }
     let mut key = fs::File::open(key_path)?;
     key.set_permissions(fs::Permissions::from_mode(0o600))?;
@@ -177,6 +192,7 @@ pub async fn run(client: &TdClient, cfg: &LoginConfig) -> Result<(), String> {
 
 pub(crate) async fn run_in(client: &TdClient, cfg: &LoginConfig, session: &Path, restore: bool) -> Result<(), String> {
     let mut rx = client.auth_watch();
+    let mut phone_sent = false;
     loop {
         let state = rx.borrow_and_update().clone();
         if !state.is_empty() {
@@ -193,6 +209,10 @@ pub(crate) async fn run_in(client: &TdClient, cfg: &LoginConfig, session: &Path,
                 if cfg.phone.is_empty() {
                     return Err("chưa có phiên đăng nhập và chưa đặt TG_PHONE".into());
                 }
+                if phone_sent {
+                    return Err("Telegram quay lại bước số điện thoại; dừng để tránh gửi lại số và bị FLOOD_WAIT".into());
+                }
+                phone_sent = true;
                 // Một lần duy nhất: lỗi (kể cả FLOOD_WAIT) thì dừng, không tự thử lại.
                 client
                     .request(json!({"@type": "setAuthenticationPhoneNumber", "phone_number": cfg.phone}))
@@ -256,17 +276,42 @@ pub(crate) async fn begin_http(client:&TdClient,cfg:&LoginConfig,session:&Path,q
     }).await.map_err(|_|TdError::transport("Telegram chưa trả trạng thái đăng nhập."))?
 }
 
-pub(crate) async fn verify_http(client:&TdClient,kind:&str,field:&str,value:&str)->Result<String,TdError> {
-    client.request(json!({"@type":kind,(field):value})).await?;
+pub(crate) async fn verify_http(client: &TdClient, kind: &str, field: &str, value: &str) -> Result<String, TdError> {
+    let accepted = |s: &str| {
+        s == "authorizationStateReady"
+            || (kind != "checkAuthenticationPassword" && s == "authorizationStateWaitPassword")
+    };
+    let terminal = |s: &str| {
+        matches!(
+            s,
+            "authorizationStateClosing"
+                | "authorizationStateClosed"
+                | "authorizationStateLoggingOut"
+                | "authorizationStateWaitRegistration"
+                | "authorizationStateWaitEmailAddress"
+                | "authorizationStateWaitEmailCode"
+        )
+    };
+    client.request(json!({"@type": kind, (field): value})).await?;
     // Lấy trạng thái sau phản hồi: không phụ thuộc thứ tự giữa phản hồi và update.
-    let state=client.request(json!({"@type":"getAuthorizationState"})).await?;
-    let name=state["@type"].as_str().unwrap_or_default().to_owned();
-    if matches!(name.as_str(),"authorizationStateReady"|"authorizationStateWaitPassword") { return Ok(name); }
-    let mut rx=client.auth_watch();
-    let result=tokio::time::timeout(Duration::from_secs(10),rx.wait_for(|s| s=="authorizationStateReady"||s=="authorizationStateWaitPassword"))
-        .await.map_err(|_|TdError::transport("Trạng thái đăng nhập chưa xong."))?
-        .map(|v|v.clone()).map_err(|_|TdError::transport("Mất kết nối TDLib."));
-    result
+    let state = client.request(json!({"@type": "getAuthorizationState"})).await?;
+    let name = state["@type"].as_str().unwrap_or_default().to_owned();
+    if accepted(&name) { return Ok(name); }
+    if terminal(&name) { return Err(TdError::transport("Trạng thái đăng nhập chưa hỗ trợ.")); }
+    let mut rx = client.auth_watch();
+    let final_state = tokio::time::timeout(
+        Duration::from_secs(10),
+        rx.wait_for(|s| accepted(s) || terminal(s)),
+    )
+    .await
+    .map_err(|_| TdError::transport("Trạng thái đăng nhập chưa xong."))?
+    .map(|v| v.clone())
+    .map_err(|_| TdError::transport("Mất kết nối TDLib."))?;
+    if accepted(&final_state) {
+        Ok(final_state)
+    } else {
+        Err(TdError::transport("Trạng thái đăng nhập chưa hỗ trợ."))
+    }
 }
 
 struct Input<'a> {

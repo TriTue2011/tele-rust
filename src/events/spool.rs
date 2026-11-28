@@ -83,7 +83,11 @@ impl Spool {
     fn rotate(&mut self) -> io::Result<()> {
         while self.entries.len() > MAX_FILES || (self.bytes > MAX_BYTES && self.entries.len() > 1) {
             let entry = self.entries.front().unwrap();
-            fs::remove_file(self.path.join(event_path(entry.id)))?;
+            match fs::remove_file(self.path.join(event_path(entry.id))) {
+                Ok(()) => (),
+                Err(err) if err.kind() == io::ErrorKind::NotFound => (),
+                Err(err) => return Err(err),
+            }
             self.bytes -= self.entries.pop_front().unwrap().bytes;
         }
         Ok(())

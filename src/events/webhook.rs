@@ -1,4 +1,4 @@
-use std::{io, net::IpAddr, sync::Arc, time::Duration};
+use std::{io, net::{IpAddr, Ipv4Addr}, sync::Arc, time::Duration};
 
 use reqwest::{dns::{Addrs, Name, Resolve, Resolving}, header::{HeaderValue, CONTENT_TYPE}, redirect::Policy, Client, Url};
 use serde_json::Value;
@@ -64,10 +64,32 @@ impl Webhook {
     }
 }
 
+fn blocked_v4(ip: Ipv4Addr) -> bool {
+    ip.is_link_local() || ip.is_unspecified() || ip.is_broadcast() || ip.is_multicast()
+}
+
 fn blocked(ip: IpAddr) -> bool {
     match ip {
-        IpAddr::V4(ip) => ip.is_link_local(),
-        IpAddr::V6(ip) => ip.is_unicast_link_local() || ip.to_ipv4().is_some_and(|ip| ip.is_link_local()),
+        IpAddr::V4(ip) => blocked_v4(ip),
+        IpAddr::V6(ip) => {
+            let s = ip.segments();
+            let embedded_v4 = ip.to_ipv4().or_else(|| {
+                if (s[0] == 0x0064 && s[1] == 0xff9b && s[2..6] == [0_u16; 4])
+                    || (s[0..4] == [0_u16; 4] && s[4] == 0xffff && s[5] == 0)
+                {
+                    let b = ip.octets();
+                    Some(Ipv4Addr::new(b[12], b[13], b[14], b[15]))
+                } else {
+                    None
+                }
+            });
+            let is_aws_imds_v6 = s == [0xfd00, 0x0ec2, 0, 0, 0, 0, 0, 0x0254];
+            ip.is_unicast_link_local()
+                || ip.is_unspecified()
+                || ip.is_multicast()
+                || is_aws_imds_v6
+                || embedded_v4.is_some_and(blocked_v4)
+        }
     }
 }
 

@@ -10,6 +10,11 @@ use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 
 const TLS_HELLO: u8 = 0x16;
+const MAX_CONNECTIONS: usize = 1024;
+const HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+#[derive(Clone, Copy)]
+pub(crate) struct TlsConnection(pub(crate) bool);
 
 pub(crate) fn tls_dir() -> PathBuf {
     let data = std::env::var("TGGW_DATA").or_else(|_| std::env::var("DATA_DIR")).unwrap_or_else(|_| "/data".into());
@@ -70,23 +75,56 @@ pub(crate) fn enabled() -> bool {
 /// Vòng nhận kết nối: HTTP thường hoặc TLS tuỳ byte đầu. Dừng khi `shutdown` xong.
 pub(crate) async fn serve_dual<F>(listener: TcpListener, app: Router, acceptor: TlsAcceptor, shutdown: F) -> Result<(), String>
 where F: Future<Output = ()> + Send + 'static {
+    serve_dual_with_timeout(listener, app, acceptor, shutdown, HANDSHAKE_TIMEOUT).await
+}
+
+async fn serve_dual_with_timeout<F>(
+    listener: TcpListener,
+    app: Router,
+    acceptor: TlsAcceptor,
+    shutdown: F,
+    handshake_timeout: std::time::Duration,
+) -> Result<(), String>
+where F: Future<Output = ()> + Send + 'static {
+    let permits = Arc::new(tokio::sync::Semaphore::new(MAX_CONNECTIONS));
     tokio::pin!(shutdown);
     loop {
         let (stream, peer) = tokio::select! {
             _ = &mut shutdown => return Ok(()),
-            accepted = listener.accept() => match accepted { Ok(v) => v, Err(e) => { log::warn!("accept lỗi: {e}"); continue; } },
+            accepted = listener.accept() => match accepted {
+                Ok(v) => v,
+                Err(e) => {
+                    log::warn!("accept lỗi: {e}");
+                    tokio::select! {
+                        _ = &mut shutdown => return Ok(()),
+                        _ = tokio::time::sleep(std::time::Duration::from_millis(50)) => continue,
+                    }
+                }
+            },
         };
-        let service = TowerToHyperService::new(app.clone().layer(Extension(ConnectInfo(peer))));
+        let Ok(permit) = permits.clone().try_acquire_owned() else {
+            log::warn!("đã đạt giới hạn kết nối đồng thời, từ chối kết nối mới");
+            drop(stream);
+            continue;
+        };
+        let app = app.clone();
         let acceptor = acceptor.clone();
         tokio::spawn(async move {
+            let _permit = permit;
             let mut first = [0u8; 1];
-            match tokio::time::timeout(std::time::Duration::from_secs(10), stream.peek(&mut first)).await {
+            match tokio::time::timeout(handshake_timeout, stream.peek(&mut first)).await {
                 Ok(Ok(1)) => {}
                 _ => return,
             }
+            let is_tls = first[0] == TLS_HELLO;
+            let service = TowerToHyperService::new(
+                app.layer(Extension(ConnectInfo(peer))).layer(Extension(TlsConnection(is_tls))),
+            );
             let builder = Builder::new(TokioExecutor::new());
-            if first[0] == TLS_HELLO {
-                if let Ok(tls) = acceptor.accept(stream).await { let _ = builder.serve_connection_with_upgrades(TokioIo::new(tls), service).await; }
+            if is_tls {
+                if let Ok(Ok(tls)) = tokio::time::timeout(handshake_timeout, acceptor.accept(stream)).await {
+                    let _ = builder.serve_connection_with_upgrades(TokioIo::new(tls), service).await;
+                }
             } else {
                 let _ = builder.serve_connection_with_upgrades(TokioIo::new(stream), service).await;
             }
@@ -122,4 +160,79 @@ mod tests {
     }
 
     fn acceptor_ok(dir: &Path, addr: SocketAddr) -> bool { acceptor(dir, addr).is_ok() }
+
+    #[tokio::test]
+    async fn stalled_tls_client_hello_times_out_and_closes() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let dir = std::env::temp_dir().join(format!("tggw-tls-timeout-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let app = Router::new().route("/ping", axum::routing::get(|| async { "pong" }));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let acceptor = acceptor(&dir, addr).unwrap();
+        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        let server = tokio::spawn(serve_dual_with_timeout(
+            listener,
+            app,
+            acceptor,
+            async move { let _ = stopped.await; },
+            std::time::Duration::from_millis(150),
+        ));
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        stream.write_all(&[0x16_u8]).await.unwrap();
+        let mut buf = [0u8; 16];
+        let read = tokio::time::timeout(std::time::Duration::from_secs(2), stream.read(&mut buf)).await;
+        assert!(matches!(read, Ok(Ok(0))), "kết nối TLS bị treo phải đóng sau timeout: {read:?}");
+        let _ = stop.send(());
+        server.await.unwrap().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn https_http1_sets_secure_cookie_and_rejects_http_origin_csrf() {
+        let dir = std::env::temp_dir().join(format!("tggw-tls-csrf-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let stub = Arc::new(crate::rest::ChuaCo);
+        let app = crate::rest::router_with_ui_auth(
+            stub.clone(),
+            stub,
+            crate::rest::RestConfig { token: "tok".into(), rate_limit_per_minute: 120, version: "test".into() },
+            Arc::new(crate::ui_auth::UiAuth::in_memory("tok")),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let acceptor = acceptor(&dir, addr).unwrap();
+        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        let server = tokio::spawn(serve_dual(listener, app, acceptor, async move { let _ = stopped.await; }));
+        let client = reqwest::Client::builder()
+            .danger_accept_invalid_certs(true)
+            .http1_only()
+            .no_proxy()
+            .build()
+            .unwrap();
+        let setup = client
+            .post(format!("https://{addr}/ui/api/auth/setup"))
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(serde_json::json!({"token":"tok","ten":"admin","mat_khau":"mat-khau-rat-dai"}).to_string())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(setup.status(), 200);
+        let set_cookie = setup.headers()[reqwest::header::SET_COOKIE].to_str().unwrap();
+        assert!(set_cookie.contains("; Secure"), "{set_cookie}");
+        let cookie = set_cookie.split(';').next().unwrap().to_owned();
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(reqwest::header::COOKIE, cookie.parse().unwrap());
+        headers.insert(reqwest::header::ORIGIN, format!("http://{addr}").parse().unwrap());
+        let csrf = client
+            .post(format!("https://{addr}/api/live/hangup"))
+            .headers(headers)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(csrf.status(), 403);
+        let _ = stop.send(());
+        server.await.unwrap().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

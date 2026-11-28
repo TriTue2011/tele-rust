@@ -115,6 +115,7 @@ impl AccountStore {
     fn save(&mut self, rows: Vec<Account>) -> io::Result<()> {
         atomic_json(&self.data.join("accounts.json"), &Value::Array(rows.iter().map(Account::disk).collect()))?;
         self.rows = rows;
+        self.legacy = false;
         Ok(())
     }
 
@@ -135,6 +136,7 @@ impl AccountStore {
         let source=self.session_dir(phone);
         let archive=self.data.join("tdlib").join(format!(".da-xoa-{}-{}",SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos(),account_id(phone)));
         let legacy=source==self.data.join("tdlib");
+        let moved_dir = !legacy && source.exists();
         let mut moved=Vec::new();
         if legacy {
             DirBuilder::new().mode(0o700).create(&archive)?;
@@ -147,12 +149,12 @@ impl AccountStore {
                     moved.push(name);
                 }
             }
-        } else { fs::rename(&source,&archive)?; }
+        } else if moved_dir { fs::rename(&source,&archive)?; }
         let rows=self.rows.iter().filter(|a|a.phone!=phone).cloned().collect();
         if let Err(error)=self.save(rows) {
             if legacy {
                 for name in moved.iter().rev() {fs::rename(archive.join(name),source.join(name))?;}
-            } else {fs::rename(&archive,&source)?;}
+            } else if moved_dir {fs::rename(&archive,&source)?;}
             return Err(error);
         }
         Ok(archive)
@@ -272,6 +274,25 @@ mod tests {
         fs::rename(saved,&path).unwrap();
         store.refresh_name(phone,"Tên mới").unwrap();
         assert_eq!(AccountStore::open(&dir,phone).unwrap().rows()[0].display_name,"Tên mới");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn archive_removes_stale_non_legacy_row_when_session_dir_is_missing() {
+        let dir = std::env::temp_dir().join(format!("tggw-accounts-stale-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let phone = "+84900000099";
+        atomic_json(
+            &dir.join("accounts.json"),
+            &json!([{"phone": phone, "display_name": "Stale", "status": "offline", "added_at": 1.0, "last_seen": 1.0}]),
+        ).unwrap();
+        let mut store = AccountStore::open(&dir, "").unwrap();
+        assert!(!store.legacy);
+        assert!(!store.session_dir(phone).exists());
+        assert!(store.archive(phone).is_ok());
+        assert!(store.rows().is_empty());
+        assert!(AccountStore::open(&dir, "").unwrap().rows().is_empty());
         fs::remove_dir_all(dir).unwrap();
     }
 }

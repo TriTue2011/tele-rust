@@ -8,6 +8,7 @@ use crate::{accounts::AccountStore, calls::CallManager, chat::ChatService,
 pub(crate) struct Entry {
     pub client: Arc<TdClient>,
     session: PathBuf,
+    uploads: PathBuf,
     storage_lock: tokio::sync::RwLock<()>,
     sweep_lock: tokio::sync::Mutex<()>,
     settings_lock: tokio::sync::Mutex<()>,
@@ -193,12 +194,25 @@ impl Accounts {
                 if result.is_ok() { entry.ready.store(true, Ordering::Release); }
                 else {
                     entry.stop_storage();
+                    let _ = entry.calls.shutdown(Duration::from_secs(10)).await;
                     client.close(Duration::from_secs(10)).await;
-                    let _=entry.calls.shutdown(Duration::from_secs(10)).await;
-                    accounts.entries.write().unwrap().remove(&phone);
-                    accounts.order.write().unwrap().retain(|p|p!=&phone);
-                    if let Some(events)=entry.events.lock().await.take() {events.shutdown().await;}
-                    accounts.journals.write().unwrap().retain(|(p,_)|p!=&phone);
+                    let events = entry.events.lock().await.take();
+                    let event_store = events.as_ref().map(|ev| ev.store.clone());
+                    if let Some(events) = events { events.shutdown().await; }
+                    if let Some(source) = event_store {
+                        let since = accounts.event_log.lock().unwrap().source_cursor(&phone);
+                        if let Ok(polled) = source.poll(since).await {
+                            let _ = accounts.event_log.lock().unwrap().ingest(&phone, &polled);
+                        }
+                        accounts.journals.write().unwrap().retain(|(p, s)| p != &phone || !s.same_source(&source));
+                    }
+                    {
+                        let mut entries = accounts.entries.write().unwrap();
+                        if entries.get(&phone).is_some_and(|active| Arc::ptr_eq(active, &entry)) {
+                            entries.remove(&phone);
+                            accounts.order.write().unwrap().retain(|p| p != &phone);
+                        }
+                    }
                     eprintln!("Đăng nhập nền thất bại; HTTP tiếp tục hoạt động.");
                 }
             });
@@ -227,7 +241,8 @@ impl Accounts {
                 }
             });
         });
-        let entry = Arc::new(Entry { client, session, chat: Arc::new(ChatService::with_events(td, phone, service_dir, Some(events.sink.clone())).follow_calls(calls.events())),
+        let uploads = service_dir.join("uploads");
+        let entry = Arc::new(Entry { client, session, uploads, chat: Arc::new(ChatService::with_events(td, phone, service_dir, Some(events.sink.clone())).follow_calls(calls.events())),
             calls, ready: AtomicBool::new(ready), events: tokio::sync::Mutex::new(Some(events)), call_events,
             storage_lock: tokio::sync::RwLock::new(()), sweep_lock: tokio::sync::Mutex::new(()),
             settings_lock: tokio::sync::Mutex::new(()), appearance_lock: tokio::sync::Mutex::new(()),
@@ -276,11 +291,18 @@ impl Accounts {
             .into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" ");
         let dir = self.store.lock().unwrap().session_dir(phone);
         {
-            let mut store=self.store.lock().unwrap();
-            store.keep_legacy(&self.config.phone).map_err(|_|storage_error())?;
+            let mut store = self.store.lock().unwrap();
+            if phone != self.config.phone {
+                store.keep_legacy(&self.config.phone).map_err(|_| storage_error())?;
+            }
             store.put_online(phone, name).map_err(|_| storage_error())?;
         }
-        self.attach(phone, client, dir.clone(), dir, true).await?;
+        let service_dir = if dir == self.config.session_dir() {
+            self.config.data_dir.clone()
+        } else {
+            dir.clone()
+        };
+        self.attach(phone, client, dir, service_dir, true).await?;
         Ok(())
     }
 
@@ -316,11 +338,17 @@ impl Accounts {
         }
         self.store.lock().unwrap().archive(phone).map_err(|e|if e.kind()==std::io::ErrorKind::NotFound {
             GwError::not_found("Không rõ tài khoản.") }else{storage_error()})?;
-        self.journals.write().unwrap().retain(|(p,_)|p!=phone);
-        self.event_log.lock().unwrap().forget_source(phone).map_err(|_|storage_error())?;
-        self.feed_log.lock().unwrap().forget_source(phone);
-        self.entries.write().unwrap().remove(phone);
-        self.order.write().unwrap().retain(|p|p!=phone);
+        {
+            let mut journals = self.journals.write().unwrap();
+            journals.retain(|(p, _)| p != phone);
+            self.event_log.lock().unwrap().forget_source(phone).map_err(|_| storage_error())?;
+        }
+        {
+            let mut entries = self.entries.write().unwrap();
+            entries.remove(phone);
+            self.order.write().unwrap().retain(|p| p != phone);
+            self.feed_log.lock().unwrap().forget_source(phone);
+        }
         Ok(())
     }
 
@@ -335,9 +363,13 @@ impl Accounts {
             all.iter().find(|(_,e)| e.ready.load(Ordering::Acquire) && e.client.auth_state() == "authorizationStateReady")
                 .or_else(|| all.first()).cloned()
         } else { all.into_iter().find(|(p,_)| p == phone) };
-        let (p,e) = picked.ok_or_else(|| if phone.is_empty() || self.store.lock().unwrap().rows().iter().any(|a|a.phone==phone) {
-            offline()
-        } else { GwError::not_found("Không rõ tài khoản.") })?;
+        let (p, e) = picked.ok_or_else(|| {
+            let known = phone.is_empty() || {
+                let store = self.store.lock().unwrap();
+                (store.legacy && phone == self.config.phone) || store.rows().iter().any(|a| a.phone == phone)
+            };
+            if known { offline() } else { GwError::not_found("Không rõ tài khoản.") }
+        })?;
         if !e.ready.load(Ordering::Acquire) || e.client.auth_state() != "authorizationStateReady" { return Err(offline()); }
         Ok((p,e))
     }
@@ -418,9 +450,18 @@ impl Accounts {
         if path == "/api/events" {
             let sources = self.journals.read().unwrap().clone();
             for (phone, source) in sources {
-                let since = self.event_log.lock().unwrap().source_cursor(&phone);
+                let since = {
+                    let journals = self.journals.read().unwrap();
+                    if !journals.iter().any(|(p, s)| p == &phone && s.same_source(&source)) {
+                        continue;
+                    }
+                    self.event_log.lock().unwrap().source_cursor(&phone)
+                };
                 let result = source.poll(since).await?;
-                self.event_log.lock().unwrap().ingest(&phone, &result).map_err(|_| storage_error())?;
+                let journals = self.journals.read().unwrap();
+                if journals.iter().any(|(p, s)| p == &phone && s.same_source(&source)) {
+                    self.event_log.lock().unwrap().ingest(&phone, &result).map_err(|_| storage_error())?;
+                }
             }
             return Ok(self.event_log.lock().unwrap().poll(number(query,"since")?));
         }
@@ -430,10 +471,19 @@ impl Accounts {
                 .map_err(|_|GwError::bad_request("Tham số wait phải là số."))?;
             let deadline = tokio::time::Instant::now()+Duration::from_secs_f64(if wait.is_nan(){25.0}else{wait.clamp(0.0,25.0)});
             loop {
-                for (phone,e) in self.all() {
-                    let cursor = self.feed_log.lock().unwrap().source_cursor(&phone);
+                for (phone, e) in self.all() {
+                    let cursor = {
+                        let entries = self.entries.read().unwrap();
+                        if !entries.get(&phone).is_some_and(|active| Arc::ptr_eq(active, &e)) {
+                            continue;
+                        }
+                        self.feed_log.lock().unwrap().source_cursor(&phone)
+                    };
                     let result = e.chat.handle("GET","/api/feed",&format!("since={cursor}"),Value::Null).await?;
-                    self.feed_log.lock().unwrap().ingest(&phone,&result);
+                    let entries = self.entries.read().unwrap();
+                    if entries.get(&phone).is_some_and(|active| Arc::ptr_eq(active, &e)) {
+                        self.feed_log.lock().unwrap().ingest(&phone,&result);
+                    }
                 }
                 let result = self.feed_log.lock().unwrap().poll(since);
                 if !result["items"].as_array().unwrap().is_empty() || tokio::time::Instant::now() >= deadline { return Ok(result); }
@@ -593,7 +643,7 @@ impl ChatControl for Accounts {
             if let Some(id)=p.strip_prefix("/api/file/") {
                 let id=id.parse().map_err(|_|GwError::bad_request("file_id phải là số."))?;
                 let entry = e.clone();
-                let uploads = self.config.data_dir.join("uploads");
+                let uploads = entry.uploads.clone();
                 return tokio::spawn(async move {
                     let _access = entry.storage_lock.read().await;
                     if !entry.ready.load(Ordering::Acquire) { return Err(offline()); }

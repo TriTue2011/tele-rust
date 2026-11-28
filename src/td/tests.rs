@@ -519,3 +519,104 @@ fn debug_cau_hinh_khong_lo_bi_mat() {
     let s = format!("{:?}", cfg(&dir));
     assert!(!s.contains("hash-bi-mat") && !s.contains("84900000000"), "{s}");
 }
+
+#[tokio::test]
+async fn verify_http_waits_past_stale_password_state_and_fails_fast_on_closed() {
+    let (api, client) = start();
+    api.auth("authorizationStateWaitPassword");
+    let mut w = client.auth_watch();
+    tokio::time::timeout(Duration::from_secs(2), w.wait_for(|s| s == "authorizationStateWaitPassword"))
+        .await
+        .unwrap()
+        .unwrap();
+    let api_clone = api.clone();
+    *api.responder.lock().unwrap() = Some(Box::new(move |req| {
+        if req["@extra"] == "khoi-dong" {
+            return None;
+        }
+        match req["@type"].as_str() {
+            Some("checkAuthenticationPassword") => {
+                let api_delayed = api_clone.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_millis(50));
+                    api_delayed.auth("authorizationStateReady");
+                });
+                Some(json!({"@type": "ok"}))
+            }
+            Some("getAuthorizationState") => Some(json!({"@type": "authorizationStateWaitPassword"})),
+            _ => None,
+        }
+    }));
+    let state = tokio::time::timeout(
+        Duration::from_secs(2),
+        login::verify_http(&client, "checkAuthenticationPassword", "password", "pw"),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(state, "authorizationStateReady");
+
+    let (api2, client2) = start();
+    *api2.responder.lock().unwrap() = Some(Box::new(|req| {
+        if req["@extra"] == "khoi-dong" {
+            return None;
+        }
+        match req["@type"].as_str() {
+            Some("checkAuthenticationCode") => Some(json!({"@type": "ok"})),
+            Some("getAuthorizationState") => Some(json!({"@type": "authorizationStateClosed"})),
+            _ => None,
+        }
+    }));
+    let res = tokio::time::timeout(
+        Duration::from_secs(1),
+        login::verify_http(&client2, "checkAuthenticationCode", "code", "11111"),
+    )
+    .await
+    .unwrap();
+    assert!(res.is_err());
+}
+
+#[tokio::test]
+async fn run_in_does_not_resend_phone_after_code_expires() {
+    let dir = TmpDir::new("resend-phone");
+    let (api, client) = start();
+    *api.responder.lock().unwrap() = Some(ok_responder());
+    let (c, k) = (client.clone(), cfg(&dir));
+    let task = tokio::spawn(async move { login::run(&c, &k).await });
+    api.auth("authorizationStateWaitPhoneNumber");
+    api.wait_sent("setAuthenticationPhoneNumber", 1).await;
+    api.auth("authorizationStateWaitCode");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    api.auth("authorizationStateWaitPhoneNumber");
+    let res = tokio::time::timeout(Duration::from_secs(2), task).await.unwrap().unwrap();
+    assert!(res.is_err(), "{res:?}");
+    assert_eq!(api.sent_of("setAuthenticationPhoneNumber").len(), 1);
+}
+
+#[test]
+fn ensure_session_dir_is_safe_under_concurrent_creation() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = TmpDir::new("concurrent-key");
+    let barrier = Arc::new(std::sync::Barrier::new(8));
+    let handles: Vec<_> = (0..8_usize)
+        .map(|_| {
+            let path = dir.0.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                login::ensure_session_dir(&path)
+            })
+        })
+        .collect();
+    let keys: Vec<Vec<u8>> = handles.into_iter().map(|h| h.join().unwrap().unwrap()).collect();
+    assert_eq!(keys[0].len(), 16);
+    for key in &keys[1..] {
+        assert_eq!(key, &keys[0]);
+    }
+    let mode = std::fs::metadata(dir.0.join("khoa")).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600);
+    for entry in std::fs::read_dir(&dir.0).unwrap() {
+        let name = entry.unwrap().file_name();
+        assert!(!name.to_string_lossy().starts_with(".khoa.tmp."), "{name:?}");
+    }
+}
