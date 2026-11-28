@@ -42,6 +42,7 @@ struct FakeState {
     callback: Option<mpsc::UnboundedSender<Command>>,
     frames: Option<mpsc::Sender<MediaEvent>>,
     audio: Option<mpsc::Sender<MediaEvent>>,
+    audio_dropped: Option<Arc<AtomicU64>>,
     fail: Option<&'static str>,
 }
 
@@ -56,11 +57,12 @@ impl Media for FakeMedia {
     fn protocol(&self) -> Result<Protocol, String> {
         Ok(Protocol { min_layer:92,max_layer:92,udp_p2p:true,udp_reflector:true,library_versions:strings(&["8.0.0","9.0.0","12.0.0","13.0.0"]) })
     }
-    fn callbacks(&mut self, sender: mpsc::UnboundedSender<Command>, frames: mpsc::Sender<MediaEvent>, audio: mpsc::Sender<MediaEvent>) {
+    fn callbacks(&mut self, sender: mpsc::UnboundedSender<Command>, frames: mpsc::Sender<MediaEvent>, audio: mpsc::Sender<MediaEvent>, audio_dropped: Arc<AtomicU64>) {
         let mut s = self.0.lock().unwrap();
         s.callback = Some(sender);
         s.frames = Some(frames);
         s.audio = Some(audio);
+        s.audio_dropped = Some(audio_dropped);
     }
     fn execute(&mut self, op: MediaOp) -> MediaFuture<'_> {
         Box::pin(async move {
@@ -143,7 +145,7 @@ fn local_actor(f: &Fixture) -> (Actor, mpsc::UnboundedReceiver<Command>) {
     let (sender,commands) = mpsc::unbounded_channel();
     let (events,_) = broadcast::channel(256);
     (Actor { td:f.td.clone(), media:Box::new(media), protocol, p2p:false, data_dir:f.dir.clone(), defaults:Devices::default(),
-        calls:vec![], catalog:catalog::empty(), handled:HashSet::new(), handled_order:VecDeque::new(), events, sender, profile:(640,360,15), cast_port:None }, commands)
+        calls:vec![], catalog:catalog::empty(), handled:HashSet::new(), handled_order:VecDeque::new(), events, sender, profile:(640,360,15), cast_port:None, audio_rx_dropped: Arc::new(AtomicU64::new(0)) }, commands)
 }
 
 #[test]
@@ -592,7 +594,7 @@ async fn say_requires_active_call_and_valid_input_before_using_tts() {
 }
 
 #[tokio::test]
-async fn speech_writes_pcm_sets_saying_then_restores_mic_unless_user_changed_it() {
+async fn speech_streams_pcm_over_loopback_sets_saying_then_restores_mic_unless_user_changed_it() {
     for change in [json!({"camera_off":true}), json!({"mic":"silence"})] {
         let f=Fixture::new(false); let (mut actor,mut commands)=local_actor(&f);
         fs::create_dir_all(f.dir.join("live")).unwrap();
@@ -604,19 +606,30 @@ async fn speech_writes_pcm_sets_saying_then_restores_mic_unless_user_changed_it(
         let pcm = vec![7u8; 9600];
         let reply=actor.start_speech(0,&pcm).await.unwrap(); assert_eq!(reply,json!({"seconds":0.1}));
         assert_eq!(actor.calls[0].info()["saying"], json!(true));
+        assert_eq!(actor.calls[0].devices.mic, "speech");
         assert_eq!(actor.calls[0].devices.mic_format, "s16le48k");
-        let path=PathBuf::from(&actor.calls[0].devices.mic);
-        assert_eq!(path.extension().and_then(|e| e.to_str()), Some("pcm"));
-        assert_eq!(fs::read(&path).unwrap(), pcm);
-        assert!(matches!(f.ops().last().unwrap(), MediaOp::Sources(_, StreamMode::Capture, d)
-            if d.microphone.as_ref().unwrap().input.contains("-re -f s16le -ar 48000 -ac 1 -i")
-            && !d.microphone.as_ref().unwrap().input.contains("probesize")));
+        let cmd = match f.ops().last().unwrap() {
+            MediaOp::Sources(_, StreamMode::Capture, d) => d.microphone.as_ref().unwrap().input.clone(),
+            _ => panic!("capture"),
+        };
+        assert!(cmd.contains("-f s16le -ar 48000 -ac 1 -i http://127.0.0.1:"), "{cmd}");
+        assert!(cmd.contains("-flush_packets 1 pipe:1"), "{cmd}");
+        assert!(cmd.contains("-protocol_whitelist http,tcp,pipe"), "{cmd}");
+        assert!(!cmd.contains(" -re "), "{cmd}");
+        let url = cmd.split_whitespace().find(|s| s.starts_with("http://127.0.0.1:")).unwrap();
+        let mut response = reqwest::get(url).await.unwrap();
+        let mut received = Vec::new();
+        while received.len() < pcm.len() {
+            received.extend_from_slice(&response.chunk().await.unwrap().unwrap());
+        }
+        assert_eq!(&received[..pcm.len()], pcm.as_slice());
+        drop(response);
         let mut body = change;
         body["id"] = json!(actor.calls[0].id);
         actor.set_media(body.clone()).await.unwrap();
         let restore=tokio::time::timeout(Duration::from_secs(3),commands.recv()).await.unwrap().unwrap();
-        if let Command::RestoreMic(id,revision,mic,fmt,path)=restore { actor.restore_mic(&id,revision,mic,fmt,path).await; } else { panic!("restore"); }
-        assert!(!path.exists()); assert!(actor.calls[0].speech_revision.is_none());
+        if let Command::RestoreMic(id,revision,mic,fmt)=restore { actor.restore_mic(&id,revision,mic,fmt).await; } else { panic!("restore"); }
+        assert!(actor.calls[0].speech_revision.is_none());
         assert_eq!(actor.calls[0].info()["saying"], json!(false));
         if body["mic"] == "silence" { assert_eq!(actor.calls[0].devices.mic,"silence"); }
         else {
@@ -769,7 +782,7 @@ fn history_pruning_never_prunes_live_calls_or_forgets_handled_ids() {
     // Kiểm tra qua actor thuần, không cần thread hay NTgCalls thật.
     let (updates,_)=broadcast::channel(1); let (sender,_)=mpsc::unbounded_channel(); let (events,_)=broadcast::channel(1);
     let media=FakeMedia(Arc::new(Mutex::new(FakeState::default()))); let protocol=media.protocol().unwrap();
-    let mut actor=Actor {td:Arc::new(FakeTd{requests:Arc::new(Mutex::new(Vec::new())),updates,early:Mutex::new(None),fail:Mutex::new(None)}),media:Box::new(media),protocol,p2p:false,data_dir:"data".into(),defaults:Devices::default(),catalog:catalog::empty(),calls:vec![],handled:HashSet::from([99]),handled_order:VecDeque::from([99]),events,sender,profile:(640,360,15),cast_port:None};
+    let mut actor=Actor {td:Arc::new(FakeTd{requests:Arc::new(Mutex::new(Vec::new())),updates,early:Mutex::new(None),fail:Mutex::new(None)}),media:Box::new(media),protocol,p2p:false,data_dir:"data".into(),defaults:Devices::default(),catalog:catalog::empty(),calls:vec![],handled:HashSet::from([99]),handled_order:VecDeque::from([99]),events,sender,profile:(640,360,15),cast_port:None,audio_rx_dropped:Arc::new(AtomicU64::new(0))};
     for i in 0..27 { let mut c=LiveCall::new(100+i,true,false,Devices::default(),Path::new("data")); c.state="ended"; c.ended=Some(Instant::now()); actor.calls.push(c); }
     actor.calls.push(LiveCall::new(1,true,false,Devices::default(),Path::new("data")));
     actor.prune(); assert_eq!(actor.calls.len(),21); assert_eq!(actor.calls[0].user_id,107); assert_eq!(actor.calls.last().unwrap().state,"dialing"); assert!(actor.handled.contains(&99));
@@ -798,25 +811,27 @@ fn nguon_truc_tiep_co_co_giam_tre_dung_cho() {
 fn on_frames_separates_audio_and_video_channels_so_full_video_never_drops_audio() {
     let (frame_tx, mut frame_rx) = mpsc::channel(3);
     let (audio_tx, mut audio_rx) = mpsc::channel(64);
+    let audio_dropped = AtomicU64::new(0);
     let meta = FrameData { absolute_capture_timestamp_ms: 0, rotation: VideoRotation::VideoRotation0, width: 8, height: 4 };
     let mk = |bytes: Vec<u8>| vec![Frame { ssrc: 0, data: bytes, frame_data: meta.clone() }];
 
     // Capture mode bị lọc ở cả hai loại.
-    media::dispatch_playback_frames(42, StreamMode::Capture, StreamDevice::Camera, mk(vec![0; 48]), &frame_tx, &audio_tx);
-    media::dispatch_playback_frames(42, StreamMode::Capture, StreamDevice::Microphone, mk(vec![1, 2]), &frame_tx, &audio_tx);
+    media::dispatch_playback_frames(42, StreamMode::Capture, StreamDevice::Camera, mk(vec![0; 48]), &frame_tx, &audio_tx, &audio_dropped);
+    media::dispatch_playback_frames(42, StreamMode::Capture, StreamDevice::Microphone, mk(vec![1, 2]), &frame_tx, &audio_tx, &audio_dropped);
     assert!(frame_rx.try_recv().is_err());
     assert!(audio_rx.try_recv().is_err());
 
     // Bơm đầy kênh hình (dung lượng 3) + 1 khung hình tràn (Screen cũng đi vào kênh hình).
     for _ in 0..3 {
-        media::dispatch_playback_frames(42, StreamMode::Playback, StreamDevice::Camera, mk(vec![0; 48]), &frame_tx, &audio_tx);
+        media::dispatch_playback_frames(42, StreamMode::Playback, StreamDevice::Camera, mk(vec![0; 48]), &frame_tx, &audio_tx, &audio_dropped);
     }
-    media::dispatch_playback_frames(42, StreamMode::Playback, StreamDevice::Screen, mk(vec![1; 48]), &frame_tx, &audio_tx);
+    media::dispatch_playback_frames(42, StreamMode::Playback, StreamDevice::Screen, mk(vec![1; 48]), &frame_tx, &audio_tx, &audio_dropped);
 
     // Kênh hình đang đầy cứng, nhưng khung tiếng vẫn đi vào kênh audio riêng mà không rớt.
     for i in 0..10u8 {
-        media::dispatch_playback_frames(42, StreamMode::Playback, StreamDevice::Microphone, mk(vec![i, 0]), &frame_tx, &audio_tx);
+        media::dispatch_playback_frames(42, StreamMode::Playback, StreamDevice::Microphone, mk(vec![i, 0]), &frame_tx, &audio_tx, &audio_dropped);
     }
+    assert_eq!(audio_dropped.load(Ordering::Relaxed), 0);
 
     let mut got_audio = 0;
     while let Ok(MediaEvent::Frames(42, StreamMode::Playback, StreamDevice::Microphone, _)) = audio_rx.try_recv() {
@@ -831,6 +846,12 @@ fn on_frames_separates_audio_and_video_channels_so_full_video_never_drops_audio(
     }
     assert_eq!(got_video, 3);
     assert!(frame_rx.try_recv().is_err());
+
+    // Khi kênh audio đầy, bộ đếm rớt phải tăng đúng số khung bị rớt.
+    for i in 0..70u8 {
+        media::dispatch_playback_frames(42, StreamMode::Playback, StreamDevice::Microphone, mk(vec![i, 0]), &frame_tx, &audio_tx, &audio_dropped);
+    }
+    assert_eq!(audio_dropped.load(Ordering::Relaxed), 6);
 }
 
 #[tokio::test]
@@ -884,6 +905,7 @@ fn mark_handled_caps_history_at_256() {
         sender,
         profile: (640, 360, 15),
         cast_port: None,
+        audio_rx_dropped: Arc::new(AtomicU64::new(0)),
     };
     for id in 0..300 {
         actor.mark_handled(id);
@@ -926,6 +948,7 @@ async fn actor_end_cleans_up_call_live_files() {
         sender,
         profile: (640, 360, 15),
         cast_port: None,
+        audio_rx_dropped: Arc::new(AtomicU64::new(0)),
     };
     let c = LiveCall::new(101, true, false, Devices::default(), &temp_dir);
     let cid = c.id.clone();
@@ -1075,12 +1098,13 @@ async fn interrupting_speech_clears_saying_and_caps_pending_signaling() {
 
     actor.start_speech(0, &vec![7u8; 9600]).await.unwrap();
     assert_eq!(actor.calls[0].info()["saying"], json!(true));
+    assert_eq!(actor.calls[0].devices.mic, "speech");
 
     actor.set_media(json!({"id": id, "mic_format": "auto"})).await.unwrap();
     assert_eq!(actor.calls[0].info()["saying"], json!(true));
     let rev = actor.calls[0].capture_revision;
-    let say_path = PathBuf::from(&actor.calls[0].devices.mic);
-    actor.restore_mic(&id, rev, "http://r1/mic?k=secret".into(), "s16le16k".into(), say_path).await;
+    actor.restore_mic(&id, rev, "http://r1/mic?k=secret".into(), "s16le16k".into()).await;
+    assert_eq!(actor.calls[0].info()["saying"], json!(false));
     assert_eq!(actor.calls[0].devices.mic, "http://r1/mic?k=secret");
     assert_eq!(actor.calls[0].devices.mic_format, "auto");
 
@@ -1158,4 +1182,81 @@ fn rx_rotation_does_not_overflow_on_large_multiple_of_90() {
     std::env::remove_var("TELEGRAM_RX_ROTATE");
     assert_eq!(r1, 90);
     assert_eq!(r2, 180);
+}
+
+#[test]
+fn mic_command_flushes_packets_to_pipe() {
+    for (spec, fmt) in [
+        ("silence", "auto"),
+        ("test", "auto"),
+        ("speech", "s16le48k"),
+        ("/tmp/say.pcm", "s16le48k"),
+        ("http://192.0.2.10/mic?k=secret", "s16le16k"),
+        ("rtsp://192.0.2.10/mic", "auto"),
+    ] {
+        let cmd = mic_command(spec, fmt);
+        assert!(cmd.contains("-flush_packets 1 pipe:1"), "{spec}: {cmd}");
+    }
+    assert!(mic_command("speech", "s16le48k").contains("anullsrc"));
+    assert!(!Devices { mic: "speech".into(), ..Devices::default() }.auto());
+}
+
+#[tokio::test]
+async fn stt_receives_all_frames_during_mic_muted_and_say_and_logs_metrics_in_calltrace() {
+    let f = Fixture::new(false);
+    let (mut actor, _commands) = local_actor(&f);
+    fs::create_dir_all(f.dir.join("live")).unwrap();
+    let devices = Devices { mic: "silence".into(), playback: "file".into(), speaker: String::new(), ..Devices::default() };
+    let mut c = LiveCall::new(42, false, false, devices, &f.dir);
+    let id = c.id.clone();
+    c.state = "active";
+    c.media_created = true;
+    c.td_id = Some(11);
+    c.active = Some(Instant::now());
+    actor.calls.push(c);
+
+    let audio_res = actor.set_media(json!({"id": id, "action": "audio_out"})).await.unwrap();
+    let token = audio_res["audio_out"]["url"].as_str().unwrap().split("?t=").nth(1).unwrap().to_owned();
+    let mut stream = actor.calls[0].browser_audio.as_ref().unwrap().subscribe(&token).unwrap();
+
+    let mut pcm_frame = Vec::with_capacity(960);
+    for i in 0..480 {
+        let sample: i16 = if i % 2 == 0 { 12_000 } else { -12_000 };
+        pcm_frame.extend_from_slice(&sample.to_le_bytes());
+    }
+    let metadata = FrameData { absolute_capture_timestamp_ms: 0, rotation: VideoRotation::VideoRotation0, width: 0, height: 0 };
+    for _ in 0..20 {
+        actor.media_event(MediaEvent::Frames(42, StreamMode::Playback, StreamDevice::Microphone, vec![Frame { ssrc: 0, data: pcm_frame.clone(), frame_data: metadata.clone() }])).await;
+    }
+    for _ in 0..20 {
+        assert_eq!(stream.audio.recv().await.unwrap().len(), 960);
+    }
+
+    actor.start_speech(0, &vec![7u8; 9600]).await.unwrap();
+    assert_eq!(actor.calls[0].info()["saying"], json!(true));
+    for _ in 0..20 {
+        actor.media_event(MediaEvent::Frames(42, StreamMode::Playback, StreamDevice::Microphone, vec![Frame { ssrc: 0, data: pcm_frame.clone(), frame_data: metadata.clone() }])).await;
+    }
+    for _ in 0..20 {
+        assert_eq!(stream.audio.recv().await.unwrap().len(), 960);
+    }
+
+    let rev = actor.calls[0].capture_revision;
+    actor.restore_mic(&id, rev, "silence".into(), "auto".into()).await;
+    let info = actor.calls[0].info();
+    assert_eq!(info["diag"]["stt"]["frames_in"], json!(40));
+    assert_eq!(info["diag"]["stt"]["muted_frames_in"], json!(20));
+    assert_eq!(info["diag"]["stt"]["saying_frames_in"], json!(20));
+    assert_eq!(info["diag"]["stt"]["active_frames"], json!(40));
+    assert_eq!(info["diag"]["stt"]["peak"], json!(12_000));
+    assert_eq!(info["diag"]["stt"]["rms"], json!(12_000));
+    assert_eq!(info["diag"]["stt"]["cut_ms"], json!(0));
+    assert_eq!(info["diag"]["tts"]["utterances"], json!(1));
+    assert_eq!(info["diag"]["tts"]["frames_total"], json!(5));
+
+    actor.end(0, "test xong").await;
+    let trace = fs::read_to_string(f.dir.join("calltrace").join(format!("{id}.log"))).unwrap();
+    assert!(trace.contains("tts-do "), "{trace}");
+    assert!(trace.contains("tong-ket") && trace.contains("\"stt\"") && trace.contains("\"tts\""), "{trace}");
+    assert!(!trace.contains("127.0.0.1") && !trace.contains(&token));
 }

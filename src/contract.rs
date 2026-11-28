@@ -35,6 +35,7 @@ pub struct AudioOut {
     pub audio: tokio::sync::broadcast::Receiver<Vec<u8>>,
     pub stopped: tokio::sync::watch::Receiver<()>,
     pub expires: std::time::Instant,
+    pub lagged_frames: Option<Arc<std::sync::atomic::AtomicU64>>,
 }
 
 /// Chỉ giữ JPEG mới nhất; kênh đóng khi cuộc gọi kết thúc.

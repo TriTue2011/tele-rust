@@ -72,10 +72,10 @@ fn protocol_whitelist(spec: &str) -> &'static str {
 
 pub fn mic_command(spec: &str, fmt: &str) -> String {
     let base = "ffmpeg -hide_banner -loglevel error -nostdin";
-    let out = "-f s16le -ac 1 -ar 48000 pipe:1";
+    let out = "-f s16le -ac 1 -ar 48000 -flush_packets 1 pipe:1";
     let wl = protocol_whitelist(spec);
     match spec {
-        "silence" | "browser" => format!("{base} -re -f lavfi -i \"anullsrc=r=48000:cl=mono\" {out}"),
+        "silence" | "browser" | "speech" => format!("{base} -re -f lavfi -i \"anullsrc=r=48000:cl=mono\" {out}"),
         "" | "test" => format!("{base} -re -f lavfi -i \"sine=frequency=440:sample_rate=48000\" -af volume=0.25 {out}"),
         _ if spec.starts_with("rtsp://") || spec.starts_with("rtsps://") => format!("{base} -protocol_whitelist {wl} {LIVE_IN} -rtsp_transport tcp -i {} -vn {out}", quote(spec)),
         // Tệp cục bộ: đọc theo thời gian thực (-re), KHÔNG gắn LIVE_IN (tránh probe ~1,35 s và tránh xả burst vào pipe rồi EOF sớm).
@@ -185,7 +185,7 @@ impl Devices {
 
     pub fn auto(&self) -> bool {
         // Các nguồn dựng sẵn (kể cả test của bản cũ) và browser không phải thiết bị do HA cấp.
-        !matches!(self.mic.as_str(), "" | "test" | "silence" | "browser")
+        !matches!(self.mic.as_str(), "" | "test" | "silence" | "browser" | "speech")
             || !matches!(self.camera.as_str(), "" | "test" | "black" | "browser")
             || !matches!(self.speaker.as_str(), "" | "browser")
     }

@@ -622,8 +622,9 @@ async fn audio_out_stream(State(ctx): State<Arc<Ctx>>, req: Request) -> Response
 }
 
 fn audio_out_response(stream: crate::contract::AudioOut) -> Response {
-    let chunks = futures_util::stream::unfold((Some(stream.prime), stream.audio, stream.stopped, stream.expires),
-        |(mut prime, mut audio, mut stopped, expires)| async move {
+    let chunks = futures_util::stream::unfold(
+        (Some(stream.prime), stream.audio, stream.stopped, stream.expires, stream.lagged_frames),
+        |(mut prime, mut audio, mut stopped, expires, lagged)| async move {
             if stopped.has_changed().is_err() || Instant::now() >= expires { return None; }
             let chunk = if let Some(header) = prime.take() { header } else {
                 loop {
@@ -632,13 +633,18 @@ fn audio_out_response(stream: crate::contract::AudioOut) -> Response {
                         _ = tokio::time::sleep_until(expires.into()) => return None,
                         data = audio.recv() => match data {
                             Ok(bytes) => break bytes,
-                            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                                if let Some(counter) = &lagged {
+                                    counter.fetch_add(skipped, std::sync::atomic::Ordering::Relaxed);
+                                }
+                                continue;
+                            }
                             Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
                         },
                     }
                 }
             };
-            Some((Ok::<_, std::convert::Infallible>(chunk), (prime, audio, stopped, expires)))
+            Some((Ok::<_, std::convert::Infallible>(chunk), (prime, audio, stopped, expires, lagged)))
         });
     isolate_media(([(header::CONTENT_TYPE,"audio/wav"),(header::CACHE_CONTROL,"no-store"),
         (header::REFERRER_POLICY,"no-referrer")],Body::from_stream(chunks)).into_response())
@@ -1275,7 +1281,7 @@ mod tests {
         }
         let (audio,receiver)=tokio::sync::broadcast::channel(2);
         let (alive,stopped)=tokio::sync::watch::channel(());
-        let response=audio_out_response(crate::contract::AudioOut {prime:b"RIFF".to_vec(),audio:receiver,stopped,expires:Instant::now()+Duration::from_secs(1)});
+        let response=audio_out_response(crate::contract::AudioOut {prime:b"RIFF".to_vec(),audio:receiver,stopped,expires:Instant::now()+Duration::from_secs(1),lagged_frames:None});
         assert_eq!(response.headers()[header::CONTENT_TYPE],"audio/wav");
         assert_eq!(response.headers()[header::CACHE_CONTROL],"no-store");
         assert!(!response.headers().contains_key(header::CONTENT_LENGTH));
@@ -1284,7 +1290,7 @@ mod tests {
         audio.send(vec![1,2]).unwrap();assert_eq!(body.next().await.unwrap().unwrap().as_ref(),[1,2]);
         drop(alive);assert!(body.next().await.is_none());
         let (_alive,stopped)=tokio::sync::watch::channel(());
-        let response=audio_out_response(crate::contract::AudioOut{prime:vec![0],audio:audio.subscribe(),stopped,expires:Instant::now()+Duration::from_millis(10)});
+        let response=audio_out_response(crate::contract::AudioOut{prime:vec![0],audio:audio.subscribe(),stopped,expires:Instant::now()+Duration::from_millis(10),lagged_frames:None});
         let mut body=response.into_body().into_data_stream();
         assert!(body.next().await.is_some());
         assert!(tokio::time::timeout(Duration::from_millis(100),body.next()).await.unwrap().is_none());
@@ -1570,11 +1576,13 @@ mod tests {
     async fn audio_out_response_survives_broadcast_lag() {
         let (audio, receiver) = tokio::sync::broadcast::channel(1);
         let (_alive, stopped) = tokio::sync::watch::channel(());
+        let lagged = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let response = audio_out_response(crate::contract::AudioOut {
             prime: b"RIFF".to_vec(),
             audio: receiver,
             stopped,
             expires: Instant::now() + Duration::from_secs(2),
+            lagged_frames: Some(lagged.clone()),
         });
         let mut body = response.into_body().into_data_stream();
         assert_eq!(body.next().await.unwrap().unwrap().as_ref(), b"RIFF");
@@ -1582,5 +1590,6 @@ mod tests {
         audio.send(vec![2]).unwrap();
         let chunk = body.next().await.unwrap().unwrap();
         assert_eq!(chunk.as_ref(), [2]);
+        assert_eq!(lagged.load(std::sync::atomic::Ordering::Relaxed), 1);
     }
 }

@@ -11,6 +11,7 @@ mod browser;
 mod browser_audio;
 mod audio_sink;
 mod catalog;
+mod speech;
 pub(crate) mod trace;
 pub mod versions;
 
@@ -48,7 +49,7 @@ enum Command {
     AudioOut(String, String, oneshot::Sender<Result<AudioOut, GwError>>),
     OwnsCall(String, oneshot::Sender<bool>),
     HasActiveCall(oneshot::Sender<bool>),
-    RestoreMic(String, u64, String, String, PathBuf),
+    RestoreMic(String, u64, String, String),
     SayReady(String, Result<Vec<u8>, GwError>, oneshot::Sender<Reply>),
     RefreshCapture(String),
     Shutdown(Option<std::sync::mpsc::Sender<()>>, Instant),
@@ -89,10 +90,12 @@ impl CallManager {
         let protocol = media.protocol().map_err(|_| GwError::new(502, "MEDIA_FAILED", "Không đọc được protocol NTgCalls"))?;
         let (sender, receiver) = mpsc::unbounded_channel();
         let (frame_sender, frame_receiver) = mpsc::channel(3);
-        let (audio_sender, audio_receiver) = mpsc::channel(64);
+        let (audio_sender, audio_receiver) = mpsc::channel(256);
+        let audio_rx_dropped = Arc::new(AtomicU64::new(0));
         let (events, _) = broadcast::channel(256);
         let handle = Arc::new(Handle { sender: sender.clone(), events: events.clone(), shutting_down: AtomicBool::new(false), audio_slots: Arc::new(tokio::sync::Semaphore::new(8)) });
         let (startup_tx, startup_rx) = std::sync::mpsc::sync_channel(1);
+        let audio_dropped_cb = audio_rx_dropped.clone();
         std::thread::Builder::new().name("tggw-calls".into()).spawn(move || {
             let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
                 Ok(r) => r,
@@ -115,10 +118,10 @@ impl CallManager {
                         }
                     }
                 }
-                media.callbacks(sender.clone(), frame_sender, audio_sender);
+                media.callbacks(sender.clone(), frame_sender, audio_sender, audio_dropped_cb);
                 let catalog = match catalog::load(&data_dir) { Ok(c) => c, Err(e) => { let _ = startup_tx.send(Err(e)); return; } };
                 let mut actor = Actor { td, media, protocol, p2p, data_dir, defaults, calls: Vec::new(),
-                    catalog, handled: HashSet::new(), handled_order: VecDeque::new(), events, sender, profile: video_profile(&std::env::var("VIDEO_PROFILE").unwrap_or_default()), cast_port };
+                    catalog, handled: HashSet::new(), handled_order: VecDeque::new(), events, sender, profile: video_profile(&std::env::var("VIDEO_PROFILE").unwrap_or_default()), cast_port, audio_rx_dropped };
                 let _ = startup_tx.send(Ok(()));
                 actor.run(receiver, updates, frame_receiver, audio_receiver).await;
             });
@@ -251,8 +254,215 @@ const MAX_PENDING_SIGNALING: usize = 256;
 struct CaptureHandles {
     mic: Option<browser::BrowserMic>,
     cam: Option<browser::BrowserCam>,
+    speech: Option<speech::SpeechStream>,
     drop_mic: bool,
     drop_cam: bool,
+    drop_speech: bool,
+}
+
+#[derive(Default)]
+struct TtsDiag {
+    utterances: u64,
+    frames_sent: u64,
+    frames_total: u64,
+    late_frames: u64,
+    missed_frames: u64,
+    max_gap_ms: u64,
+    last_connect_ms: Option<u64>,
+}
+
+impl TtsDiag {
+    fn record(&mut self, snap: speech::SpeechSnapshot) {
+        self.utterances += 1;
+        self.frames_sent += snap.frames_sent;
+        self.frames_total += snap.frames_total;
+        self.late_frames += snap.late_frames;
+        self.missed_frames += snap.missed_frames;
+        if snap.max_gap_ms > self.max_gap_ms { self.max_gap_ms = snap.max_gap_ms; }
+        if snap.connect_delay_ms.is_some() { self.last_connect_ms = snap.connect_delay_ms; }
+    }
+
+    fn json(&self, active: Option<speech::SpeechSnapshot>) -> Value {
+        let (mut utterances, mut frames_sent, mut frames_total, mut late_frames, mut missed_frames, mut max_gap_ms, mut last_connect_ms) = (
+            self.utterances, self.frames_sent, self.frames_total, self.late_frames, self.missed_frames, self.max_gap_ms, self.last_connect_ms,
+        );
+        if let Some(snap) = active {
+            utterances += 1;
+            frames_sent += snap.frames_sent;
+            frames_total += snap.frames_total;
+            late_frames += snap.late_frames;
+            missed_frames += snap.missed_frames;
+            if snap.max_gap_ms > max_gap_ms { max_gap_ms = snap.max_gap_ms; }
+            if snap.connect_delay_ms.is_some() { last_connect_ms = snap.connect_delay_ms; }
+        }
+        json!({
+            "utterances": utterances,
+            "frames_sent": frames_sent,
+            "frames_total": frames_total,
+            "late_frames": late_frames,
+            "missed_frames": missed_frames,
+            "max_gap_ms": max_gap_ms,
+            "last_connect_ms": last_connect_ms,
+        })
+    }
+}
+
+struct SttDiag {
+    active_frames: u64,
+    muted_frames_in: u64,
+    saying_frames_in: u64,
+    sum_sq: u128,
+    samples: u64,
+    last_frame_at: Option<Instant>,
+    max_gap_ms: u64,
+    gap_events: u64,
+    gap_cut_ms: u64,
+    rx_dropped_base: u64,
+    rx_dropped: u64,
+    browser_lagged: u64,
+    browser_no_listener: u64,
+    browser_invalid: u64,
+    win_frames: u64,
+    win_active: u64,
+    win_peak: i32,
+    win_sum_sq: u128,
+    win_samples: u64,
+    win_max_gap_ms: u64,
+    win_gap_cut_ms: u64,
+    win_prev_dropped: u64,
+}
+
+impl SttDiag {
+    fn new(rx_dropped_base: u64) -> Self {
+        Self {
+            active_frames: 0,
+            muted_frames_in: 0,
+            saying_frames_in: 0,
+            sum_sq: 0,
+            samples: 0,
+            last_frame_at: None,
+            max_gap_ms: 0,
+            gap_events: 0,
+            gap_cut_ms: 0,
+            rx_dropped_base,
+            rx_dropped: 0,
+            browser_lagged: 0,
+            browser_no_listener: 0,
+            browser_invalid: 0,
+            win_frames: 0,
+            win_active: 0,
+            win_peak: 0,
+            win_sum_sq: 0,
+            win_samples: 0,
+            win_max_gap_ms: 0,
+            win_gap_cut_ms: 0,
+            win_prev_dropped: 0,
+        }
+    }
+
+    fn on_frame(&mut self, pcm: &[u8], mic_muted: bool, saying: bool, now: Instant) -> i32 {
+        let mut frame_peak = 0i32;
+        let mut frame_sum_sq = 0u128;
+        let mut frame_samples = 0u64;
+        for sample in pcm.chunks_exact(2) {
+            let v = i32::from(i16::from_le_bytes([sample[0], sample[1]]));
+            let abs = v.abs();
+            if abs > frame_peak { frame_peak = abs; }
+            let vv = i64::from(v);
+            frame_sum_sq += (vv * vv) as u128;
+            frame_samples += 1;
+        }
+        if let Some(prev) = self.last_frame_at {
+            let gap_ms = now.duration_since(prev).as_millis() as u64;
+            if gap_ms > self.max_gap_ms { self.max_gap_ms = gap_ms; }
+            if gap_ms > self.win_max_gap_ms { self.win_max_gap_ms = gap_ms; }
+            if gap_ms > 40 {
+                self.gap_events += 1;
+                let cut = gap_ms.saturating_sub(10);
+                self.gap_cut_ms += cut;
+                self.win_gap_cut_ms += cut;
+            }
+        }
+        self.last_frame_at = Some(now);
+        if frame_peak >= 300 {
+            self.active_frames += 1;
+            self.win_active += 1;
+        }
+        if mic_muted { self.muted_frames_in += 1; }
+        if saying { self.saying_frames_in += 1; }
+        self.sum_sq += frame_sum_sq;
+        self.samples += frame_samples;
+        self.win_frames += 1;
+        if frame_peak > self.win_peak { self.win_peak = frame_peak; }
+        self.win_sum_sq += frame_sum_sq;
+        self.win_samples += frame_samples;
+        frame_peak
+    }
+
+    fn sync_drops(&mut self, actor_rx_dropped: u64, browser: Option<&browser_audio::BrowserAudio>) {
+        self.rx_dropped = actor_rx_dropped.saturating_sub(self.rx_dropped_base);
+        if let Some(browser) = browser {
+            let st = browser.stats();
+            self.browser_lagged = st.lagged_frames;
+            self.browser_no_listener = st.no_listener_frames;
+            self.browser_invalid = st.invalid_frames;
+        }
+    }
+
+    fn total_dropped(&self) -> u64 {
+        self.rx_dropped + self.browser_lagged + self.browser_invalid
+    }
+
+    fn take_window_line(&mut self) -> Option<String> {
+        let cur_dropped = self.total_dropped();
+        let win_dropped = cur_dropped.saturating_sub(self.win_prev_dropped);
+        self.win_prev_dropped = cur_dropped;
+        let cut_ms = self.win_gap_cut_ms + win_dropped * 10;
+        if self.win_frames == 0 && cut_ms == 0 {
+            return None;
+        }
+        let rms = if self.win_samples == 0 {
+            0u64
+        } else {
+            ((self.win_sum_sq / u128::from(self.win_samples)) as f64).sqrt().round() as u64
+        };
+        let line = format!(
+            "khung={} peak={} rms={} noi={} ho_max_ms={} cat_ms={}",
+            self.win_frames, self.win_peak, rms, self.win_active, self.win_max_gap_ms, cut_ms
+        );
+        self.win_frames = 0;
+        self.win_active = 0;
+        self.win_peak = 0;
+        self.win_sum_sq = 0;
+        self.win_samples = 0;
+        self.win_max_gap_ms = 0;
+        self.win_gap_cut_ms = 0;
+        Some(line)
+    }
+
+    fn json(&self, frames_in: u64, peak: i32) -> Value {
+        let rms = if self.samples == 0 {
+            0u64
+        } else {
+            ((self.sum_sq / u128::from(self.samples)) as f64).sqrt().round() as u64
+        };
+        let cut_ms = self.gap_cut_ms + self.total_dropped() * 10;
+        json!({
+            "frames_in": frames_in,
+            "active_frames": self.active_frames,
+            "muted_frames_in": self.muted_frames_in,
+            "saying_frames_in": self.saying_frames_in,
+            "peak": peak,
+            "rms": rms,
+            "max_gap_ms": self.max_gap_ms,
+            "gap_events": self.gap_events,
+            "rx_dropped": self.rx_dropped,
+            "lagged_frames": self.browser_lagged,
+            "no_listener_frames": self.browser_no_listener,
+            "invalid_frames": self.browser_invalid,
+            "cut_ms": cut_ms,
+        })
+    }
 }
 
 struct LiveCall {
@@ -277,6 +487,9 @@ struct LiveCall {
     browser_cam: Option<browser::BrowserCam>,
     browser_audio: Option<browser_audio::BrowserAudio>,
     audio_sink: Option<audio_sink::AudioSink>,
+    speech_stream: Option<speech::SpeechStream>,
+    tts_diag: TtsDiag,
+    stt_diag: SttDiag,
     cam_off: bool,
     view_on: bool,
     peer_video: bool,
@@ -308,7 +521,9 @@ impl LiveCall {
         let playback_path = data_dir.join("live").join(format!("{id}_in.pcm"));
         let mut c = Self { id, td_id: None, user_id, outgoing, video, state: if outgoing { "dialing" } else { "ringing" },
             accepted: false, ready_done: false, media_created: false, pending_signaling: Vec::new(), devices, mic_source, playback_kind, playback_cmd,
-            playback_path, playback_final: None, cast: None, browser_mic: None, browser_cam: None, browser_audio: None, audio_sink: None, cam_off: false, view_on: video, peer_video: false,
+            playback_path, playback_final: None, cast: None, browser_mic: None, browser_cam: None, browser_audio: None, audio_sink: None,
+            speech_stream: None, tts_diag: TtsDiag::default(), stt_diag: SttDiag::new(0),
+            cam_off: false, view_on: video, peer_video: false,
             view: json!({"frames":0,"jpeg":0,"size":"","dropped":0,"bad":0}), snapshot: Default::default(), trace: None, sig: [0;4], frames_in: 0, frame_bytes: 0,
             peak: 0, error: String::new(), emojis: json!([]), started: Instant::now(), active: None, ended: None,
             events: VecDeque::new(), capture_revision: 0, speech_revision: None, speech_pending: false };
@@ -325,6 +540,23 @@ impl LiveCall {
         while self.events.len() > 200 { self.events.pop_front(); }
     }
 
+    fn finish_speech_metrics(&mut self, rev: u64) {
+        if let Some(stream) = self.speech_stream.take() {
+            let snap = stream.stats();
+            self.tts_diag.record(snap);
+            if let Some(trace) = &self.trace {
+                let connect = snap.connect_delay_ms.map_or_else(|| "none".to_owned(), |ms| ms.to_string());
+                trace.line(
+                    "tts-do",
+                    &format!(
+                        "rev={rev} khung={}/{} tre={} thieu={} ho_max_ms={} noi_ms={connect} lang={}",
+                        snap.frames_sent, snap.frames_total, snap.late_frames, snap.missed_frames, snap.max_gap_ms, snap.silence_frames
+                    ),
+                );
+            }
+        }
+    }
+
     fn playback_size(&self) -> u64 {
         self.playback_final.unwrap_or_else(|| fs::metadata(&self.playback_path).map(|m| m.len()).unwrap_or(0))
     }
@@ -333,7 +565,9 @@ impl LiveCall {
         let duration = self.ended.unwrap_or_else(Instant::now).duration_since(self.active.unwrap_or(self.started)).as_secs_f64();
         json!({"id":self.id,"user_id":self.user_id,"outgoing":self.outgoing,"video":self.video,
             "state":self.state,"emojis":self.emojis,"error":self.error,"seconds":(duration*10.0).round()/10.0,
-            "peer_video":self.peer_video,"view":self.view,"diag":{},"sig":{"tx_n":self.sig[0],"tx_b":self.sig[1],"rx_n":self.sig[2],"rx_b":self.sig[3]},
+            "peer_video":self.peer_video,"view":self.view,
+            "diag":{"tts":self.tts_diag.json(self.speech_stream.as_ref().map(speech::SpeechStream::stats)),"stt":self.stt_diag.json(self.frames_in,self.peak)},
+            "sig":{"tx_n":self.sig[0],"tx_b":self.sig[1],"rx_n":self.sig[2],"rx_b":self.sig[3]},
             "cpu_max":0.0,"mic_muted":self.devices.mic=="silence","saying":self.speech_revision.is_some(),"cam_off":self.cam_off,"frames_in":self.frames_in,"frame_bytes":self.frame_bytes,"peak":self.peak,
             "playback":{"kind":self.playback_kind,"bytes":self.playback_size(),"speaker_configured":!self.devices.speaker.is_empty()},"events":self.events.iter().skip(self.events.len().saturating_sub(40)).collect::<Vec<_>>()})
     }
@@ -349,8 +583,9 @@ impl LiveCall {
     /// Chuẩn bị mô tả nguồn gửi đi không làm thay đổi trạng thái hiện tại: chỉ mở BrowserMic/BrowserCam mới nếu cần và chưa có sẵn.
     async fn prepare_capture(&self, devices: &Devices, video: bool, cam_off: bool, profile: (i16, i16, u8)) -> Result<(ntgcalls::MediaDescription, CaptureHandles), GwError> {
         let mut description = devices.capture(video, cam_off, profile);
-        let mut handles = CaptureHandles { mic: None, cam: None, drop_mic: false, drop_cam: false };
+        let mut handles = CaptureHandles { mic: None, cam: None, speech: None, drop_mic: false, drop_cam: false, drop_speech: false };
         if devices.mic == "browser" {
+            handles.drop_speech = true;
             if let Some(existing) = self.browser_mic.as_ref() {
                 description.microphone.as_mut().unwrap().input = existing.command();
             } else {
@@ -358,8 +593,16 @@ impl LiveCall {
                 description.microphone.as_mut().unwrap().input = mic.command();
                 handles.mic = Some(mic);
             }
+        } else if devices.mic == "speech" {
+            handles.drop_mic = true;
+            if let Some(existing) = self.speech_stream.as_ref() {
+                description.microphone.as_mut().unwrap().input = existing.command();
+            } else {
+                handles.drop_speech = true;
+            }
         } else {
             handles.drop_mic = true;
+            handles.drop_speech = true;
         }
         if devices.camera == "browser" && video && !cam_off {
             if let Some(existing) = self.browser_cam.as_ref() {
@@ -380,6 +623,16 @@ impl LiveCall {
             self.browser_mic = Some(mic);
         } else if handles.drop_mic {
             self.browser_mic = None;
+        }
+        if let Some(speech) = handles.speech {
+            if let Some(prev) = self.speech_stream.take() {
+                self.tts_diag.record(prev.stats());
+            }
+            self.speech_stream = Some(speech);
+        } else if handles.drop_speech {
+            if let Some(prev) = self.speech_stream.take() {
+                self.tts_diag.record(prev.stats());
+            }
         }
         if let Some(cam) = handles.cam {
             self.browser_cam = Some(cam);
@@ -434,6 +687,7 @@ struct Actor {
     sender: mpsc::UnboundedSender<Command>,
     profile: (i16, i16, u8),
     cast_port: Option<u16>,
+    audio_rx_dropped: Arc<AtomicU64>,
 }
 
 impl Actor {
@@ -536,8 +790,8 @@ impl Actor {
                     }
                     Some(Command::OwnsCall(id, reply)) => { let _ = reply.send(self.calls.iter().any(|c| c.id == id)); }
                     Some(Command::HasActiveCall(reply)) => { let _ = reply.send(self.calls.iter().any(|c| c.state != "ended")); }
-                    Some(Command::RestoreMic(id, revision, mic, fmt, path)) => {
-                        self.restore_mic(&id, revision, mic, fmt, path).await;
+                    Some(Command::RestoreMic(id, revision, mic, fmt)) => {
+                        self.restore_mic(&id, revision, mic, fmt).await;
                     }
                     Some(Command::RefreshCapture(id)) => {
                         if let Some(i) = self.calls.iter().position(|c| c.id == id && c.state == "active" && c.speech_revision.is_none()) {
@@ -560,12 +814,17 @@ impl Actor {
                 Some(frame) = frames.recv() => self.media_event(frame).await,
                 Some(frame) = audio_frames.recv() => self.media_event(frame).await,
                 _ = expire_frames.tick(), if !self.calls.is_empty() => {
+                    let dropped = self.audio_rx_dropped.load(Ordering::Relaxed);
                     for c in &mut self.calls {
                         c.snapshot.expire();
                         if c.state != "ended" {
+                            c.stt_diag.sync_drops(dropped, c.browser_audio.as_ref());
                             if let Some(trace) = &mut c.trace {
                                 trace.sample(&[c.sig[0], c.sig[1], c.sig[2], c.sig[3], c.frames_in, c.frame_bytes,
                                     c.view["frames"].as_u64().unwrap_or(0), c.view["bad"].as_u64().unwrap_or(0)]);
+                                if let Some(line) = c.stt_diag.take_window_line() {
+                                    trace.line("stt-1s", &line);
+                                }
                             }
                         }
                     }
@@ -705,7 +964,8 @@ impl Actor {
         if body["playback"] == "shell" { devices.playback = "shell".into(); }
         let video = body["video"].as_bool().unwrap_or(false);
         devices.check_camera(video, false)?;
-        let call = LiveCall::new(user, true, video, devices, &self.data_dir);
+        let mut call = LiveCall::new(user, true, video, devices, &self.data_dir);
+        call.stt_diag = SttDiag::new(self.audio_rx_dropped.load(Ordering::Relaxed));
         call.check_playback(&call.playback_kind, &call.playback_cmd, self.cast_port)?;
         self.prune();
         self.calls.push(call);
@@ -763,8 +1023,15 @@ impl Actor {
 
     async fn end(&mut self, i: usize, why: &str) {
         if self.calls[i].state == "ended" { return; }
+        let dropped = self.audio_rx_dropped.load(Ordering::Relaxed);
         let c = &mut self.calls[i];
         c.state = "ended";
+        c.stt_diag.sync_drops(dropped, c.browser_audio.as_ref());
+        if let Some(rev) = c.speech_revision.take() {
+            c.finish_speech_metrics(rev);
+        } else if let Some(stream) = c.speech_stream.take() {
+            c.tts_diag.record(stream.stats());
+        }
         c.snapshot = Default::default();
         c.browser_mic = None;
         c.browser_cam = None;
@@ -782,9 +1049,6 @@ impl Actor {
         c.playback_final = Some(c.playback_size());
         let _ = fs::remove_file(&c.playback_path);
         let _ = fs::remove_file(format!("{}.wav", c.playback_path.to_string_lossy()));
-        if let Some(revision) = c.speech_revision.take() {
-            let _ = fs::remove_file(self.data_dir.join("live").join(format!("{}_say_{revision}.pcm", c.id)));
-        }
         if let Ok(entries) = fs::read_dir(self.data_dir.join("live")) {
             let prefix = format!("{}_", c.id);
             for entry in entries.flatten() {
@@ -837,6 +1101,7 @@ impl Actor {
                     self.prune();
                     let mut c = LiveCall::new(user, false, call["is_video"].as_bool().unwrap_or(false), Devices::default(), &self.data_dir);
                     c.td_id = Some(id);
+                    c.stt_diag = SttDiag::new(self.audio_rx_dropped.load(Ordering::Relaxed));
                     self.calls.push(c);
                     found = Some(self.calls.len()-1);
                     self.event("incoming", found.unwrap());
@@ -1019,11 +1284,18 @@ impl Actor {
             // Mô tả nguồn phải đi qua prepare_capture: mic "browser" cần nối vào nguồn loopback, gọi thẳng devices.capture sẽ ra mic im lặng.
             let (desc, handles) = self.calls[i].prepare_capture(&devices, video, cam_off, self.profile).await?;
             self.media.execute(MediaOp::Sources(self.calls[i].user_id, StreamMode::Capture, desc)).await.map_err(|_| media_error())?;
+            if devices.mic != self.calls[i].devices.mic {
+                if let Some(rev) = self.calls[i].speech_revision.take() {
+                    self.calls[i].finish_speech_metrics(rev);
+                }
+            }
             self.calls[i].commit_capture(handles);
         }
         let c = &mut self.calls[i];
         if devices.mic != c.devices.mic {
-            c.speech_revision = None;
+            if let Some(rev) = c.speech_revision.take() {
+                c.finish_speech_metrics(rev);
+            }
             c.capture_revision += 1;
         } else if devices.mic_format != c.devices.mic_format {
             c.capture_revision += 1;
@@ -1113,6 +1385,7 @@ impl Actor {
             },
             MediaEvent::Frames(_, mode, device, frames) => {
                 if mode != StreamMode::Playback { return; }
+                let dropped = self.audio_rx_dropped.load(Ordering::Relaxed);
                 let c = &mut self.calls[i];
                 for frame in frames {
                     if matches!(device, StreamDevice::Camera | StreamDevice::Screen) {
@@ -1131,8 +1404,10 @@ impl Actor {
                         if let Some(audio) = &c.browser_audio { audio.push(&frame.data); }
                         if let Some(sink) = &c.audio_sink { sink.push(frame.data.clone()); }
                         if c.frames_in == 0 { c.log("NTgCalls: khung tiếng đầu"); }
+                        let frame_peak = c.stt_diag.on_frame(&frame.data, c.devices.mic == "silence", c.speech_revision.is_some(), Instant::now());
                         c.frames_in += 1; c.frame_bytes += frame.data.len() as u64;
-                        for sample in frame.data.chunks_exact(2).take(960) { c.peak = c.peak.max((i16::from_le_bytes([sample[0],sample[1]]) as i32).abs()); }
+                        c.peak = c.peak.max(frame_peak);
+                        c.stt_diag.sync_drops(dropped, c.browser_audio.as_ref());
                     }
                 }
             }
@@ -1205,31 +1480,45 @@ impl Actor {
     }
 
     async fn start_speech(&mut self, i: usize, pcm: &[u8]) -> Reply {
-        let seconds = pcm.len() as f64/96_000.0;
-        let revision = self.calls[i].capture_revision+1;
-        let path = self.data_dir.join("live").join(format!("{}_say_{revision}.pcm",self.calls[i].id));
-        let mut file = OpenOptions::new().create(true).truncate(true).write(true).mode(0o600).open(&path).map_err(|_| io_error())?;
-        file.write_all(pcm).map_err(|_| io_error())?;
+        let seconds = pcm.len() as f64 / 96_000.0;
+        let stream = speech::SpeechStream::open(pcm.to_vec()).await?;
+        let cmd = stream.command();
+        let revision = self.calls[i].capture_revision + 1;
+        let (prev_mic, prev_fmt, next_devices, video, cam_off) = {
+            let c = &self.calls[i];
+            let mut d = c.devices.clone();
+            let prev = (c.devices.mic.clone(), c.devices.mic_format.clone());
+            d.mic = "speech".into();
+            d.mic_format = "s16le48k".into();
+            (prev.0, prev.1, d, c.video, c.cam_off)
+        };
+        let (mut desc, mut handles) = self.calls[i].prepare_capture(&next_devices, video, cam_off, self.profile).await?;
+        desc.microphone.as_mut().unwrap().input = cmd;
+        handles.speech = Some(stream);
+        handles.drop_speech = false;
+        self.media.execute(MediaOp::Sources(self.calls[i].user_id, StreamMode::Capture, desc)).await.map_err(|_| media_error())?;
         let c = &mut self.calls[i];
-        let (mic,fmt) = (c.devices.mic.clone(), c.devices.mic_format.clone());
-        c.devices.mic = path.to_string_lossy().into_owned(); c.devices.mic_format = "s16le48k".into(); c.capture_revision += 1;
+        c.commit_capture(handles);
+        c.devices = next_devices;
+        c.capture_revision = revision;
         c.speech_revision = Some(revision);
-        let (id,revision) = (c.id.clone(),c.capture_revision);
-        if let Err(e) = self.capture(i).await {
-            self.calls[i].devices.mic = mic; self.calls[i].devices.mic_format = fmt; self.calls[i].speech_revision = None; let _ = fs::remove_file(path); return Err(e);
-        }
-        self.calls[i].log(&format!("say: phát {:.1}s qua nguồn mic tạm (rev {revision}), trả mic sau {:.1}s", seconds, seconds + SAY_TAIL_S));
+        let id = c.id.clone();
+        c.log(&format!("say: phát {:.1}s qua nguồn mic tạm (rev {revision}), trả mic sau {:.1}s", seconds, seconds + SAY_TAIL_S));
         let tx = self.sender.clone();
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_secs_f64(seconds + SAY_TAIL_S)).await;
-            let _ = tx.send(Command::RestoreMic(id,revision,mic,fmt,path));
+            let _ = tx.send(Command::RestoreMic(id, revision, prev_mic, prev_fmt));
         });
-        Ok(json!({"seconds":(seconds*10.0).round()/10.0}))
+        Ok(json!({"seconds": (seconds * 10.0).round() / 10.0}))
     }
 
-    async fn restore_mic(&mut self, id: &str, revision: u64, mic: String, fmt: String, path: PathBuf) {
+    async fn restore_mic(&mut self, id: &str, revision: u64, mic: String, fmt: String) {
         if let Some(i) = self.calls.iter().position(|c| c.id == id) {
-            if self.calls[i].speech_revision == Some(revision) { self.calls[i].speech_revision = None; }
+            if self.calls[i].speech_revision == Some(revision) || self.calls[i].capture_revision == revision {
+                if let Some(rev) = self.calls[i].speech_revision.take() {
+                    self.calls[i].finish_speech_metrics(rev);
+                }
+            }
             if self.calls[i].state != "ended" && self.calls[i].capture_revision == revision {
                 let fmt = self.calls[i].mic_source.as_ref()
                     .filter(|(src, _)| *src == mic)
@@ -1241,7 +1530,6 @@ impl Actor {
                 else { self.calls[i].log(&format!("say xong: trả nguồn mic (rev {revision})")); }
             }
         }
-        let _ = fs::remove_file(path);
     }
 }
 

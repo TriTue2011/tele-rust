@@ -32,7 +32,7 @@ impl CallControl for Media {
     }
     fn audio_out(&self, _: &str, _: &str) -> BoxFut<'_, Result<AudioOut, GwError>> {
         Box::pin(async { Ok(AudioOut { prime: b"RIFF".to_vec(), audio: self.audio.subscribe(),
-            stopped: self.alive.subscribe(), expires: Instant::now() + Duration::from_secs(10) }) })
+            stopped: self.alive.subscribe(), expires: Instant::now() + Duration::from_secs(10), lagged_frames: None }) })
     }
     fn cast_audio(&self, _: &str, _: &str) -> BoxFut<'_, Option<CastAudio>> {
         Box::pin(async { Some(CastAudio { prime: b"MP3".to_vec(), audio: self.audio.subscribe() }) })
