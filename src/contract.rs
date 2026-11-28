@@ -112,10 +112,13 @@ pub trait TdLink: Send + Sync + 'static {
 }
 
 fn flood_wait_seconds(message: &str) -> Option<u64> {
-    message.match_indices("FLOOD_WAIT_").find_map(|(offset, marker)| {
-        let suffix = &message[offset + marker.len()..];
-        let digits = suffix.split(|c: char| !c.is_ascii_digit()).next()?;
-        digits.parse().ok()
+    let lower = message.to_ascii_lowercase();
+    ["flood_wait_", "retry after "].into_iter().find_map(|marker| {
+        lower.match_indices(marker).find_map(|(offset, m)| {
+            let suffix = &lower[offset + m.len()..];
+            let digits = suffix.split(|c: char| !c.is_ascii_digit()).next()?;
+            digits.parse().ok()
+        })
     })
 }
 
@@ -166,5 +169,22 @@ pub trait ChatControl: Send + Sync + 'static {
     /// GET ảnh/tệp hoặc nhật ký. Backend chỉ JSON có thể giữ mặc định 501.
     fn bytes(&self, _path: &str, _query: &str) -> BoxFut<'_, Result<Binary, GwError>> {
         Box::pin(async { Err(GwError::new(501, "NOT_IMPLEMENTED", "Chưa có phản hồi nhị phân cho đường này.")) })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn from_tdlib_parses_both_flood_wait_and_retry_after_429_formats() {
+        let retry = GwError::from_tdlib(TdError::telegram(429, "Too Many Requests: retry after 42"));
+        assert_eq!((retry.status, retry.code.as_str(), retry.retry_after_seconds), (429, "FLOOD_WAIT", Some(42)));
+
+        let flood = GwError::from_tdlib(TdError::telegram(429, "FLOOD_WAIT_321"));
+        assert_eq!((flood.status, flood.code.as_str(), flood.retry_after_seconds), (429, "FLOOD_WAIT", Some(321)));
+
+        let slow = GwError::from_tdlib(TdError::telegram(429, "Slow down"));
+        assert_eq!((slow.status, slow.code.as_str(), slow.retry_after_seconds), (429, "TELEGRAM_ERROR", None));
     }
 }

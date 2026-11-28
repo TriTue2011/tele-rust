@@ -30,10 +30,19 @@ struct AccountStatus {
 
 impl EventSink {
     pub(crate) fn emit(&self, kind: &str, data: Value) {
+        let _ = self.try_emit(kind, data);
+    }
+
+    fn try_emit(&self, kind: &str, data: Value) -> bool {
         let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs_f64();
         let event = json!({"type":kind,"account":self.account.as_ref(),"timestamp":timestamp,"data":data});
-        if let Err(mpsc::error::TrySendError::Full(_)) = self.queue.try_send(event) {
-            log::warn!("Hàng đợi sự kiện đầy.");
+        match self.queue.try_send(event) {
+            Ok(()) => true,
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                log::warn!("Hàng đợi sự kiện đầy.");
+                false
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => false,
         }
     }
 
@@ -64,8 +73,9 @@ impl EventSink {
         update(&mut s);
         let Some(login) = s.login else { return };
         let online = login && s.authorized != Some(false) && s.connected != Some(false);
-        if s.published != Some(online) {
-            self.emit("account_status", json!({"status":if online { "online" } else { "offline" }}));
+        if s.published != Some(online)
+            && self.try_emit("account_status", json!({"status":if online { "online" } else { "offline" }}))
+        {
             s.published = Some(online);
         }
     }
@@ -115,6 +125,10 @@ impl EventStore {
         let store = self.clone();
         tokio::task::spawn_blocking(move || store.0.lock().unwrap().poll(since.max(0) as u64))
             .await.map_err(|_| GwError::new(500, "EVENT_STORAGE", "Không đọc được sự kiện."))
+    }
+
+    pub(crate) fn same_source(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
     }
 }
 

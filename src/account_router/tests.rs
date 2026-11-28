@@ -1813,3 +1813,268 @@ async fn channel_comments_enforce_auth_csrf_and_multi_account_isolation() {
     drop(hub);
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[tokio::test]
+async fn non_legacy_account_downloads_own_uploads_and_cannot_read_legacy_uploads() {
+    let dir = std::env::temp_dir().join(format!("tggw-h1-uploads-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("tdlib/files")).unwrap();
+    let (api, factory) = crate::td::fake::Fake::factory();
+    let cfg = LoginConfig {
+        data_dir: dir.clone(),
+        api_id: 12345,
+        api_hash: "fake-api-hash".into(),
+        phone: "+84900000000".into(),
+    };
+    let hub = Accounts::with_factory(cfg, "fake".into(), 3399, factory).await.unwrap();
+    let router = rest_router(hub.clone());
+
+    api.auth(1, json!({"@type":"authorizationStateReady"}));
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    while send(&router, "GET", "/health", Value::Null, false).await.1["accounts_online"] != 1 {
+        assert!(tokio::time::Instant::now() < deadline);
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let login = send(&router, "POST", "/ui/api/accounts", json!({"phone":"+84900000001"}), true).await;
+    assert_eq!(login.0, 200);
+    let id = login.1["login_id"].as_str().unwrap();
+    assert_eq!(
+        send(&router, "POST", &format!("/ui/api/accounts/{id}/code"), json!({"code":"22222"}), true).await.0,
+        200
+    );
+
+    let legacy_uploads = dir.join("uploads");
+    let own_uploads = hub.store.lock().unwrap().session_dir("+84900000001").join("uploads");
+    std::fs::create_dir_all(&legacy_uploads).unwrap();
+    std::fs::create_dir_all(&own_uploads).unwrap();
+    let legacy_file = legacy_uploads.join("legacy.txt");
+    let own_file = own_uploads.join("own.txt");
+    std::fs::write(&legacy_file, b"legacy-upload").unwrap();
+    std::fs::write(&own_file, b"own-upload").unwrap();
+
+    api.downloads.lock().unwrap().insert(2, std::path::absolute(&own_file).unwrap().to_string_lossy().into_owned());
+    let resp = router.clone().oneshot(
+        Request::builder()
+            .uri("/api/file/42?account=%2B84900000001")
+            .header("Authorization", "Bearer test-token")
+            .body(Body::empty())
+            .unwrap(),
+    ).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    assert_eq!(to_bytes(resp.into_body(), usize::MAX).await.unwrap().as_ref(), b"own-upload");
+
+    api.downloads.lock().unwrap().insert(2, std::path::absolute(&legacy_file).unwrap().to_string_lossy().into_owned());
+    assert_eq!(send(&router, "GET", "/api/file/42?account=%2B84900000001", Value::Null, true).await.0, 404);
+
+    api.downloads.lock().unwrap().insert(1, std::path::absolute(&legacy_file).unwrap().to_string_lossy().into_owned());
+    let resp = router.clone().oneshot(
+        Request::builder()
+            .uri("/api/file/42?account=%2B84900000000")
+            .header("Authorization", "Bearer test-token")
+            .body(Body::empty())
+            .unwrap(),
+    ).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    assert_eq!(to_bytes(resp.into_body(), usize::MAX).await.unwrap().as_ref(), b"legacy-upload");
+
+    api.downloads.lock().unwrap().insert(1, std::path::absolute(&own_file).unwrap().to_string_lossy().into_owned());
+    assert_eq!(send(&router, "GET", "/api/file/42?account=%2B84900000000", Value::Null, true).await.0, 404);
+
+    hub.shutdown().await;
+    drop(router);
+    drop(hub);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn relogin_legacy_phone_keeps_consistent_session_and_service_dir() {
+    let dir = std::env::temp_dir().join(format!("tggw-h2-relogin-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+
+    // Trường hợp A: legacy_session đã được lưu trong accounts.json và cần đăng nhập lại qua HTTP.
+    let dir_a = dir.join("case_a");
+    std::fs::create_dir_all(dir_a.join("tdlib/files")).unwrap();
+    {
+        let mut store = AccountStore::open(&dir_a, "+84900000000").unwrap();
+        store.keep_legacy("+84900000000").unwrap();
+    }
+    let (_api_a, factory_a) = crate::td::fake::Fake::factory();
+    let cfg_a = LoginConfig {
+        data_dir: dir_a.clone(),
+        api_id: 12345,
+        api_hash: "fake-api-hash".into(),
+        phone: "+84900000000".into(),
+    };
+    let hub_a = Accounts::with_factory(cfg_a, "fake".into(), 3399, factory_a).await.unwrap();
+    let router_a = rest_router(hub_a.clone());
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    while hub_a.contains("+84900000000") {
+        assert!(tokio::time::Instant::now() < deadline);
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let login = send(&router_a, "POST", "/ui/api/accounts", json!({"phone":"+84900000000"}), true).await;
+    assert_eq!(login.0, 200);
+    let id = login.1["login_id"].as_str().unwrap();
+    assert_eq!(
+        send(&router_a, "POST", &format!("/ui/api/accounts/{id}/code"), json!({"code":"22222"}), true).await.0,
+        200
+    );
+    assert_eq!(hub_a.store.lock().unwrap().session_dir("+84900000000"), dir_a.join("tdlib"));
+    let (_, entry_a) = hub_a.select("+84900000000").unwrap();
+    assert_eq!(entry_a.session, dir_a.join("tdlib"));
+    assert_eq!(entry_a.uploads, dir_a.join("uploads"));
+    assert!(dir_a.join("events").is_dir());
+    assert!(!dir_a.join("tdlib/events").exists());
+    hub_a.shutdown().await;
+    drop(router_a);
+    drop(hub_a);
+
+    // Trường hợp B: store.legacy còn true, đăng nhập nền thất bại rồi đăng nhập lại đúng số cấu hình qua HTTP.
+    let dir_b = dir.join("case_b");
+    std::fs::create_dir_all(dir_b.join("tdlib/files")).unwrap();
+    let (api_b, factory_b) = crate::td::fake::Fake::factory();
+    let cfg_b = LoginConfig {
+        data_dir: dir_b.clone(),
+        api_id: 12345,
+        api_hash: "fake-api-hash".into(),
+        phone: "+84900000000".into(),
+    };
+    let hub_b = Accounts::with_factory(cfg_b, "fake".into(), 3399, factory_b).await.unwrap();
+    let router_b = rest_router(hub_b.clone());
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    while !api_b.sent.lock().unwrap().iter().any(|(_, r)| r["@type"] == "setAuthenticationPhoneNumber") {
+        assert!(tokio::time::Instant::now() < deadline);
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    api_b.auth(1, json!({"@type":"authorizationStateClosed"}));
+    while hub_b.contains("+84900000000") {
+        assert!(tokio::time::Instant::now() < deadline);
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let login = send(&router_b, "POST", "/ui/api/accounts", json!({"phone":"+84900000000"}), true).await;
+    assert_eq!(login.0, 200);
+    let id = login.1["login_id"].as_str().unwrap();
+    assert_eq!(
+        send(&router_b, "POST", &format!("/ui/api/accounts/{id}/code"), json!({"code":"22222"}), true).await.0,
+        200
+    );
+    let expected_dir = hub_b.store.lock().unwrap().session_dir("+84900000000");
+    assert_ne!(expected_dir, dir_b.join("tdlib"));
+    let (_, entry_b) = hub_b.select("+84900000000").unwrap();
+    assert_eq!(entry_b.session, expected_dir);
+    assert_eq!(entry_b.uploads, expected_dir.join("uploads"));
+    assert!(!hub_b.store.lock().unwrap().legacy);
+    hub_b.shutdown().await;
+    drop(router_b);
+    drop(hub_b);
+
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn removed_account_stale_journal_does_not_resurrect_cursor() {
+    let f = Fixture::new("stale-journal").await;
+    f.ready("+84900000001").await;
+    f.api.push(
+        json!({"@type":"updateNewMessage","message":{"id":100,"chat_id":10,"content":{"@type":"messageText","text":{"text":"first"}}}}),
+        1,
+    );
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    loop {
+        let ev = f.send("GET", "/api/events", Value::Null).await.1;
+        let fd = f.send("GET", "/api/feed?wait=0.05", Value::Null).await.1;
+        if !ev["events"].as_array().unwrap().is_empty() && !fd["items"].as_array().unwrap().is_empty() {
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline);
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(f.hub.event_log.lock().unwrap().source_cursor("+84900000001") > 0);
+    assert!(f.hub.feed_log.lock().unwrap().source_cursor("+84900000001") > 0);
+
+    let old_source = f.hub.journals.read().unwrap()[0].1.clone();
+    let router_poll = f.router.clone();
+    let poller = tokio::spawn(async move {
+        for _ in 0..10_usize {
+            let _ = send(&router_poll, "GET", "/api/events", Value::Null, true).await;
+            let _ = send(&router_poll, "GET", "/api/feed?wait=0", Value::Null, true).await;
+        }
+    });
+    f.hub.remove("+84900000001").await.unwrap();
+    poller.await.unwrap();
+
+    assert_eq!(f.hub.event_log.lock().unwrap().source_cursor("+84900000001"), 0);
+    assert_eq!(f.hub.feed_log.lock().unwrap().source_cursor("+84900000001"), 0);
+    assert_eq!(f.send("GET", "/api/events", Value::Null).await.0, 200);
+    assert_eq!(f.send("GET", "/api/feed?wait=0", Value::Null).await.0, 200);
+    assert_eq!(f.hub.event_log.lock().unwrap().source_cursor("+84900000001"), 0);
+    assert_eq!(f.hub.feed_log.lock().unwrap().source_cursor("+84900000001"), 0);
+
+    f.ready("+84900000001").await;
+    let new_source = f.hub.journals.read().unwrap()[0].1.clone();
+    assert!(!new_source.same_source(&old_source));
+    let prev_event_cursor = f.send("GET", "/api/events", Value::Null).await.1["cursor"].as_i64().unwrap();
+    let prev_feed_cursor = f.send("GET", "/api/feed?wait=0", Value::Null).await.1["cursor"].as_i64().unwrap();
+
+    f.api.push(
+        json!({"@type":"updateNewMessage","message":{"id":200,"chat_id":10,"content":{"@type":"messageText","text":{"text":"second"}}}}),
+        2,
+    );
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    loop {
+        let ev = f.send("GET", &format!("/api/events?since={prev_event_cursor}"), Value::Null).await.1;
+        let fd = f.send("GET", &format!("/api/feed?since={prev_feed_cursor}&wait=0.05"), Value::Null).await.1;
+        if !ev["events"].as_array().unwrap().is_empty() && !fd["items"].as_array().unwrap().is_empty() {
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline);
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    f.finish().await;
+}
+
+#[tokio::test]
+async fn failed_legacy_background_login_flushes_offline_event_and_returns_503() {
+    let dir = std::env::temp_dir().join(format!("tggw-m6-m7-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("tdlib/files")).unwrap();
+    let (_api, factory) = crate::td::fake::Fake::factory();
+    let cfg = LoginConfig {
+        data_dir: dir.clone(),
+        api_id: 12345,
+        api_hash: "fake-api-hash".into(),
+        phone: "+84900000300".into(),
+    };
+    let hub = Accounts::with_factory(cfg, "fake".into(), 3399, factory).await.unwrap();
+    let router = rest_router(hub.clone());
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    while hub.contains("+84900000300") {
+        assert!(tokio::time::Instant::now() < deadline);
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let (ev_status, ev_body) = send(&router, "GET", "/api/events", Value::Null, true).await;
+    assert_eq!(ev_status, 200);
+    assert!(
+        ev_body["events"].as_array().unwrap().iter().any(|e| {
+            e["type"] == "account_status"
+                && e["account"] == "+84900000300"
+                && e["data"]["status"] == "offline"
+        }),
+        "events={ev_body}"
+    );
+
+    let (me_status, me_body) = send(&router, "GET", "/api/me?account=%2B84900000300", Value::Null, true).await;
+    assert_eq!(me_status, 503);
+    assert_eq!(me_body["error"]["code"], "ACCOUNT_OFFLINE");
+    assert_eq!(send(&router, "GET", "/api/me", Value::Null, true).await.0, 503);
+    assert_eq!(send(&router, "GET", "/api/me?account=unknown", Value::Null, true).await.0, 404);
+
+    hub.shutdown().await;
+    drop(router);
+    drop(hub);
+    std::fs::remove_dir_all(dir).unwrap();
+}

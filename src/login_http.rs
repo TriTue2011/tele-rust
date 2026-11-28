@@ -1,5 +1,5 @@
 //! Đăng nhập HTTP đã xác thực; không ghi dữ liệu đăng nhập vào log.
-use std::{collections::HashMap, sync::{Arc,Weak}, time::Duration};
+use std::{collections::HashMap, sync::{Arc, Weak, atomic::{AtomicBool, Ordering}}, time::Duration};
 use serde_json::{json,Value};
 use tokio::{sync::Mutex,time::Instant};
 use crate::{account_router::Accounts, contract::{GwError,TdError}, events::mask_peer, td::{TdClient,login}};
@@ -88,9 +88,36 @@ mod tests {
         assert_eq!(f.hub.logins.get().unwrap().pending.lock().await[&id].failures,0);
         f.finish().await;
     }
+
+    #[tokio::test]
+    async fn delete_account_cannot_clear_login_lockout() {
+        let f = Fixture::new("delete-lock").await;
+        let id = f.login("+84900000000").await;
+        for code in ["bad", "11111"] {
+            assert_eq!(f.send("POST", &format!("/ui/api/accounts/{id}/code"), json!({"code": code})).await.0, 400);
+        }
+        let locked_resp = f.send("POST", &format!("/ui/api/accounts/{id}/code"), json!({"code": "11111"})).await;
+        assert_eq!(locked_resp.0, 429);
+        assert_eq!(locked_resp.1["error"]["code"], "LOGIN_LOCKED");
+        assert_eq!(f.send("DELETE", "/ui/api/accounts/%2B84900000000", Value::Null).await.0, 404);
+        let retry = f.send("POST", "/ui/api/accounts", json!({"phone": "+84900000000"})).await;
+        assert_eq!(retry.0, 429);
+        assert_eq!(retry.1["error"]["code"], "LOGIN_LOCKED");
+        f.finish().await;
+    }
+
+    #[tokio::test]
+    async fn shutdown_prevents_new_pending_login_insertion() {
+        let f = Fixture::new("shutdown-login").await;
+        f.hub.logins.get().unwrap().shutdown().await;
+        let resp = f.send("POST", "/ui/api/accounts", json!({"phone": "+84900000009"})).await;
+        assert_eq!(resp.0, 400);
+        assert!(f.hub.logins.get().unwrap().pending.lock().await.is_empty());
+        f.finish().await;
+    }
 }
 
-pub(crate) struct LoginHttp { hub:Weak<Accounts>, pending:Mutex<HashMap<String,Pending>>, operation:Mutex<()> }
+pub(crate) struct LoginHttp { hub:Weak<Accounts>, pending:Mutex<HashMap<String,Pending>>, operation:Mutex<()>, closed:AtomicBool }
 fn bad()->GwError { GwError::bad_request("login_id không tồn tại hoặc đã hết hạn.") }
 fn locked()->GwError { GwError::new(429,"LOGIN_LOCKED","Đăng nhập bị khóa tạm thời sau nhiều mã sai.") }
 fn fail(entry:&mut Pending)->GwError {
@@ -104,25 +131,34 @@ fn error(e:TdError)->GwError {
     else { GwError::bad_request("Telegram từ chối yêu cầu đăng nhập.") }
 }
 impl LoginHttp {
-    pub fn new(hub:Weak<Accounts>)->Self { Self{hub,pending:Mutex::new(HashMap::new()),operation:Mutex::new(())} }
-    async fn sweep(&self,phone:Option<&str>) {
-        let expired:Vec<_>={
-            let mut pending=self.pending.lock().await;
-            let mut closing=Vec::new();
+    pub fn new(hub:Weak<Accounts>)->Self { Self{hub,pending:Mutex::new(HashMap::new()),operation:Mutex::new(()),closed:AtomicBool::new(false)} }
+    async fn sweep(&self, phone: Option<&str>) {
+        let expired: Vec<_> = {
+            let now = Instant::now();
+            let mut pending = self.pending.lock().await;
+            let mut closing = Vec::new();
             for entry in pending.values_mut() {
-                if !entry.expired && Instant::now().duration_since(entry.created)>TTL && entry.locked_until.is_some_and(|t|t>Instant::now()) {
-                    entry.expired=true;closing.push(entry.client.clone());
+                let locked = entry.locked_until.is_some_and(|t| t > now);
+                if !entry.expired && locked && (now.duration_since(entry.created) > TTL || phone == Some(entry.phone.as_str())) {
+                    entry.expired = true;
+                    closing.push(entry.client.clone());
                 }
             }
-            let ids:Vec<_>=pending.iter().filter(|(_,e)|
-                (Instant::now().duration_since(e.created)>TTL && !e.locked_until.is_some_and(|t|t>Instant::now()))
-                || phone==Some(e.phone.as_str())).map(|(id,_)|id.clone()).collect();
-            closing.extend(ids.into_iter().filter_map(|id|pending.remove(&id)).map(|e|e.client));closing
+            let ids: Vec<_> = pending.iter().filter(|(_, e)| {
+                !e.locked_until.is_some_and(|t| t > now)
+                    && (now.duration_since(e.created) > TTL || phone == Some(e.phone.as_str()))
+            }).map(|(id, _)| id.clone()).collect();
+            closing.extend(ids.into_iter().filter_map(|id| pending.remove(&id)).filter(|e| !e.expired).map(|e| e.client));
+            closing
         };
         for client in expired { client.close(Duration::from_secs(10)).await; }
     }
     pub async fn shutdown(&self) {
-        let entries:Vec<_>=self.pending.lock().await.drain().map(|(_,e)|e).collect();
+        let entries: Vec<_> = {
+            let mut pending = self.pending.lock().await;
+            self.closed.store(true, Ordering::Release);
+            pending.drain().map(|(_, e)| e).collect()
+        };
         for e in entries { e.client.close(Duration::from_secs(10)).await; }
     }
     pub async fn expire(&self) {
@@ -131,6 +167,7 @@ impl LoginHttp {
     }
     pub async fn handle(&self,method:&str,path:&str,body:Value)->Result<Value,GwError> {
         let _operation=self.operation.lock().await;
+        if self.closed.load(Ordering::Acquire) { return Err(bad()); }
         self.sweep(None).await;
         let hub=self.hub.upgrade().ok_or_else(bad)?;
         let path=path.trim_start_matches("/ui/api/accounts").trim_start_matches('/');
@@ -163,8 +200,16 @@ impl LoginHttp {
                 client.close(Duration::from_secs(10)).await;
                 return Err(GwError::bad_request("Telegram chưa trả mã QR. Thử lại sau vài giây."));
             }
-            self.pending.lock().await.insert(id.clone(),Pending{phone:phone.into(),client,created:Instant::now(),failures:0,
-                locked_until:None,stage:if qr {"qr"}else{"code"}.into(),expired:false});
+            let mut pending = self.pending.lock().await;
+            if self.closed.load(Ordering::Acquire) {
+                drop(pending);
+                client.close(Duration::from_secs(10)).await;
+                return Err(bad());
+            }
+            pending.insert(id.clone(), Pending {
+                phone: phone.into(), client, created: Instant::now(), failures: 0,
+                locked_until: None, stage: if qr { "qr" } else { "code" }.into(), expired: false,
+            });
             return Ok(if qr { json!({"login_id":id,"qr_link":link}) } else { json!({"login_id":id}) });
         }
         let mut parts=path.split('/');

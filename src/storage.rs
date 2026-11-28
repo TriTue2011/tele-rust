@@ -64,14 +64,19 @@ pub(crate) fn forever_exceptions(policy: &Value) -> Result<Vec<i64>, GwError> {
 }
 
 pub(crate) async fn check_cache_paths(session: &Path) -> Result<(), GwError> {
+    let session = session.to_owned();
     let root = session.join("files");
     let unsafe_path = || GwError::new(409, "STORAGE_CACHE_PATH", "Thư mục bộ nhớ đệm có đường dẫn chuyển hướng hoặc không đọc được.");
     tokio::task::spawn_blocking(move || {
         // TDLib có thể mở thư mục loại tệp gốc qua symlink. Không quét/xoá khi thấy
         // đường dẫn chuyển hướng trong phiên riêng này.
-        let root = std::path::absolute(root)?;
-        if root.canonicalize()? != root { return Err(io::ErrorKind::InvalidData.into()); }
-        let mut directories = vec![root];
+        for path in [&session, &root] {
+            let kind = fs::symlink_metadata(path)?.file_type();
+            if kind.is_symlink() || !kind.is_dir() {
+                return Err(io::ErrorKind::InvalidData.into());
+            }
+        }
+        let mut directories = vec![root.canonicalize()?];
         while let Some(dir) = directories.pop() {
             for entry in fs::read_dir(dir)? {
                 let entry = entry?;
@@ -345,13 +350,17 @@ impl Sweep<'_> {
         let step_bytes = to_delete.min(budget.bytes);
         let file_tight = deletable.files > budget.files
             && u128::from(step_bytes) * u128::from(deletable.files) > u128::from(budget.files) * u128::from(deletable.bytes);
-        let (deleted, capped) = if file_tight {
-            let keep_files = total.files.saturating_sub(budget.files).min(i32::MAX as u64) as i32;
-            (self.send_optimize(&[], exclude, types, i32::MAX, NO_SIZE_LIMIT, keep_files).await?, true)
+        let step = if file_tight {
+            let est_bytes = (u128::from(budget.files) * u128::from(deletable.bytes) / u128::from(deletable.files)).max(1) as u64;
+            step_bytes.min(est_bytes)
         } else {
-            let target_after = total.bytes.saturating_sub(step_bytes);
-            (self.send_optimize(&[], exclude, types, i32::MAX, target_after, i32::MAX).await?, step_bytes < to_delete)
+            step_bytes
         };
+        let target_after = total.bytes.saturating_sub(step);
+        let (deleted, capped) = (
+            self.send_optimize(&[], exclude, types, i32::MAX, target_after, i32::MAX).await?,
+            step < to_delete,
+        );
         if capped && !deleted.is_empty() {
             let left_bytes = to_delete.saturating_sub(deleted.bytes);
             if left_bytes > 0 {
@@ -566,31 +575,20 @@ pub(crate) async fn run_cancellable(
                 add_remaining(sweep.report, &groups, gi, ci);
                 break 'groups;
             }
-            let budget = sweep.budget_left();
-            if entry.size.fits(budget) {
-                if !batch_size.add(entry.size).fits(budget) {
-                    sweep.optimize_ttl(&batch, excluded, TYPES, *ttl).await?;
-                    batch.clear();
-                    batch_size = Size::default();
-                    if sweep.is_cancelled() { return Ok(()); }
-                    if sweep.budget_exhausted() {
-                        add_remaining(sweep.report, &groups, gi, ci);
-                        break 'groups;
-                    }
+            if !batch.is_empty() && !batch_size.add(entry.size).fits(sweep.budget_left()) {
+                sweep.optimize_ttl(&batch, excluded, TYPES, *ttl).await?;
+                batch.clear();
+                batch_size = Size::default();
+                if sweep.is_cancelled() { return Ok(()); }
+                if sweep.budget_exhausted() {
+                    add_remaining(sweep.report, &groups, gi, ci);
+                    break 'groups;
                 }
+            }
+            if entry.size.fits(sweep.budget_left()) {
                 batch.push(entry.id);
                 batch_size = batch_size.add(entry.size);
             } else {
-                if !batch.is_empty() {
-                    sweep.optimize_ttl(&batch, excluded, TYPES, *ttl).await?;
-                    batch.clear();
-                    batch_size = Size::default();
-                    if sweep.is_cancelled() { return Ok(()); }
-                    if sweep.budget_exhausted() {
-                        add_remaining(sweep.report, &groups, gi, ci);
-                        break 'groups;
-                    }
-                }
                 // Không bỏ qua chat lớn; tách theo từng loại tệp nếu có chi tiết, hoặc dọn trực tiếp rồi xét lượng đã xoá.
                 if entry.by_type.len() > 1 {
                     let mut type_batch = Vec::new();

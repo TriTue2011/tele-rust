@@ -190,9 +190,12 @@ async fn unavailable_webhook_cannot_block_spool_and_has_a_retry_limit() {
 async fn webhook_blocks_link_local_schemes_and_redirects() {
     use axum::{extract::State, http::StatusCode, routing::post, Router};
     for url in ["file:///data/events", "ftp://localhost/ha", "http://169.254.0.1/ha",
-        "https://169.254.255.254/ha", "http://[::ffff:a9fe:1]/ha"] {
+        "https://169.254.255.254/ha", "http://[::ffff:a9fe:1]/ha", "http://[fd00:ec2::254]/ha",
+        "http://[64:ff9b::a9fe:a9fe]/ha", "http://[::ffff:0:a9fe:a9fe]/ha", "http://0.0.0.0/ha",
+        "http://[::]/ha", "http://255.255.255.255/ha", "http://224.0.0.1/ha", "http://[ff02::1]/ha"] {
         assert!(Webhook::new(url, "test").is_none(), "{url}");
     }
+    assert!(Webhook::new("http://127.0.0.1:8123/ha", "test").is_some());
     assert!(Webhook::new("https://192.168.1.2/ha", "test").is_some());
     let root = Temp::new();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -213,4 +216,44 @@ async fn webhook_blocks_link_local_schemes_and_redirects() {
     assert!(tokio::time::timeout(Duration::from_millis(1250), received.recv()).await.is_err());
     bridge.shutdown().await;
     server.abort();
+}
+
+#[test]
+fn rotate_recovers_when_oldest_event_file_is_missing_on_disk() {
+    let root = Temp::new();
+    let dir = root.0.join("events");
+    fs::create_dir_all(&dir).unwrap();
+    for id in 1..=270_u64 {
+        let path = dir.join(format!("{id:012}.json"));
+        fs::write(path, json!({"id":id,"data":"a".repeat(64_000)}).to_string()).unwrap();
+    }
+    let mut spool = Spool::open(dir.clone()).unwrap();
+    let mut files: Vec<String> = fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .filter(|n| n.ends_with(".json"))
+        .collect();
+    files.sort();
+    let oldest = files[0].clone();
+    let second_oldest = files[1].clone();
+    fs::remove_file(dir.join(&oldest)).unwrap();
+    let payload = "b".repeat(64_000);
+    assert!(spool.append(json!({"type":"account_status","data":payload})).is_ok());
+    assert!(spool.append(json!({"type":"account_status","data":payload})).is_ok());
+    assert!(!dir.join(&second_oldest).exists());
+}
+
+#[tokio::test]
+async fn account_status_retries_after_full_queue_drop() {
+    let (tx, mut rx) = mpsc::channel(1);
+    let sink = EventSink { account: "+000123".into(), queue: tx, status: Default::default() };
+    sink.emit("message_new", json!({"tin_id":"dummy"}));
+    sink.account_login(true);
+    let first = rx.try_recv().unwrap();
+    assert_eq!(first["type"], "message_new");
+    assert!(rx.try_recv().is_err());
+    sink.account_update(&json!({"@type":"updateConnectionState","state":{"@type":"connectionStateReady"}}));
+    let retried = rx.try_recv().unwrap();
+    assert_eq!(retried["type"], "account_status");
+    assert_eq!(retried["data"], json!({"status":"online"}));
 }

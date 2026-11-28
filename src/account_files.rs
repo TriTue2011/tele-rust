@@ -55,15 +55,18 @@ where
     let content_type=if mime.starts_with("text/"){format!("{mime}; charset=utf-8")}else{mime.into()};
     let bytes=tokio::task::spawn_blocking(move || {
         let file=open_beneath(&root,&relative).map_err(|_|missing())?;
-        if !file.metadata().map_err(|_|missing())?.is_file() {return Err(missing());}
-        const LIMIT:u64=64*1024*1024;
-        let mut bytes=Vec::new();(&file).take(LIMIT+1).read_to_end(&mut bytes).map_err(|_|missing())?;
+        let meta = file.metadata().map_err(|_| missing())?;
+        if !meta.is_file() { return Err(missing()); }
+        const LIMIT: u64 = 64 * 1024 * 1024;
+        if meta.len() > LIMIT { return Err(GwError::new(413, "FILE_TOO_LARGE", "Tệp vượt 64 MB.")); }
+        let mut bytes = Vec::with_capacity(meta.len() as usize);
+        (&file).take(LIMIT + 1).read_to_end(&mut bytes).map_err(|_| missing())?;
+        if bytes.len() as u64 > LIMIT { return Err(GwError::new(413, "FILE_TOO_LARGE", "Tệp vượt 64 MB.")); }
         if stream {
             if let Err(err) = touch(&file) {
                 log::warn!("Không cập nhật được thời gian truy cập tệp ({:?}).", err.kind());
             }
         }
-        if bytes.len() as u64>LIMIT {return Err(GwError::new(413,"FILE_TOO_LARGE","Tệp vượt 64 MB."));}
         Ok(bytes)
     }).await.map_err(|_|missing())??;
     Ok(Binary{bytes,content_type,cache_control:if stream {"no-store"} else {"private, max-age=86400"},disposition:None})
@@ -183,6 +186,30 @@ mod tests {
         let file=download_with(td,session,root.join("uploads"),1,true,|_| Err(io::Error::from(io::ErrorKind::PermissionDenied))).await.unwrap();
         assert_eq!(file.bytes,b"stream bytes");
         assert_eq!(file.cache_control,"no-store");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn oversized_file_rejects_413_before_touching_stream_atime() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let root = PathBuf::from(format!("target/account-files-oversized-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let session = root.join("a");
+        std::fs::create_dir_all(session.join("files/documents")).unwrap();
+        let path = session.join("files/documents/huge.bin");
+        let file = File::create(&path).unwrap();
+        file.set_len(64 * 1024 * 1024 + 1_u64).unwrap();
+        let td = Arc::new(Fake(Ok(json!({"local":{"path":std::path::absolute(&path).unwrap(),"is_downloading_completed":true}}))));
+        let touched = Arc::new(AtomicBool::new(false));
+        let touched_cb = touched.clone();
+        let err = download_with(td, session, root.join("uploads"), 1, true, move |_| {
+            touched_cb.store(true, Ordering::SeqCst);
+            Ok(())
+        }).await.unwrap_err();
+        assert_eq!(err.status, 413);
+        assert_eq!(err.code, "FILE_TOO_LARGE");
+        assert!(!touched.load(Ordering::SeqCst));
         std::fs::remove_dir_all(root).unwrap();
     }
 }

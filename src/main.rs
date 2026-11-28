@@ -44,15 +44,15 @@ async fn main() {
         }
         return;
     }
-    let td = match td::TdJson::open(&path) {
-        Ok(t) => t,
-        Err(e) => {
-            log::error!("LỖI: {e}");
-            std::process::exit(2);
-        }
-    };
     match cmd.as_str() {
         "version" => {
+            let td = match td::TdJson::open(&path) {
+                Ok(t) => t,
+                Err(e) => {
+                    log::error!("LỖI: {e}");
+                    std::process::exit(2);
+                }
+            };
             // Tắt nhật ký TDLib ra stderr (mặc định khá ồn) trước khi hỏi.
             td.execute(&serde_json::json!({"@type": "setLogVerbosityLevel", "new_verbosity_level": 0}));
             match td.version() {

@@ -158,10 +158,20 @@ impl App {
         let app = rest::router_accounts_with_ui_auth(accounts.clone(), rest_config, ui_auth);
         let (stop_tx, stop_rx) = oneshot::channel();
         let mut server = tokio::spawn(rest::serve(listener, app, async move { let _ = stop_rx.await; }));
-        let sweeping=accounts.clone();
-        let sweeper=tokio::spawn(async move {
-            let mut tick=tokio::time::interval(Duration::from_secs(1));
-            loop { tick.tick().await; sweeping.logins.get().unwrap().expire().await; }
+        let sweeping = accounts.clone();
+        let (sweep_stop_tx, mut sweep_stop_rx) = oneshot::channel::<()>();
+        let mut sweeper = tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_secs(1));
+            loop {
+                tokio::select! {
+                    _ = &mut sweep_stop_rx => break,
+                    _ = tick.tick() => {
+                        if let Some(logins) = sweeping.logins.get() {
+                            logins.expire().await;
+                        }
+                    }
+                }
+            }
         });
 
         let result = tokio::select! {
@@ -180,7 +190,11 @@ impl App {
             }
         };
 
-        sweeper.abort();
+        let _ = sweep_stop_tx.send(());
+        if tokio::time::timeout(Duration::from_secs(10), &mut sweeper).await.is_err() {
+            sweeper.abort();
+            let _ = sweeper.await;
+        }
         accounts.shutdown().await;
         result
     }

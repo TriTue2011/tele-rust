@@ -17,6 +17,7 @@ const SESSION_BYTES: usize = 32;
 const SESSION_SECONDS: u64 = 90 * 24 * 60 * 60;
 const FAILURE_WINDOW: u64 = 15 * 60;
 const MAX_FAILURES: usize = 5;
+const MAX_KEYS_PER_IP: usize = 32;
 const DUMMY_SALT: [u8; SALT_BYTES] = *b"tggw-dummy-salt!";
 
 type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
@@ -300,7 +301,12 @@ impl UiAuth {
             while attempts.front().is_some_and(|attempt| now.saturating_sub(*attempt) >= FAILURE_WINDOW) { attempts.pop_front(); }
             !attempts.is_empty()
         });
-        if !failures.contains_key(&key) && failures.len() >= 4096 { return Err(login_limited(FAILURE_WINDOW)); }
+        if !failures.contains_key(&key) {
+            let ip_keys = failures.keys().filter(|(ip, _)| ip == &key.0).count();
+            if ip_keys >= MAX_KEYS_PER_IP || failures.len() >= 4096 {
+                return Err(login_limited(FAILURE_WINDOW));
+            }
+        }
         let attempts = failures.entry(key).or_default();
         if attempts.len() >= MAX_FAILURES {
             return Err(login_limited(FAILURE_WINDOW.saturating_sub(now.saturating_sub(*attempts.front().unwrap())).max(1)));
@@ -589,5 +595,21 @@ mod tests {
         assert!(reopened.validate_session(token, false).is_ok());
         assert!(reopened.login("fake-user", "fake-password-value", true, "192.0.2.10", false).is_ok());
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn single_ip_username_spray_cannot_lock_out_other_ips() {
+        let now = Arc::new(AtomicU64::new(10_000_u64));
+        let clock: Clock = { let now = now.clone(); Arc::new(move || now.load(Ordering::SeqCst)) };
+        let auth = UiAuth {
+            path: None, gateway_token: "fake-token".into(), store: Mutex::new(Store::default()),
+            failures: Mutex::new(HashMap::new()), hash_slots: Arc::new(tokio::sync::Semaphore::new(2)), clock, secure_cookie: false,
+        };
+        auth.setup("fake-token", "fake-user", "fake-password-value", false).unwrap();
+        for i in 0..4096_usize {
+            let _ = auth.record_failure(("198.51.100.1".into(), format!("u{i}")), 10_000);
+        }
+        assert!(auth.failures.lock().unwrap().len() <= MAX_KEYS_PER_IP);
+        assert!(auth.login("fake-user", "fake-password-value", false, "192.0.2.50", false).is_ok());
     }
 }

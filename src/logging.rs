@@ -89,12 +89,17 @@ impl Rotating {
     fn write(&mut self, line: &str) -> io::Result<()> {
         let line = mask(line.trim_end()) + "\n";
         if line.len() as u64 > self.max { return Ok(()); }
-        if self.bytes + line.len() as u64 > self.max {
-            let _ = fs::remove_file(self.dir.join("webrtc.log.2"));
-            if self.dir.join("webrtc.log.1").exists() { fs::rename(self.dir.join("webrtc.log.1"), self.dir.join("webrtc.log.2"))?; }
-            fs::rename(self.dir.join("webrtc.log"), self.dir.join("webrtc.log.1"))?;
+        if self.bytes.saturating_add(line.len() as u64) > self.max {
+            let active = self.dir.join("webrtc.log");
+            if fs::symlink_metadata(&active).is_ok() {
+                let b1 = self.dir.join("webrtc.log.1");
+                if fs::symlink_metadata(&b1).is_ok() {
+                    fs::rename(&b1, self.dir.join("webrtc.log.2"))?;
+                }
+                fs::rename(&active, &b1)?;
+            }
             self.file = Self::file(&self.dir)?;
-            self.bytes = 0;
+            self.bytes = self.file.metadata()?.len();
         }
         self.file.write_all(line.as_bytes())?;
         self.bytes += line.len() as u64;
@@ -149,5 +154,23 @@ mod tests {
         assert!(get(Some("invalid"), None).unwrap_err().contains("LOG_LEVEL"));
         assert!(get(None, Some("invalid")).unwrap_err().contains("TELEGRAM_DEBUG"));
         for level in ["DEBUG", "INFO", "WARNING", "WARN", "ERROR", "CRITICAL", "OFF"] { assert!(get(Some(level), Some("0")).is_ok()); }
+    }
+
+    #[test]
+    fn rotating_recovers_if_active_log_was_removed_without_wiping_backups() {
+        let dir = PathBuf::from(format!("target/webrtc-recover-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let mut writer = Rotating::open(dir.clone(), 64).unwrap();
+        writer.write("first line aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").unwrap();
+        writer.write("second line bbbbbbbbbbbbbbbbbbbbbbbbbbbbbb").unwrap();
+        assert!(dir.join("webrtc.log.1").exists());
+        let backup_before = fs::read_to_string(dir.join("webrtc.log.1")).unwrap();
+        fs::remove_file(dir.join("webrtc.log")).unwrap();
+        writer.write("third line cccccccccccccccccccccccccccccc").unwrap();
+        drop(writer);
+        assert_eq!(fs::read_to_string(dir.join("webrtc.log.1")).unwrap(), backup_before);
+        let active = fs::read_to_string(dir.join("webrtc.log")).unwrap();
+        assert!(active.contains("third line"));
+        fs::remove_dir_all(&dir).unwrap();
     }
 }

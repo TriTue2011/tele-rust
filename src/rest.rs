@@ -97,7 +97,7 @@ impl Ctx {
         } else if let Some(token) = cookie_token(&parts.headers) {
             let principal = format!("cookie:{}", token.chars().take(12).collect::<String>());
             if matches!(parts.method, Method::POST | Method::PUT | Method::DELETE | Method::PATCH)
-                && !csrf_valid(&parts.headers, self.ui_auth.secure_cookie() || parts.uri.scheme_str() == Some("https")) {
+                && !csrf_valid(&parts.headers, self.ui_auth.secure_cookie() || parts.uri.scheme_str() == Some("https") || transport_is_tls(parts)) {
                 return Err(GwError::new(403, "CSRF_FORBIDDEN", "Yêu cầu ghi bằng cookie thiếu kiểm tra CSRF."));
             }
             let secure = request_is_secure(parts, self.ui_auth.secure_cookie());
@@ -411,10 +411,13 @@ fn with_cookie(mut response: Response, cookie: Option<&str>) -> Response {
 }
 
 fn cookie_token(headers: &HeaderMap) -> Option<String> {
-    headers.get(header::COOKIE)?.to_str().ok()?.split(';').find_map(|part| {
-        let (name, value) = part.trim().split_once('=')?;
-        (name == "tggw_session" && !value.is_empty()).then(|| value.to_owned())
-    })
+    headers.get_all(header::COOKIE).iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|s| s.split(';'))
+        .find_map(|part| {
+            let (name, value) = part.trim().split_once('=')?;
+            (name == "tggw_session" && !value.is_empty()).then(|| value.to_owned())
+        })
 }
 
 fn csrf_valid(headers: &HeaderMap, secure: bool) -> bool {
@@ -427,8 +430,12 @@ fn csrf_valid(headers: &HeaderMap, secure: bool) -> bool {
     !authority.contains('/') && authority.eq_ignore_ascii_case(host)
 }
 
+fn transport_is_tls(parts: &axum::http::request::Parts) -> bool {
+    parts.extensions.get::<crate::tls_serve::TlsConnection>().is_some_and(|tls| tls.0)
+}
+
 fn request_is_secure(parts: &axum::http::request::Parts, configured: bool) -> bool {
-    configured || parts.uri.scheme_str() == Some("https") || parts.headers.get(header::ORIGIN)
+    configured || parts.uri.scheme_str() == Some("https") || transport_is_tls(parts) || parts.headers.get(header::ORIGIN)
         .and_then(|value| value.to_str().ok()).is_some_and(|origin| origin.starts_with("https://"))
 }
 
@@ -489,21 +496,21 @@ fn auth_action(auth: &UiAuth, parts: &axum::http::request::Parts, payload: &Valu
             let Some(token) = current_cookie.as_deref() else { return error_resp(&auth_error(crate::ui_auth::AuthError {
                 status:401,code:"UNAUTHORIZED",message:"Chưa đăng nhập hoặc phiên đã hết hạn.",retry_after:None,
             })); };
-            if !csrf_valid(&parts.headers, auth.secure_cookie() || parts.uri.scheme_str() == Some("https")) { return error_resp(&GwError::new(403,"CSRF_FORBIDDEN","Yêu cầu ghi bằng cookie thiếu kiểm tra CSRF.")); }
+            if !csrf_valid(&parts.headers, auth.secure_cookie() || parts.uri.scheme_str() == Some("https")) || (transport_is_tls(parts) && !csrf_valid(&parts.headers, true)) { return error_resp(&GwError::new(403,"CSRF_FORBIDDEN","Yêu cầu ghi bằng cookie thiếu kiểm tra CSRF.")); }
             auth.logout(token).map(|_| (json!({"ok":true}), Some(clear_cookie(secure))))
         }
         "logout-all" => {
             let Some(token) = current_cookie.as_deref() else { return error_resp(&auth_error(crate::ui_auth::AuthError {
                 status:401,code:"UNAUTHORIZED",message:"Chưa đăng nhập hoặc phiên đã hết hạn.",retry_after:None,
             })); };
-            if !csrf_valid(&parts.headers, auth.secure_cookie() || parts.uri.scheme_str() == Some("https")) { return error_resp(&GwError::new(403,"CSRF_FORBIDDEN","Yêu cầu ghi bằng cookie thiếu kiểm tra CSRF.")); }
+            if !csrf_valid(&parts.headers, auth.secure_cookie() || parts.uri.scheme_str() == Some("https")) || (transport_is_tls(parts) && !csrf_valid(&parts.headers, true)) { return error_resp(&GwError::new(403,"CSRF_FORBIDDEN","Yêu cầu ghi bằng cookie thiếu kiểm tra CSRF.")); }
             auth.logout_all(token).map(|_| (json!({"ok":true}), Some(clear_cookie(secure))))
         }
         "password" => {
             let Some(token) = current_cookie.as_deref() else { return error_resp(&auth_error(crate::ui_auth::AuthError {
                 status:401,code:"UNAUTHORIZED",message:"Chưa đăng nhập hoặc phiên đã hết hạn.",retry_after:None,
             })); };
-            if !csrf_valid(&parts.headers, auth.secure_cookie() || parts.uri.scheme_str() == Some("https")) { return error_resp(&GwError::new(403,"CSRF_FORBIDDEN","Yêu cầu ghi bằng cookie thiếu kiểm tra CSRF.")); }
+            if !csrf_valid(&parts.headers, auth.secure_cookie() || parts.uri.scheme_str() == Some("https")) || (transport_is_tls(parts) && !csrf_valid(&parts.headers, true)) { return error_resp(&GwError::new(403,"CSRF_FORBIDDEN","Yêu cầu ghi bằng cookie thiếu kiểm tra CSRF.")); }
             let (Some(old), Some(new)) = (str_field(payload, "cu"), str_field(payload, "moi")) else {
                 return error_resp(&GwError::bad_request("Thiếu mật khẩu cũ hoặc mới."));
             };
@@ -619,10 +626,16 @@ fn audio_out_response(stream: crate::contract::AudioOut) -> Response {
         |(mut prime, mut audio, mut stopped, expires)| async move {
             if stopped.has_changed().is_err() || Instant::now() >= expires { return None; }
             let chunk = if let Some(header) = prime.take() { header } else {
-                tokio::select! { biased;
-                    _ = stopped.changed() => return None,
-                    _ = tokio::time::sleep_until(expires.into()) => return None,
-                    data = audio.recv() => match data { Ok(bytes) => bytes, Err(_) => return None },
+                loop {
+                    tokio::select! { biased;
+                        _ = stopped.changed() => return None,
+                        _ = tokio::time::sleep_until(expires.into()) => return None,
+                        data = audio.recv() => match data {
+                            Ok(bytes) => break bytes,
+                            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
+                        },
+                    }
                 }
             };
             Some((Ok::<_, std::convert::Infallible>(chunk), (prime, audio, stopped, expires)))
@@ -1543,5 +1556,31 @@ mod tests {
             assert_eq!(send(&app, req("POST", path, None, Body::empty())).await.0, 405);
         }
         assert_eq!((call.count(), chat.count()), (0, 0));
+    }
+
+    #[test]
+    fn cookie_token_reads_session_across_multiple_cookie_headers() {
+        let mut headers = HeaderMap::new();
+        headers.append(header::COOKIE, "other=1".parse().unwrap());
+        headers.append(header::COOKIE, "tggw_session=abc123; extra=2".parse().unwrap());
+        assert_eq!(cookie_token(&headers).as_deref(), Some("abc123"));
+    }
+
+    #[tokio::test]
+    async fn audio_out_response_survives_broadcast_lag() {
+        let (audio, receiver) = tokio::sync::broadcast::channel(1);
+        let (_alive, stopped) = tokio::sync::watch::channel(());
+        let response = audio_out_response(crate::contract::AudioOut {
+            prime: b"RIFF".to_vec(),
+            audio: receiver,
+            stopped,
+            expires: Instant::now() + Duration::from_secs(2),
+        });
+        let mut body = response.into_body().into_data_stream();
+        assert_eq!(body.next().await.unwrap().unwrap().as_ref(), b"RIFF");
+        audio.send(vec![1]).unwrap();
+        audio.send(vec![2]).unwrap();
+        let chunk = body.next().await.unwrap().unwrap();
+        assert_eq!(chunk.as_ref(), [2]);
     }
 }

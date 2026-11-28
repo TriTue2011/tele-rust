@@ -5,11 +5,33 @@ use axum::{http::header,response::{Html,IntoResponse,Response}};
 // nên KHÔNG cùng gốc với Tele) và Tele thường ở hai cổng khác nhau trên CÙNG một host ⇒ 'self' KHÔNG đủ (khác
 // gốc theo chuẩn CSP: khác cổng = khác origin) — phải liệt kê đúng gốc HA. TGGW_HA_INGRESS nhận THẲNG gốc đó
 // (vd "http://172.16.10.200:8123"), không phải cờ bật/tắt — đọc lại cho đúng sau khi hiểu nhầm ban đầu.
-fn frame_ancestors()->String {
-    match std::env::var("TGGW_HA_INGRESS") {
-        Ok(origin) if !origin.is_empty() => format!("frame-ancestors {origin}"),
-        _ => "frame-ancestors 'none'".to_string(),
+fn valid_frame_origin(origin: &str) -> bool {
+    if origin == "'self'" {
+        return true;
     }
+    let authority = if let Some(rest) = origin.strip_prefix("http://") {
+        rest
+    } else if let Some(rest) = origin.strip_prefix("https").and_then(|s| s.strip_prefix("://")) {
+        rest
+    } else {
+        return false;
+    };
+    !authority.is_empty()
+        && !authority.chars().any(|c| {
+            c.is_control() || c.is_whitespace() || matches!(c, ';' | ',' | '/' | '?' | '#' | '\'' | '"' | '@' | '\\')
+        })
+}
+
+fn frame_ancestors_from(value: Option<&str>) -> String {
+    let origin = value.unwrap_or("");
+    if origin.is_empty() || !valid_frame_origin(origin) {
+        return "frame-ancestors 'none'".to_string();
+    }
+    format!("frame-ancestors {origin}")
+}
+
+fn frame_ancestors()->String {
+    frame_ancestors_from(std::env::var("TGGW_HA_INGRESS").ok().as_deref())
 }
 fn page(html:&'static str)->Response {
     let mut response=Html(html).into_response();
@@ -77,5 +99,21 @@ mod tests {
         std::env::set_var("TGGW_HA_INGRESS","");
         assert_eq!(frame_ancestors(),"frame-ancestors 'none'","chuỗi rỗng vẫn coi như tắt");
         match old { Some(v)=>std::env::set_var("TGGW_HA_INGRESS",v), None=>std::env::remove_var("TGGW_HA_INGRESS") }
+    }
+
+    #[test]
+    fn frame_ancestors_rejects_control_chars_and_csp_injection() {
+        assert_eq!(frame_ancestors_from(Some("http://192.0.2.10:8123")), "frame-ancestors http://192.0.2.10:8123");
+        assert_eq!(frame_ancestors_from(Some("'self'")), "frame-ancestors 'self'");
+        for bad in [
+            "http://192.0.2.10:8123\r\nX-Injected: 1",
+            "http://192.0.2.10:8123; script-src 'unsafe-eval'",
+            "http://192.0.2.10:8123 http://192.0.2.11:8123",
+            "http://192.0.2.10:8123/path",
+            "http://",
+            "*",
+        ] {
+            assert_eq!(frame_ancestors_from(Some(bad)), "frame-ancestors 'none'", "{bad:?}");
+        }
     }
 }
