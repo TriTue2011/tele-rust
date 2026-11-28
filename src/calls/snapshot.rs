@@ -32,12 +32,13 @@ pub(super) fn valid(w: usize, h: usize, bytes: usize) -> bool {
 /// Xoay ảnh YCbCr (3 byte/điểm ảnh) theo chiều kim đồng hồ `degrees` ∈ {0, 90, 180, 270}; trả (dữ liệu, rộng, cao) sau xoay.
 /// Điện thoại gửi khung hình ngang kèm cờ xoay (chụp dọc): phải áp cờ này thì hình mới đứng đúng (chủ máy 23/11: hình bị quay 90°).
 pub(super) fn rotate_ycbcr(buf: Vec<u8>, w: usize, h: usize, degrees: u16) -> (Vec<u8>, usize, usize) {
-    if degrees % 360 == 0 { return (buf, w, h); }
-    let (nw, nh) = if degrees % 180 == 90 { (h, w) } else { (w, h) };
+    let deg = degrees % 360;
+    if !matches!(deg, 90 | 180 | 270) { return (buf, w, h); }
+    let (nw, nh) = if deg % 180 == 90 { (h, w) } else { (w, h) };
     let mut out = vec![0u8; buf.len()];
     for y in 0..h {
         for x in 0..w {
-            let (nx, ny) = match degrees % 360 { 90 => (h - 1 - y, x), 180 => (w - 1 - x, h - 1 - y), _ => (y, w - 1 - x) };
+            let (nx, ny) = match deg { 90 => (h - 1 - y, x), 180 => (w - 1 - x, h - 1 - y), _ => (y, w - 1 - x) };
             let (src, dst) = ((y * w + x) * 3, (ny * nw + nx) * 3);
             out[dst..dst + 3].copy_from_slice(&buf[src..src + 3]);
         }
@@ -50,7 +51,20 @@ impl Snapshot {
         if self.pending || self.last_sample.is_some_and(|t| t.elapsed() < MIN_SAMPLE_GAP) { return; }
         self.pending = true;
         self.last_sample = Some(Instant::now());
+        struct PendingGuard {
+            id: String,
+            tx: mpsc::UnboundedSender<Command>,
+            sent: bool,
+        }
+        impl Drop for PendingGuard {
+            fn drop(&mut self) {
+                if !self.sent {
+                    let _ = self.tx.send(Command::VideoJpeg(std::mem::take(&mut self.id), None));
+                }
+            }
+        }
         tokio::task::spawn_blocking(move || {
+            let mut guard = PendingGuard { id, tx, sent: false };
             let pixels = w * h;
             let mut ycbcr = Vec::with_capacity(3 * pixels);
             for y in 0..h {
@@ -62,7 +76,8 @@ impl Snapshot {
             let (ycbcr, w, h) = rotate_ycbcr(ycbcr, w, h, rotation);
             let mut jpeg = Vec::new();
             let encoded = Encoder::new(&mut jpeg, 75).encode(&ycbcr, w as u16, h as u16, ColorType::Ycbcr);
-            let _ = tx.send(Command::VideoJpeg(id, encoded.ok().map(|()| jpeg)));
+            guard.sent = true;
+            let _ = guard.tx.send(Command::VideoJpeg(std::mem::take(&mut guard.id), encoded.ok().map(|()| jpeg)));
         });
     }
 
@@ -110,6 +125,11 @@ mod rotate_tests {
             let (out, w, h) = rotate_ycbcr(img(), 3, 2, deg);
             assert_eq!((letters(&out).as_str(), (w, h)), (want, dims), "xoay {deg}°");
         }
+    }
+
+    #[test]
+    fn non_right_angle_rotation_returns_unchanged_without_panicking() {
+        assert_eq!(rotate_ycbcr(img(), 3, 2, 74), (img(), 3, 2));
     }
 }
 

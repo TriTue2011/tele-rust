@@ -31,7 +31,10 @@ impl Ready {
             let t = &s["type"];
             servers.push(RTCServer {
                 // int64 của TDLib trong JSON có thể là chuỗi (id reflector).
-                id: s["id"].as_u64().or_else(|| s["id"].as_str().and_then(|s| s.parse().ok())).unwrap_or(0),
+                id: s["id"].as_u64()
+                    .or_else(|| s["id"].as_i64().map(|v| v as u64))
+                    .or_else(|| s["id"].as_str().and_then(|s| s.parse::<u64>().ok().or_else(|| s.parse::<i64>().ok().map(|v| v as u64))))
+                    .unwrap_or(0),
                 ipv4: text(&s["ip_address"])?, ipv6: text(&s["ipv6_address"])?,
                 port: s["port"].as_u64().and_then(|p| p.try_into().ok()).ok_or("Cổng RTC không hợp lệ")?,
                 username: text(&t["username"])?, password: text(&t["password"])?,

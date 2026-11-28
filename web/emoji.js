@@ -69,8 +69,9 @@
       if (e.key === "ArrowUp" && i < COLS) { input.focus(); return; }
       var next = all[Math.max(0, Math.min(all.length - 1, i + d))]; if (next) { next.focus(); next.scrollIntoView({ block: "nearest" }); }
     }
+    var downTimer = null;
     function onDown(e) { if (!panel.contains(e.target) && !(opts.anchor && opts.anchor.contains(e.target))) close(); }
-    function close() { if (!panel.isConnected) return; panel.remove(); document.removeEventListener("keydown", onKey, true); document.removeEventListener("mousedown", onDown, true); if (opts.onClose) opts.onClose(); }
+    function close() { if (!panel.isConnected) return; if (downTimer !== null) { clearTimeout(downTimer); downTimer = null; } panel.remove(); document.removeEventListener("keydown", onKey, true); document.removeEventListener("mousedown", onDown, true); if (opts.onClose) opts.onClose(); }
     var panel = el("div", { class: "ep", id: "emoji-panel", role: "dialog", "aria-label": "Chọn emoji" }, input, tabsBar, scroll);
     panel.__close = close;
     document.body.append(panel); drawAll();
@@ -79,7 +80,7 @@
       panel.style.left = Math.max(8, Math.min(r.right - w, window.innerWidth - w - 8)) + "px";
       panel.style.top = Math.max(8, r.top - h - 8 >= 8 ? r.top - h - 8 : Math.min(r.bottom + 8, window.innerHeight - h - 8)) + "px";
     }
-    document.addEventListener("keydown", onKey, true); setTimeout(function () { document.addEventListener("mousedown", onDown, true); }, 0);
+    document.addEventListener("keydown", onKey, true); downTimer = setTimeout(function () { downTimer = null; if (panel.isConnected) document.addEventListener("mousedown", onDown, true); }, 0);
     input.focus();
     return { close: close, panel: panel };
   }

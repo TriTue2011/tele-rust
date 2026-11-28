@@ -11,13 +11,14 @@
 //! (src/calls/audio.rs: một kênh, nhiều người nghe), chỉ khác cơ chế do Tele dùng NTgCalls thay vì engine riêng.
 use std::process::Stdio;
 
-use tokio::{io::AsyncWriteExt, sync::mpsc};
+use tokio::{io::AsyncWriteExt, sync::{mpsc, watch}};
 
 use super::sources::speaker_args;
 use crate::contract::GwError;
 
 pub(super) struct AudioSink {
     tx: mpsc::Sender<Vec<u8>>,
+    _stop: watch::Sender<()>,
 }
 
 impl AudioSink {
@@ -25,22 +26,77 @@ impl AudioSink {
     /// tác vụ nền riêng (không bao giờ await ghi I/O trong vòng xử lý sự kiện chính — tránh làm nghẽn signaling).
     pub(super) fn spawn_push(url: &str) -> Result<Self, GwError> {
         let args = speaker_args(url)?;
-        let mut child = tokio::process::Command::new("ffmpeg").args(&args)
-            .stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null())
-            .kill_on_drop(true).spawn().map_err(|_| GwError::new(501, "AUDIO_UNAVAILABLE", "Không chạy được ffmpeg cho loa"))?;
+        let mut cmd = tokio::process::Command::new("ffmpeg");
+        cmd.args(&args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true);
+        Self::spawn_command_inner(cmd).map(|(sink, _)| sink)
+    }
+
+    fn spawn_command_inner(mut cmd: tokio::process::Command) -> Result<(Self, Option<u32>), GwError> {
+        let mut child = cmd.spawn().map_err(|_| GwError::new(501, "AUDIO_UNAVAILABLE", "Không chạy được ffmpeg cho loa"))?;
+        let pid = child.id();
         let mut stdin = child.stdin.take().ok_or_else(|| GwError::new(500, "AUDIO_UNAVAILABLE", "Không mở được stdin ffmpeg"))?;
         let (tx, mut rx) = mpsc::channel::<Vec<u8>>(64);
+        let (stop_tx, mut stop_rx) = watch::channel(());
         tokio::spawn(async move {
-            let _child = child; // giữ tiến trình sống tới khi kênh đóng; kill_on_drop tự dọn khi tác vụ này thoát
-            while let Some(data) = rx.recv().await {
-                if stdin.write_all(&data).await.is_err() { break; }
+            loop {
+                let data = tokio::select! {
+                    biased;
+                    _ = stop_rx.changed() => break,
+                    item = rx.recv() => match item {
+                        Some(data) => data,
+                        None => break,
+                    },
+                };
+                let write_ok = tokio::select! {
+                    biased;
+                    _ = stop_rx.changed() => false,
+                    res = stdin.write_all(&data) => res.is_ok(),
+                };
+                if !write_ok { break; }
             }
+            drop(stdin);
+            let _ = child.kill().await;
         });
-        Ok(Self { tx })
+        Ok((Self { tx, _stop: stop_tx }, pid))
     }
 
     /// Không chặn: mất khung thà hơn kẹt actor xử lý sự kiện cuộc gọi.
     pub(super) fn push(&self, data: Vec<u8>) {
         let _ = self.tx.try_send(data);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{path::PathBuf, time::Duration};
+    use super::*;
+
+    #[tokio::test]
+    async fn dropping_sink_stops_and_reaps_child_even_with_blocked_stdin() {
+        let mut cmd = tokio::process::Command::new("sleep");
+        cmd.arg("30")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true);
+        let (sink, pid) = AudioSink::spawn_command_inner(cmd).unwrap();
+        let pid = pid.unwrap();
+        for _ in 0..8 {
+            sink.push(vec![0u8; 65_536]);
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        drop(sink);
+        let proc_path = PathBuf::from(format!("/proc/{pid}"));
+        let reaped = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if !proc_path.exists() { break; }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }).await;
+        assert!(reaped.is_ok(), "child {pid} did not exit and get reaped within 1s");
     }
 }

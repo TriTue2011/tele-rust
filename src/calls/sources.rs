@@ -18,8 +18,29 @@ pub fn is_cast_spec(spec: &str) -> bool {
     super::cast::target(spec).is_some()
 }
 
+fn blocked_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(ip) => ip.is_link_local() || ip.is_unspecified(),
+        std::net::IpAddr::V6(ip) => ip.is_unicast_link_local() || ip.is_unspecified()
+            || ip.to_ipv4().is_some_and(|v4| v4.is_link_local() || v4.is_unspecified()),
+    }
+}
+
+pub(super) fn valid_media_url(raw: &str) -> bool {
+    if raw.is_empty() || raw.len() > 2048 || raw.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return false;
+    }
+    let Ok(url) = reqwest::Url::parse(raw) else { return false; };
+    if !matches!(url.scheme(), "http" | "https" | "rtsp" | "rtsps" | "rtmp") {
+        return false;
+    }
+    let Some(host) = url.host_str().filter(|h| !h.is_empty()) else { return false; };
+    let bare = host.trim_start_matches('[').trim_end_matches(']');
+    !bare.parse::<std::net::IpAddr>().is_ok_and(blocked_ip)
+}
+
 pub fn valid_speaker_url(url: &str) -> bool {
-    speaker_re().is_match(url) || is_cast_spec(url)
+    (speaker_re().is_match(url) && valid_media_url(url)) || is_cast_spec(url)
 }
 
 pub(super) fn quote(s: &str) -> String {
@@ -40,39 +61,57 @@ fn is_local_file(spec: &str) -> bool {
     !spec.contains("://")
 }
 
+fn protocol_whitelist(spec: &str) -> &'static str {
+    if spec.starts_with("rtsps://") { "rtsps,tls,tcp,rtp,pipe" }
+    else if spec.starts_with("rtsp://") { "rtsp,tcp,rtp,pipe" }
+    else if spec.starts_with("https://") { "https,tls,tcp,pipe" }
+    else if spec.starts_with("http://") { "http,tcp,pipe" }
+    else if spec.starts_with("rtmp://") { "rtmp,tcp,pipe" }
+    else { "file,pipe" }
+}
+
 pub fn mic_command(spec: &str, fmt: &str) -> String {
     let base = "ffmpeg -hide_banner -loglevel error -nostdin";
     let out = "-f s16le -ac 1 -ar 48000 pipe:1";
+    let wl = protocol_whitelist(spec);
     match spec {
         "silence" | "browser" => format!("{base} -re -f lavfi -i \"anullsrc=r=48000:cl=mono\" {out}"),
         "" | "test" => format!("{base} -re -f lavfi -i \"sine=frequency=440:sample_rate=48000\" -af volume=0.25 {out}"),
-        _ if spec.starts_with("rtsp://") || spec.starts_with("rtsps://") => format!("{base} {LIVE_IN} -rtsp_transport tcp -i {} -vn {out}", quote(spec)),
+        _ if spec.starts_with("rtsp://") || spec.starts_with("rtsps://") => format!("{base} -protocol_whitelist {wl} {LIVE_IN} -rtsp_transport tcp -i {} -vn {out}", quote(spec)),
         // Tệp cục bộ: đọc theo thời gian thực (-re), KHÔNG gắn LIVE_IN (tránh probe ~1,35 s và tránh xả burst vào pipe rồi EOF sớm).
         _ if is_local_file(spec) => match fmt {
-            "s16le48k" => format!("{base} -re -f s16le -ar 48000 -ac 1 -i {} {out}", quote(spec)),
-            "s16le16k" => format!("{base} -re -f s16le -ar 16000 -ac 1 -i {} {out}", quote(spec)),
-            _ if spec.ends_with(".pcm") => format!("{base} -re -f s16le -ar 48000 -ac 1 -i {} {out}", quote(spec)),
-            _ => format!("{base} -re -i {} -vn {out}", quote(spec)),
+            "s16le48k" => format!("{base} -protocol_whitelist {wl} -re -f s16le -ar 48000 -ac 1 -i {} {out}", quote(spec)),
+            "s16le16k" => format!("{base} -protocol_whitelist {wl} -re -f s16le -ar 16000 -ac 1 -i {} {out}", quote(spec)),
+            _ if spec.ends_with(".pcm") => format!("{base} -protocol_whitelist {wl} -re -f s16le -ar 48000 -ac 1 -i {} {out}", quote(spec)),
+            _ => format!("{base} -protocol_whitelist {wl} -re -i {} -vn {out}", quote(spec)),
         },
-        _ if fmt == "s16le16k" => format!("{base} {LIVE_IN} -f s16le -ar 16000 -ac 1 -i {} {out}", quote(spec)),
-        _ => format!("{base} {LIVE_IN} -i {} -vn {out}", quote(spec)),
+        _ if fmt == "s16le16k" => format!("{base} -protocol_whitelist {wl} {LIVE_IN} -f s16le -ar 16000 -ac 1 -i {} {out}", quote(spec)),
+        _ => format!("{base} -protocol_whitelist {wl} {LIVE_IN} -i {} -vn {out}", quote(spec)),
     }
 }
 
 pub fn speaker_command(url: &str) -> Result<String, GwError> {
+    if !valid_media_url(url) {
+        return Err(GwError::bad_request("speaker không phải cửa bộ đàm r1_speaker / dahua_talk"));
+    }
     let m = speaker_re().captures(url).ok_or_else(|| GwError::bad_request("speaker không phải cửa bộ đàm r1_speaker / dahua_talk"))?;
+    let wl = if url.starts_with("https://") { "https,tls,tcp,pipe" } else { "http,tcp,pipe" };
     let out = if &m[1] == "duplex" { "-ac 1 -ar 16000 -c:a pcm_s16le -f s16le" }
         else { "-ac 1 -ar 8000 -c:a pcm_alaw -f alaw" };
-    Ok(format!("ffmpeg -hide_banner -loglevel error -fflags nobuffer -flags low_delay -probesize 32 -analyzeduration 0 -f s16le -ar 48000 -ac 1 -i pipe:0 {out} -flush_packets 1 -method POST -chunked_post 1 -content_type application/octet-stream {}", quote(url)))
+    Ok(format!("ffmpeg -hide_banner -loglevel error -protocol_whitelist {wl} -fflags nobuffer -flags low_delay -probesize 32 -analyzeduration 0 -f s16le -ar 48000 -ac 1 -i pipe:0 {out} -flush_packets 1 -method POST -chunked_post 1 -content_type application/octet-stream {}", quote(url)))
 }
 
 /// Cùng lệnh với `speaker_command()` nhưng dạng argv trực tiếp (không qua chuỗi shell) — dùng khi CHÍNH Rust tự
 /// spawn tiến trình (audio_sink.rs), không giao cho NTgCalls chạy qua `sh -c`.
 pub(super) fn speaker_args(url: &str) -> Result<Vec<String>, GwError> {
+    if !valid_media_url(url) {
+        return Err(GwError::bad_request("speaker không phải cửa bộ đàm r1_speaker / dahua_talk"));
+    }
     let m = speaker_re().captures(url).ok_or_else(|| GwError::bad_request("speaker không phải cửa bộ đàm r1_speaker / dahua_talk"))?;
+    let wl = if url.starts_with("https://") { "https,tls,tcp,pipe" } else { "http,tcp,pipe" };
     let codec: &[&str] = if &m[1] == "duplex" { &["-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", "-f", "s16le"] }
         else { &["-ac", "1", "-ar", "8000", "-c:a", "pcm_alaw", "-f", "alaw"] };
-    let mut args: Vec<String> = ["-hide_banner", "-loglevel", "error", "-fflags", "nobuffer", "-flags", "low_delay",
+    let mut args: Vec<String> = ["-hide_banner", "-loglevel", "error", "-protocol_whitelist", wl, "-fflags", "nobuffer", "-flags", "low_delay",
         "-probesize", "32", "-analyzeduration", "0", "-f", "s16le", "-ar", "48000", "-ac", "1", "-i", "pipe:0"]
         .iter().map(|s| s.to_string()).collect();
     args.extend(codec.iter().map(|s| s.to_string()));
@@ -90,11 +129,12 @@ pub fn camera_command(spec: &str, profile: (i16, i16, u8)) -> String {
     let (w, h, fps) = profile;
     let base = "ffmpeg -hide_banner -loglevel error -nostdin";
     let out = format!("-vf scale={w}:{h},fps={fps} -f rawvideo -pix_fmt yuv420p pipe:1");
+    let wl = protocol_whitelist(spec);
     match spec {
         "black" | "browser" => format!("{base} -re -f lavfi -i \"color=c=black:size={w}x{h}:rate={fps}\" {out}"),
         "" | "test" => format!("{base} -re -f lavfi -i \"testsrc2=size={w}x{h}:rate={fps}\" {out}"),
-        _ if spec.starts_with("rtsp://") || spec.starts_with("rtsps://") => format!("{base} {LIVE_IN} -rtsp_transport tcp -i {} -an {out}", quote(spec)),
-        _ => format!("{base} {LIVE_IN} -re -i {} -an {out}", quote(spec)),
+        _ if spec.starts_with("rtsp://") || spec.starts_with("rtsps://") => format!("{base} -protocol_whitelist {wl} {LIVE_IN} -rtsp_transport tcp -i {} -an {out}", quote(spec)),
+        _ => format!("{base} -protocol_whitelist {wl} {LIVE_IN} -re -i {} -an {out}", quote(spec)),
     }
 }
 
@@ -110,8 +150,8 @@ pub(super) fn source(value: &Value, key: &str) -> Result<String, GwError> {
     let s = value.as_str().ok_or_else(|| GwError::bad_request(format!("{key} phải là chuỗi")))?.trim();
     let s = if s.is_empty() { "test" } else { s };
     let special = matches!(s, "test" | "browser") || (key == "mic" && s == "silence") || (key == "camera" && s == "black");
-    if s.contains('\0') || !(special || s.starts_with('/') || s.starts_with("./") || ["rtsp://", "rtsps://", "http://", "https://", "rtmp://"].iter().any(|p| s.starts_with(p))) {
-        return Err(GwError::bad_request(format!("{key} phải là nguồn thử, URL rtsp/http hoặc đường dẫn tệp")));
+    if !(special || valid_media_url(s)) {
+        return Err(GwError::bad_request(format!("{key} phải là nguồn thử hoặc URL rtsp/http/rtmp hợp lệ")));
     }
     Ok(s.to_owned())
 }
@@ -190,17 +230,10 @@ fn audio(media_source: MediaSource, input: String, keep_open: bool) -> AudioDesc
     AudioDescription { media_source, sample_rate: SAMPLE_RATE, channel_count: 1, input, keep_open }
 }
 
-pub(super) fn playback_description(kind: &str, cmd: &str, path: &str, video: bool) -> Result<MediaDescription, GwError> {
+fn build_playback_description(src: MediaSource, input: String, video: bool) -> Result<MediaDescription, GwError> {
+    if input.contains('\0') { return Err(GwError::bad_request("Nguồn chứa ký tự NUL")); }
     let (width, height, fps) = crate::config::rx_video(&std::env::var("TELEGRAM_RX_VIDEO").unwrap_or_else(|_| "640x360@15".into()))
         .map_err(GwError::bad_request)?;
-    let (src, input) = match kind {
-        "external" => (MediaSource::External, String::new()),
-        "file" => (MediaSource::File, path.to_owned()),
-        "shell" => (MediaSource::Shell, if cmd.is_empty() { format!("ffmpeg -hide_banner -loglevel error -f s16le -ar 48000 -ac 1 -i pipe:0 -f wav {}", quote(&format!("{path}.wav"))) } else { cmd.to_owned() }),
-        "push" => (MediaSource::Shell, speaker_command(cmd)?),
-        _ => return Err(GwError::bad_request("kind phải là external, file, shell hoặc push")),
-    };
-    if input.contains('\0') { return Err(GwError::bad_request("Nguồn chứa ký tự NUL")); }
     Ok(MediaDescription {
         // NTgCalls chỉ bật audio incoming khi PLAYBACK có writer Microphone.
         microphone: Some(audio(src, input, false)),
@@ -208,4 +241,27 @@ pub(super) fn playback_description(kind: &str, cmd: &str, path: &str, video: boo
         camera: video.then(|| VideoDescription { media_source: MediaSource::External, width, height, fps, input: String::new(), keep_open: false }),
         screen: None,
     })
+}
+
+pub(super) fn cast_playback_description(cmd: &str, video: bool) -> Result<MediaDescription, GwError> {
+    if cmd.is_empty() || cmd.contains('\0') {
+        return Err(GwError::bad_request("Lệnh Cast không hợp lệ"));
+    }
+    build_playback_description(MediaSource::Shell, cmd.to_owned(), video)
+}
+
+pub(super) fn playback_description(kind: &str, cmd: &str, path: &str, video: bool) -> Result<MediaDescription, GwError> {
+    let (src, input) = match kind {
+        "external" => (MediaSource::External, String::new()),
+        "file" => (MediaSource::File, path.to_owned()),
+        "shell" => {
+            if !cmd.is_empty() {
+                return Err(GwError::bad_request("Không hỗ trợ lệnh shell tùy ý."));
+            }
+            (MediaSource::Shell, format!("ffmpeg -hide_banner -loglevel error -f s16le -ar 48000 -ac 1 -i pipe:0 -f wav {}", quote(&format!("{path}.wav"))))
+        }
+        "push" => (MediaSource::Shell, speaker_command(cmd)?),
+        _ => return Err(GwError::bad_request("kind phải là external, file, shell hoặc push")),
+    };
+    build_playback_description(src, input, video)
 }

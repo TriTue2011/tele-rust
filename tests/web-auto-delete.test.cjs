@@ -483,9 +483,11 @@ test('cảnh báo vàng khi vừa tự xoá vừa có ngoại lệ Mãi mãi và
     'Tin nhắn vẫn sẽ bị Telegram xoá sau 1 tuần; Mãi mãi chỉ giữ tệp đã tải',
   );
 
-  // Tắt ngoại lệ Mãi mãi -> ẩn cảnh báo vàng.
+  // Tắt ngoại lệ Mãi mãi -> mở hộp xác nhận, đồng ý thì mới lưu và ẩn cảnh báo vàng.
   h.nodes.get('ci-cache-forever').checked = false;
   h.nodes.get('ci-cache-forever').dispatchEvent(new Event('change'));
+  assert.equal(h.nodes.get('ci-confirm-dialog').open, true);
+  h.nodes.get('ci-confirm-ok').click();
   await h.flush();
   assert.equal(warn.hidden, true);
 
