@@ -59,7 +59,7 @@ impl ChatService {
         }
         let root_message_id = thread["messages"]
             .as_array()
-            .and_then(|msgs| msgs.first())
+            .and_then(|msgs| msgs.last())
             .and_then(|m| m["id"].as_i64())
             .filter(|&id| id > 0)
             .unwrap_or(thread_id);
@@ -77,6 +77,7 @@ impl ChatService {
         let mut cursor = from;
         let mut got: Vec<Value> = Vec::new();
         let mut seen: HashSet<i64> = HashSet::new();
+        let mut exhausted = false;
         for _ in 0..3 {
             let req_limit = (want - got.len()).clamp(1, MAX_COMMENTS_LIMIT as usize);
             let result = match self.request(json!({
@@ -90,11 +91,12 @@ impl ChatService {
                 Ok(result) => result,
                 // Hết bình luận: bài gốc nằm ở KÊNH (chat khác nhóm thảo luận) nên khi TDLib đọc quá bình luận cũ nhất nó báo
                 // «Receive messages in an unexpected chat». Đó là điểm cuối của luồng, không phải lỗi — chỉ chấp nhận khi đã có mốc phân trang.
-                Err(e) if cursor != 0 && e.message.contains("unexpected chat") => break,
+                Err(e) if cursor != 0 && e.message.contains("unexpected chat") => { exhausted = true; break; },
                 Err(e) => return Err(e),
             };
             let messages = array(&result["messages"]);
             if messages.is_empty() {
+                exhausted = true;
                 break;
             }
             let mut next_cursor = cursor;
@@ -111,6 +113,7 @@ impl ChatService {
                 added += 1;
             }
             if added == 0 || next_cursor == cursor {
+                exhausted = true;
                 break;
             }
             cursor = next_cursor;
@@ -118,10 +121,11 @@ impl ChatService {
                 break;
             }
         }
-        let has_more = got.len() > limit;
-        if has_more {
+        let truncated = got.len() > limit;
+        if truncated {
             got.truncate(limit);
         }
+        let has_more = truncated || !exhausted;
         let out = self.format_messages(thread.discussion_chat_id, got).await;
         Ok(json!({
             "discussion_chat_id": thread.discussion_chat_id,
@@ -161,14 +165,17 @@ impl ChatService {
 
         let thread = self.resolve_discussion_thread(chat_id, message_id).await?;
         let target_reply = if reply_to > 0 {
-            self.final_id(reply_to).await
+            self.final_id(thread.discussion_chat_id, reply_to).await
         } else {
             thread.root_message_id
         };
         let req = json!({
             "@type": "sendMessage",
             "chat_id": thread.discussion_chat_id,
-            "message_thread_id": thread.thread_id,
+            "topic_id": {
+                "@type": "messageTopicThread",
+                "message_thread_id": thread.thread_id,
+            },
             "reply_to": {
                 "@type": "inputMessageReplyToMessage",
                 "message_id": target_reply,

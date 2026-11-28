@@ -60,7 +60,7 @@ pub(super) fn background_shape(b: &Value) -> Value {
 
 impl ChatService {
     pub(super) async fn available_reactions(&self, chat: i64, message: i64) -> Reply {
-        let id = self.final_id(message).await;
+        let id = self.final_id(chat, message).await;
         let r = self.request(json!({"@type":"getMessageAvailableReactions","chat_id":chat,"message_id":id,"row_size":8})).await?;
         Ok(json!({"top": emoji_list(&r["top_reactions"]), "recent": emoji_list(&r["recent_reactions"]), "popular": emoji_list(&r["popular_reactions"]),
             "allow_custom_emoji": truth(&r["allow_custom_emoji"])}))
@@ -165,7 +165,10 @@ impl ChatService {
 
     /// Ảnh nền tự gán chỉ được lấy từ thư mục `wallpapers/` của gateway (không cho đường dẫn tuỳ ý).
     fn wallpaper_path(&self, name: &str) -> Result<String, GwError> {
-        let ok = name.len() == 36 && name[..32].bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) && matches!(&name[32..], ".jpg" | ".png");
+        let bytes = name.as_bytes();
+        let ok = bytes.len() == 36
+            && bytes[..32].iter().all(|&b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+            && matches!(&bytes[32..], b".jpg" | b".png");
         if !ok { return Err(GwError::bad_request("Tên ảnh nền không hợp lệ.")); }
         let path = self.data_dir.join("wallpapers").join(name);
         if !path.is_file() { return Err(GwError::bad_request("Ảnh nền chưa được tải lên.")); }

@@ -477,3 +477,39 @@ fn existing_macos_call_and_actor_service_labels_remain_intact() {
     assert_eq!(summarized["last"]["kind"], "service");
     assert_eq!(summarized["last"]["text"], "Chị Ngọc đã tham gia Telegram");
 }
+
+#[test]
+fn cross_chat_reply_to_is_suppressed_while_same_chat_reply_is_kept() {
+    let cross = message(
+        &json!({
+            "id": 10,
+            "chat_id": -100100,
+            "reply_to": {"@type": "messageReplyToMessage", "chat_id": -100999, "message_id": 5242880},
+            "content": {"@type": "messageText", "text": {"text": "hi"}}
+        }),
+        "",
+    );
+    assert_eq!(cross["reply_to"], 0);
+
+    let same = message(
+        &json!({
+            "id": 10,
+            "chat_id": -100100,
+            "reply_to": {"@type": "messageReplyToMessage", "chat_id": -100100, "message_id": 5242880},
+            "content": {"@type": "messageText", "text": {"text": "hi"}}
+        }),
+        "",
+    );
+    assert_eq!(same["reply_to"], 5242880);
+
+    let legacy = message(
+        &json!({
+            "id": 10,
+            "chat_id": -100100,
+            "reply_to": {"@type": "messageReplyToMessage", "message_id": 5242880},
+            "content": {"@type": "messageText", "text": {"text": "hi"}}
+        }),
+        "",
+    );
+    assert_eq!(legacy["reply_to"], 5242880);
+}

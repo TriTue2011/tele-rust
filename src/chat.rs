@@ -381,19 +381,20 @@ impl ChatService {
     /// Giữ chat mở với TDLib để nhận số liệu tương tác tươi. Lỗi bị bỏ qua (chỉ ảnh hưởng độ tươi, không ảnh hưởng đọc tin).
     async fn keep_open(&self, chat: i64) {
         let now = Instant::now();
-        let close = {
+        let (close, fresh) = {
             let mut list = self.open_chats.lock().unwrap();
             let mut close = Vec::new();
             list.retain(|(id, at)| { let keep = *id == chat || now.duration_since(*at) < CLOSE_IDLE_AFTER; if !keep { close.push(*id); } keep });
             let fresh = list.iter().find(|(id, _)| *id == chat).is_some_and(|(_, at)| now.duration_since(*at) < REOPEN_AFTER);
-            if fresh { return; }
-            list.retain(|(id, _)| *id != chat);
-            list.push_back((chat, now));
-            while list.len() > MAX_OPEN_CHATS { if let Some((id, _)) = list.pop_front() { close.push(id); } }
-            close
+            if !fresh {
+                list.retain(|(id, _)| *id != chat);
+                list.push_back((chat, now));
+                while list.len() > MAX_OPEN_CHATS { if let Some((id, _)) = list.pop_front() { close.push(id); } }
+            }
+            (close, fresh)
         };
         for id in close { let _ = self.request(json!({"@type":"closeChat","chat_id":id})).await; }
-        let _ = self.request(json!({"@type":"openChat","chat_id":chat})).await;
+        if !fresh { let _ = self.request(json!({"@type":"openChat","chat_id":chat})).await; }
     }
 
     async fn history(&self, chat: i64, mut before: i64, limit: usize) -> Reply {

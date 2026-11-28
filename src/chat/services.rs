@@ -202,7 +202,8 @@ impl ChatService {
                     return Err(GwError::bad_request("invite_link phải là liên kết t.me"));
                 }
                 let r = self.request(json!({"@type":"joinChatByInviteLink","invite_link":link})).await?;
-                return Ok(json!({"joined":true,"chat_id":r["chat_id"]}));
+                let chat_id = if !r["id"].is_null() { &r["id"] } else { &r["chat_id"] };
+                return Ok(json!({"joined":true,"chat_id":chat_id}));
             }
             "get_me" => return self.request(json!({"@type":"getMe"})).await.map(|u| user_brief(&u)),
             "set_name" => {

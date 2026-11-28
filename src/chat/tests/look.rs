@@ -115,3 +115,12 @@ async fn wallpaper_pack_lists_safe_files_and_serves_base64() {
     for bad in ["..%2Fx.png", "a.gif", "a%2Fb.png", "khong-co.png", "to.png"] { assert!(get(&chat, "/api/wallpapers/pack", &format!("name={bad}")).await.is_err(), "{bad}"); }
     for f in ["bg_01.png", "ghi_chu.txt", "to.png"] { let _ = std::fs::remove_file(dir.join(f)); }
 }
+
+#[tokio::test]
+async fn set_background_rejects_multibyte_36_byte_file_path_without_panicking() {
+    let (chat, _td) = setup(vec![]);
+    let bad = format!("{}éjpg", "0".repeat(31));
+    assert_eq!(bad.len(), 36);
+    let err = post(&chat, "/api/chats/42/background", "", json!({"file_path": bad})).await.unwrap_err();
+    assert_eq!((err.status, err.code.as_str()), (400, "BAD_REQUEST"));
+}

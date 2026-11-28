@@ -351,6 +351,32 @@ async fn outgoing_self_sent_files_serve_from_uploads_dir_not_just_tdlib_files() 
     fs::remove_dir_all(root).unwrap();
 }
 
+#[tokio::test]
+async fn tdlib_files_incomplete_download_returns_404() {
+    use axum::{body::Body, http::{header, Request}};
+    use std::fs;
+    use tower::ServiceExt;
+    use crate::rest::{self, RestConfig};
+
+    let root = PathBuf::from("target").join(format!("file-test-incomplete-{}", std::process::id()));
+    let data = root.join("data");
+    let photos = data.join("tdlib/files/photos");
+    fs::create_dir_all(&photos).unwrap();
+    let part = photos.join("part.jpg");
+    fs::write(&part, b"partial").unwrap();
+    let req = json!({"@type":"downloadFile","file_id":1,"priority":16,"offset":0,"limit":0,"synchronous":true});
+    let (chat, td) = setup(vec![ok(req, json!({"local":{"path":part,"is_downloading_completed":false}}))]);
+    drop(chat);
+    let chat = ChatService::new(td, "+000123", &data);
+    let app = rest::router(Arc::new(rest::ChuaCo), Arc::new(chat), RestConfig {
+        token: "test-token".into(), rate_limit_per_minute: 120, version: "test".into(),
+    });
+    let response = app.oneshot(Request::builder().uri("/api/file/1")
+        .header(header::AUTHORIZATION, "Bearer test-token").body(Body::empty()).unwrap()).await.unwrap();
+    assert_eq!(response.status(), 404);
+    fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 fn message_entities_preserve_utf16_offsets_and_keep_only_supported_ranges() {
     let entity = |kind, offset, length| json!({"offset":offset,"length":length,"type":{"@type":kind}});

@@ -35,3 +35,19 @@ async fn interaction_info_update_becomes_message_interaction_feed_event() {
     assert_eq!(feed["items"][0]["type"], "message_interaction");
     assert_eq!((feed["items"][0]["chat_id"].as_i64(), feed["items"][0]["message_id"].as_i64()), (Some(-100), Some(42)));
 }
+
+#[tokio::test]
+async fn keep_open_closes_idle_chat_even_when_current_chat_is_fresh() {
+    let (chat, td) = setup(vec![ok(history_req(2), json!({"messages": []}))]);
+    if let Some(stale) = std::time::Instant::now().checked_sub(CLOSE_IDLE_AFTER + Duration::from_secs(1)) {
+        {
+            let mut list = chat.open_chats.lock().unwrap();
+            list.push_back((1, stale));
+            list.push_back((2, std::time::Instant::now()));
+        }
+        get(&chat, "/api/chats/2/messages", "limit=3").await.unwrap();
+        let seen = opened(&td);
+        assert!(seen.contains(&("closeChat".to_owned(), 1)), "chat 1 rảnh quá hạn phải bị đóng: {seen:?}");
+        assert!(!seen.contains(&("openChat".to_owned(), 2)), "chat 2 còn tươi không cần mở lại: {seen:?}");
+    }
+}

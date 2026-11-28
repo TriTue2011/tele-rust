@@ -1800,7 +1800,7 @@ async fn channel_comments_enforce_auth_csrf_and_multi_account_isolation() {
     ).await;
     assert_eq!(st_post, 200);
     let sent = api.sent.lock().unwrap().clone();
-    assert!(sent.iter().any(|(id, req)| *id == 1 && req["@type"] == "sendMessage" && req["chat_id"] == -100200 && req["message_thread_id"] == 500));
+    assert!(sent.iter().any(|(id, req)| *id == 1 && req["@type"] == "sendMessage" && req["chat_id"] == -100200 && req["topic_id"]["@type"] == "messageTopicThread" && req["topic_id"]["message_thread_id"] == 500));
     assert!(!sent.iter().any(|(id, _)| *id == 2), "Không được rò sang client 2");
 
     // 3. Cô lập khi strict_chats=true và kênh không tồn tại cho chat_id khác -> 404 (chống IDOR).

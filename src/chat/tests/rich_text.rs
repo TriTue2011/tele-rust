@@ -801,3 +801,47 @@ fn oversized_raw_input_is_rejected_before_quadratic_parsing() {
     let fits = format!("{}{}", "**a**".repeat(60), "b".repeat(3000));
     assert!(render(&fits, &md_opts(false)).is_ok());
 }
+
+#[test]
+fn from_markdown_handles_empty_fenced_blocks_and_four_backtick_runs() {
+    let r = from_markdown("```\n```\nNormal\n```rust\nlet x = 1;\n```");
+    assert!(r.text.contains("Normal\n"));
+    let expected_offset = utf16_len("```\n```\nNormal\n");
+    assert!(r
+        .entities
+        .contains(&ent(expected_offset, 10, EntityKind::Pre(Some("rust".to_owned())))));
+    assert!(!r
+        .entities
+        .iter()
+        .any(|e| matches!(e.kind, EntityKind::Pre(_)) && e.offset < expected_offset));
+
+    let q = from_markdown("````\n> quoted\n`");
+    assert_eq!(
+        q.entities,
+        vec![ent(utf16_len("````\n"), utf16_len("quoted"), EntityKind::BlockQuote)]
+    );
+}
+
+#[test]
+fn ai_markup_blocks_zwj_flood_and_skin_tone_mutation_and_allows_shared_prefix_emoji() {
+    let flood = format!("OK {}", vec!["😀"; 50].join("\u{200D}"));
+    assert!(!preserves_original_text("OK", &flood));
+    assert_eq!(render("OK", &ai_opts(&flood, false)).unwrap_err().status, 422);
+    assert!(!preserves_original_text("👍 OK", "👍\u{1F3FB} OK"));
+    assert!(!preserves_original_text("OK", "OK \u{1F3FB}"));
+    assert!(preserves_original_text("🇻🇳 Hà Nội", "🇻🇦 🇻🇳 Hà Nội"));
+    assert!(preserves_original_text("👨 Bố", "👨\u{200D}💻 👨 Bố"));
+}
+
+#[test]
+fn auto_emphasis_matches_plural_hrs_mins_secs() {
+    let r = render("Còn 5 hrs, 10 mins, 30 secs.", &plain_opts(true)).unwrap();
+    assert_eq!(
+        r.entities,
+        vec![
+            ent(4, 5, EntityKind::Bold),
+            ent(11, 7, EntityKind::Bold),
+            ent(20, 7, EntityKind::Bold),
+        ]
+    );
+}

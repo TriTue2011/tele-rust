@@ -583,10 +583,17 @@ pub(super) fn message_with_comments(
                 f
             })
     } else { None };
+    let reply_chat = m["reply_to"]["chat_id"].as_i64().unwrap_or(0);
+    let msg_chat = m["chat_id"].as_i64().unwrap_or(0);
+    let reply_to = if reply_chat == 0 || msg_chat == 0 || reply_chat == msg_chat {
+        m["reply_to"]["message_id"].as_i64().unwrap_or(0)
+    } else {
+        0
+    };
     let mut out = json!({"id":m["id"],"chat_id":m["chat_id"],"date":field(m,"date",json!(0)),"edit_date":field(m,"edit_date",json!(0)),
         "outgoing":truth(&m["is_outgoing"]),"sender":ctx.sender,"kind":kind,
         "text":text(&formatted["text"]),"entities":entities,"summary":summary,
-        "reply_to":m["reply_to"]["message_id"].as_i64().unwrap_or(0),"reactions":reactions,"file":file});
+        "reply_to":reply_to,"reactions":reactions,"file":file});
     if let Some(call) = call_meta {
         out["call"] = call;
     }

@@ -62,7 +62,7 @@ struct Inner {
     scope_mute_for: HashMap<&'static str, i64>,
     auto_delete: HashMap<i64, AutoDeleteEntry>,
     auto_delete_order: VecDeque<i64>,
-    sent: VecDeque<(i64, i64)>,
+    sent: VecDeque<(i64, i64, i64)>,
 }
 
 impl Inner {
@@ -240,11 +240,13 @@ impl State {
         self.inner.lock().unwrap().scope_mute_for.get(scope).copied()
     }
 
-    pub(super) async fn final_id(&self, id: i64, wait: Duration) -> i64 {
+    pub(super) async fn final_id(&self, chat_id: i64, id: i64, wait: Duration) -> i64 {
         let deadline = Instant::now() + wait;
         loop {
             let notified = self.changed.notified();
-            if let Some((_, final_id)) = self.inner.lock().unwrap().sent.iter().find(|(old, _)| *old == id) {
+            tokio::pin!(notified);
+            let _ = notified.as_mut().enable();
+            if let Some((_, _, final_id)) = self.inner.lock().unwrap().sent.iter().find(|(c, old, _)| *c == chat_id && *old == id) {
                 return *final_id;
             }
             if id & 0xfffff == 0 || timeout_at(deadline, notified).await.is_err() { return id; }
@@ -274,11 +276,15 @@ impl State {
         let event = match text(&u["@type"]) {
             "updateNewMessage" => json!({"type":"message","chat_id":m["chat_id"],"message":s.normalize(m)}),
             "updateMessageSendSucceeded" => {
-                if let (Some(old), Some(new)) = (old.as_i64().filter(|i| *i != 0), m["id"].as_i64().filter(|i| *i != 0)) {
-                    if let Some(entry) = s.sent.iter_mut().find(|(id, _)| *id == old) {
-                        entry.1 = new;
+                if let (Some(chat), Some(old), Some(new)) = (
+                    m["chat_id"].as_i64().filter(|i| *i != 0),
+                    old.as_i64().filter(|i| *i != 0),
+                    m["id"].as_i64().filter(|i| *i != 0),
+                ) {
+                    if let Some(entry) = s.sent.iter_mut().find(|(c, id, _)| *c == chat && *id == old) {
+                        entry.2 = new;
                     } else {
-                        s.sent.push_back((old, new));
+                        s.sent.push_back((chat, old, new));
                         if s.sent.len() > 500 { s.sent.pop_front(); }
                     }
                 }
@@ -354,12 +360,15 @@ impl State {
         let deadline = Instant::now() + wait;
         loop {
             let notified = self.changed.notified();
+            tokio::pin!(notified);
+            let _ = notified.as_mut().enable();
             {
                 let s = self.inner.lock().unwrap();
-                if cursor < s.cursor || Instant::now() >= deadline {
+                let first = s.cursor + 1 - s.items.len() as i64;
+                let reset = cursor > 0 && (cursor > s.cursor || cursor < first - 1);
+                if cursor != s.cursor || Instant::now() >= deadline {
                     let items: Vec<_> = s.items.iter().filter(|m| m["id"].as_i64().unwrap() > cursor).collect();
-                    let first = s.cursor + 1 - s.items.len() as i64;
-                    return json!({"items":items,"cursor":s.cursor,"reset":cursor>0 && cursor<first-1});
+                    return json!({"items":items,"cursor":s.cursor,"reset":reset});
                 }
             }
             let _ = timeout_at(deadline, notified).await;
@@ -438,8 +447,8 @@ mod tests {
         let items = out["items"].as_array().unwrap();
         assert_eq!(items.len(),2000);
         assert_eq!(items[0]["id"],3);
-        assert_eq!(s.final_id(2002, Duration::ZERO).await,2002<<20);
-        assert_eq!(s.final_id(1, Duration::ZERO).await,1);
+        assert_eq!(s.final_id(5, 2002, Duration::ZERO).await,2002<<20);
+        assert_eq!(s.final_id(5, 1, Duration::ZERO).await,1);
     }
 
     #[tokio::test]
@@ -524,5 +533,31 @@ mod tests {
         assert_eq!(feed["items"][2]["last_read_outbox_message_id"], 999);
         assert_eq!(feed["items"][3]["message"]["kind"], "service");
         assert_eq!(feed["items"][3]["message"]["summary"], "Đại ca đã tham gia Telegram");
+    }
+
+    #[tokio::test]
+    async fn since_after_restart_returns_immediately_with_reset_true() {
+        let s = State::default();
+        let t0 = Instant::now();
+        let out0 = s.since(500, Duration::from_secs(5)).await;
+        assert!(t0.elapsed() < Duration::from_secs(1));
+        assert_eq!(out0, json!({"items":[],"cursor":0,"reset":true}));
+
+        s.update(&json!({"@type":"updateChatTitle","chat_id":5}));
+        s.update(&json!({"@type":"updateChatTitle","chat_id":5}));
+        let t1 = Instant::now();
+        let out1 = s.since(500, Duration::from_secs(5)).await;
+        assert!(t1.elapsed() < Duration::from_secs(1));
+        assert_eq!(out1, json!({"items":[],"cursor":2,"reset":true}));
+    }
+
+    #[tokio::test]
+    async fn final_id_is_scoped_by_chat_id() {
+        let s = State::default();
+        s.update(&json!({"@type":"updateMessageSendSucceeded","old_message_id":17,"message":{"id":6_i64<<20,"chat_id":-100111}}));
+        s.update(&json!({"@type":"updateMessageSendSucceeded","old_message_id":17,"message":{"id":9_i64<<20,"chat_id":-100222}}));
+        assert_eq!(s.final_id(-100111, 17, Duration::ZERO).await, 6_i64 << 20);
+        assert_eq!(s.final_id(-100222, 17, Duration::ZERO).await, 9_i64 << 20);
+        assert_eq!(s.final_id(-100333, 17, Duration::ZERO).await, 17);
     }
 }

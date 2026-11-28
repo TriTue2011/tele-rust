@@ -481,3 +481,38 @@ async fn chat_delete_requires_confirm_and_calls_correct_tdlib_by_chat_kind() {
         json!({"ok":true,"chat_id":-1001,"deleted":true})
     );
 }
+
+#[tokio::test]
+async fn basic_group_members_reads_tdlib_1_8_69_member_id_sender() {
+    let (chat, _) = setup(vec![
+        ok(json!({"@type":"getChat","chat_id":-55}), json!({"id":-55,"title":"Nhóm","type":{"@type":"chatTypeBasicGroup","basic_group_id":55}})),
+        ok(json!({"@type":"getBasicGroupFullInfo","basic_group_id":55}), json!({"members":[{"member_id":{"@type":"messageSenderUser","user_id":1},"status":{"@type":"chatMemberStatusCreator"}}]})),
+        ok(json!({"@type":"getUser","user_id":1}), json!({"id":1,"first_name":"Minh"})),
+    ]);
+    let res = get(&chat, "/api/chats/-55/members", "").await.unwrap();
+    assert_eq!(res["total_count"], 1);
+    let members = res["members"].as_array().unwrap();
+    assert_eq!(members.len(), 1);
+    assert_eq!(members[0]["user_id"], 1);
+    assert_eq!(members[0]["role"], "creator");
+}
+
+#[tokio::test]
+async fn chat_info_ignores_custom_folder_pin() {
+    let (chat, _) = setup(vec![
+        ok(json!({"@type":"getChat","chat_id":42}), json!({
+            "id": 42,
+            "title": "Nhóm",
+            "type": {"@type":"chatTypeBasicGroup","basic_group_id":55},
+            "positions": [
+                {"list":{"@type":"chatListMain"},"is_pinned":false},
+                {"list":{"@type":"chatListFolder","chat_folder_id":2},"is_pinned":true}
+            ]
+        })),
+        ok(json!({"@type":"getBasicGroup","basic_group_id":55}), json!({"id":55,"member_count":1,"status":{"@type":"chatMemberStatusMember"}})),
+        ok(json!({"@type":"getBasicGroupFullInfo","basic_group_id":55}), json!({"description":""})),
+    ]);
+    let info = get(&chat, "/api/chats/42/info", "").await.unwrap();
+    assert_eq!(info["pinned"], false);
+    assert_eq!(info["archived"], false);
+}

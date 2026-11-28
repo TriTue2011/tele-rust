@@ -190,3 +190,97 @@ async fn invalid_entities_and_parse_mode_conflict_fail_without_calling_tdlib() {
         assert_eq!((err.status, err.code.as_str()), (400, "BAD_REQUEST"), "{path}");
     }
 }
+
+#[tokio::test]
+async fn legacy_send_keeps_uploaded_files_on_disk_after_returning() {
+    use std::sync::Mutex;
+    use tokio::sync::broadcast;
+    use crate::contract::{BoxFut, TdError, TdLink};
+
+    struct KeepCheckTd {
+        saved: Mutex<Vec<String>>,
+        updates: broadcast::Sender<Value>,
+    }
+
+    impl TdLink for KeepCheckTd {
+        fn request(&self, req: Value) -> BoxFut<'_, Result<Value, TdError>> {
+            Box::pin(async move {
+                match req["@type"].as_str() {
+                    Some("createPrivateChat") => Ok(json!({"id": 5})),
+                    Some("sendMessage") => {
+                        let c = &req["input_message_content"];
+                        if c["@type"] == "inputMessageDocument" {
+                            self.saved.lock().unwrap().push(
+                                c["document"]["document"]["path"].as_str().unwrap().to_owned(),
+                            );
+                        } else if c["@type"] == "inputMessageVoiceNote" {
+                            self.saved.lock().unwrap().push(
+                                c["voice_note"]["voice_note"]["path"].as_str().unwrap().to_owned(),
+                            );
+                        }
+                        Ok(td_message(21))
+                    }
+                    _ => Err(TdError::telegram(500, "unexpected")),
+                }
+            })
+        }
+
+        fn updates(&self) -> broadcast::Receiver<Value> {
+            self.updates.subscribe()
+        }
+    }
+
+    let td = Arc::new(KeepCheckTd {
+        saved: Mutex::new(Vec::new()),
+        updates: broadcast::channel(8).0,
+    });
+    let chat = ChatService::new(td.clone(), "+000123", "target/chat-tests");
+
+    post(&chat, "/api/send_media", "", json!({"peer":"7","media_b64":"b2s=","filename":"keep.txt"})).await.unwrap();
+    post(&chat, "/api/send_voice", "", json!({"peer":"7","audio_b64":"T2dnU2Zha2U="})).await.unwrap();
+
+    let saved = td.saved.lock().unwrap().clone();
+    assert_eq!(saved.len(), 2);
+    for p in &saved {
+        assert!(Path::new(p).is_file());
+    }
+    assert_eq!(fs::read(&saved[0]).unwrap(), b"ok");
+    assert_eq!(fs::read(&saved[1]).unwrap(), b"OggSfake");
+    for p in &saved {
+        fs::remove_file(p).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn legacy_send_resolves_phone_and_negative_chat_id_safely() {
+    let txt_hi = json!({"@type":"inputMessageText","text":ft("hi"),"link_preview_options":{"@type":"linkPreviewOptions","is_disabled":true}});
+    let txt_alert = json!({"@type":"inputMessageText","text":ft("alert"),"link_preview_options":{"@type":"linkPreviewOptions","is_disabled":true}});
+    let (chat, _) = setup(vec![
+        ok(json!({"@type":"searchUserByPhoneNumber","phone_number":"8490123456","only_local":false}), json!({"@type":"user","id":7})),
+        ok(private(7), json!({"id":5})),
+        ok(send(txt_hi), td_message(30)),
+        ok(json!({"@type":"sendMessage","chat_id":-1001234567890_i64,"input_message_content":txt_alert}), td_message(31)),
+    ]);
+    assert_eq!(
+        post(&chat, "/api/send_message", "", json!({"peer":"+8490123456","message":"hi"})).await.unwrap()["tin_id"],
+        "30"
+    );
+    assert_eq!(
+        post(&chat, "/api/send_message", "", json!({"peer":"-1001234567890","message":"alert"})).await.unwrap()["tin_id"],
+        "31"
+    );
+}
+
+#[tokio::test]
+async fn send_file_voice_saves_as_voice_ogg() {
+    let voice = json!({
+        "@type":"inputMessageVoiceNote",
+        "caption":ft(""),
+        "voice_note":{"@type":"inputVoiceNote","voice_note":file("voice.ogg","OggSfake"),"duration":0,"waveform":""}
+    });
+    let (chat, _) = setup(vec![ok(send(voice), td_message(40))]);
+    assert_eq!(
+        post(&chat, "/api/chats/5/send_file", "kind=voice&name=clip.mp3", json!({"data_b64":"T2dnU2Zha2U="})).await.unwrap(),
+        normalized(40, "")
+    );
+}

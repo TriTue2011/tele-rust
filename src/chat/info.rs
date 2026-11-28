@@ -230,8 +230,11 @@ impl ChatService {
         let ct = &ch["type"];
         let kind = chat_kind(&ch);
         let positions = array(&ch["positions"]);
-        let pinned = positions.iter().any(|p| truth(&p["is_pinned"]));
         let archived = positions.iter().any(|p| p["list"]["@type"] == "chatListArchive");
+        let list_type = if archived { "chatListArchive" } else { "chatListMain" };
+        let pinned = positions.iter().any(|p| {
+            truth(&p["is_pinned"]) && (p["list"].is_null() || p["list"]["@type"] == list_type)
+        });
         let ns = &ch["notification_settings"];
         let notification = json!({
             "use_default_mute_for": truth(&ns["use_default_mute_for"]),
@@ -599,7 +602,13 @@ impl ChatService {
                 })).await?;
                 let q_lower = q.to_lowercase();
                 for row in array(&full["members"]) {
-                    let Some(uid) = row["user_id"].as_i64().filter(|&n| n != 0) else { continue };
+                    let Some(uid) = row["member_id"]["user_id"]
+                        .as_i64()
+                        .or_else(|| row["user_id"].as_i64())
+                        .filter(|&n| n != 0)
+                    else {
+                        continue;
+                    };
                     let item = self.build_member_item(uid, &row["status"]).await;
                     if q_lower.is_empty()
                         || text(&item["name"]).to_lowercase().contains(&q_lower)

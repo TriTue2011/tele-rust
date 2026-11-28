@@ -106,3 +106,15 @@ async fn only_explicit_services_and_confirmed_history_deletion_reach_tdlib() {
         assert_eq!(post(&chat,&format!("/api/do/{name}"),"",b).await.unwrap_err().status,400,"{name}");
     }
 }
+
+#[tokio::test]
+async fn join_chat_reads_id_field_from_tdlib_chat_response() {
+    let (chat, _) = setup(vec![ok(
+        json!({"@type":"joinChatByInviteLink","invite_link":"https://t.me/+real"}),
+        json!({"@type":"chat","id":-100999,"title":"Nhóm"}),
+    )]);
+    assert_eq!(
+        post(&chat, "/api/do/join_chat", "", json!({"invite_link":"https://t.me/+real"})).await.unwrap(),
+        json!({"joined":true,"chat_id":-100999})
+    );
+}

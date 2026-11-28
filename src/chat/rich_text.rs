@@ -619,29 +619,31 @@ pub(super) fn from_markdown(input: &str) -> RichText {
             pos += 1;
             continue;
         }
-        if input[pos..].starts_with("```") {
-            if let Some(rel) = input[pos + 3..].find("```") {
-                let inner = &input[pos + 3..pos + 3 + rel];
-                if let Some((lang, body)) = split_fenced_code(inner) {
-                    append_inline(&input[inline_start..pos], &mut out, &mut entities);
-                    let offset = utf16_len(&out);
-                    out.push_str(body);
-                    let length = utf16_len(body);
-                    entities.push(RichEntity {
-                        offset,
-                        length,
-                        kind: EntityKind::Pre(lang),
-                    });
-                    pos = pos + 3 + rel + 3;
-                    inline_start = pos;
-                    continue;
-                }
-            }
-            pos += 3;
-            continue;
-        }
         if bytes[pos] == b'`' {
             let run = bytes[pos..].iter().take_while(|&&b| b == b'`').count();
+            if run == 3 {
+                if let Some(rel) = input[pos + 3..].find("```") {
+                    let inner = &input[pos + 3..pos + 3 + rel];
+                    if let Some((lang, body)) = split_fenced_code(inner) {
+                        append_inline(&input[inline_start..pos], &mut out, &mut entities);
+                        let offset = utf16_len(&out);
+                        out.push_str(body);
+                        let length = utf16_len(body);
+                        entities.push(RichEntity {
+                            offset,
+                            length,
+                            kind: EntityKind::Pre(lang),
+                        });
+                        pos = pos + 3 + rel + 3;
+                        inline_start = pos;
+                        continue;
+                    }
+                    pos = pos + 3 + rel + 3;
+                    continue;
+                }
+                pos += run;
+                continue;
+            }
             if run == 1 {
                 if let Some(rel) = find_inline_code_end(&input[pos + 1..]) {
                     pos = pos + 1 + rel + 1;
@@ -724,7 +726,7 @@ fn num_unit_re() -> &'static Regex {
             "|", "[ \u{00A0}]?", r"(?i:km/h|m/s|[µμ]g/m³|ug/m3|km²|km2|cm²|cm2|mm²|mm2|m²|m2|m³|m3|cm³|cm3)",
             "|", "[ \u{00A0}]?", r"(?i:kWh|MWh|Wh|GHz|MHz|kHz|Hz|Gbps|Mbps|kbps|bps|GiB|MiB|KiB|TB|GB|MB|KB|hPa|dBm|dB|ppm|ppb|lux|lx|lm|rpm|fps|psi|bar|VND|VNĐ|USD)",
             "|", "[ \u{00A0}]?", r"(?:kVA|VA|Pa|MW|mW|kV|mV|mA)",
-            "|", "[ \u{00A0}]?", r"(?i:km|cm|mm|[µμ]m|nm|kg|mg|ml|cl|dl|ha|ms|kW|hr|hrs|min|mins|sec|secs|px|đ)",
+            "|", "[ \u{00A0}]?", r"(?i:km|cm|mm|[µμ]m|nm|kg|mg|ml|cl|dl|ha|ms|kW|hrs|hr|mins|min|secs|sec|px|đ)",
             "|", "[ \u{00A0}]?", r"(?:[VAWL]|[mglhs])",
             ")"
         ))
@@ -849,6 +851,9 @@ pub(super) fn apply_auto_emphasis(text: &str, entities: &mut Vec<RichEntity>) {
 }
 
 fn is_emoji_base(c: char) -> bool {
+    if is_skin_tone(c) {
+        return false;
+    }
     let u = c as u32;
     matches!(
         u,
@@ -885,6 +890,8 @@ fn consume_emoji_cluster(chars: &[char], idx: usize) -> Option<usize> {
         }
         return None;
     }
+    const MAX_ZWJ_JOINS: usize = 4;
+    let mut zwj_joins = 0usize;
     loop {
         if chars.get(i).copied().is_some_and(is_variation_selector) {
             i += 1;
@@ -895,10 +902,11 @@ fn consume_emoji_cluster(chars: &[char], idx: usize) -> Option<usize> {
         if chars.get(i).copied().is_some_and(is_variation_selector) {
             i += 1;
         }
-        if chars.get(i) == Some(&'\u{200D}') {
+        if zwj_joins < MAX_ZWJ_JOINS && chars.get(i) == Some(&'\u{200D}') {
             if let Some(&next) = chars.get(i + 1) {
-                if is_emoji_base(next) {
+                if is_emoji_base(next) && !is_regional_indicator(next) {
                     i += 2;
+                    zwj_joins += 1;
                     continue;
                 }
             }
@@ -930,9 +938,19 @@ pub(super) fn preserves_original_text(original: &str, marked_plain: &str) -> boo
     let mut inserted_emojis = 0usize;
     while oi < orig_chars.len() || mi < mark_chars.len() {
         if oi < orig_chars.len() && mi < mark_chars.len() && orig_chars[oi] == mark_chars[mi] {
-            oi += 1;
-            mi += 1;
-            continue;
+            if let Some(m_end) = consume_emoji_cluster(&mark_chars, mi) {
+                if consume_emoji_cluster(&orig_chars, oi)
+                    .is_some_and(|o_end| orig_chars[oi..o_end] == mark_chars[mi..m_end])
+                {
+                    oi += m_end - mi;
+                    mi = m_end;
+                    continue;
+                }
+            } else {
+                oi += 1;
+                mi += 1;
+                continue;
+            }
         }
         let orig_next = orig_chars.get(oi).copied();
         let Some(next_mi) = consume_emoji_insertion(orig_next, &mark_chars, mi) else {

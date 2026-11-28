@@ -65,7 +65,7 @@ impl ChatService {
         // áp yêu cầu đó.
         let (sub, relative) = match path.strip_prefix(root.join(TD_FILES)) {
             Ok(relative) => {
-                if relative.components().count() < 2 { return Err(missing()); }
+                if local["is_downloading_completed"] != true || relative.components().count() < 2 { return Err(missing()); }
                 (TD_FILES, relative.to_path_buf())
             }
             Err(_) => match path.strip_prefix(root.join(UPLOADS)) {

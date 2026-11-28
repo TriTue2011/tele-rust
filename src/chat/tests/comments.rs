@@ -233,7 +233,7 @@ async fn channel_comments_post_sends_to_discussion_chat_with_shared_validation()
             json!({
                 "@type":"sendMessage",
                 "chat_id":-100200,
-                "message_thread_id":500,
+                "topic_id":{"@type":"messageTopicThread","message_thread_id":500},
                 "reply_to":{"@type":"inputMessageReplyToMessage","message_id":500},
                 "input_message_content":{
                     "@type":"inputMessageText",
@@ -252,7 +252,7 @@ async fn channel_comments_post_sends_to_discussion_chat_with_shared_validation()
             json!({
                 "@type":"sendMessage",
                 "chat_id":-100200,
-                "message_thread_id":500,
+                "topic_id":{"@type":"messageTopicThread","message_thread_id":500},
                 "reply_to":{"@type":"inputMessageReplyToMessage","message_id":502},
                 "input_message_content":{
                     "@type":"inputMessageText",
@@ -370,7 +370,7 @@ async fn channel_comments_routes_enforce_auth_csrf_and_path_validation() {
             json!({
                 "@type":"sendMessage",
                 "chat_id":-100200,
-                "message_thread_id":500,
+                "topic_id":{"@type":"messageTopicThread","message_thread_id":500},
                 "reply_to":{"@type":"inputMessageReplyToMessage","message_id":500},
                 "input_message_content":{"@type":"inputMessageText","text":ft,"link_preview_options":{"@type":"linkPreviewOptions","is_disabled":false}}
             }),
@@ -485,4 +485,47 @@ async fn channel_comments_treat_unexpected_chat_error_at_thread_end_as_no_more()
     let res = get(&chat, "/api/chats/-100100/messages/10/comments", "limit=30").await.unwrap();
     assert_eq!(res["messages"].as_array().unwrap().len(), 2);
     assert_eq!(res["has_more"], false);
+}
+
+#[tokio::test]
+async fn channel_comments_reports_has_more_true_when_three_partial_batches_do_not_exhaust_thread() {
+    let thread = json!({"@type":"messageThreadInfo","chat_id":-100200,"message_thread_id":500,"messages":[{"id":500,"chat_id":-100200}]});
+    let comment = |id: i64| json!({"id":id,"chat_id":-100200,"date":1700000000 + id,"is_outgoing":false,
+        "sender_id":{"@type":"messageSenderUser","user_id":11},"reply_to":{"@type":"messageReplyToMessage","message_id":500},
+        "content":{"@type":"messageText","text":{"text":"bình luận"}}});
+    let history = |from: i64, limit: i64| json!({"@type":"getMessageThreadHistory","chat_id":-100100,"message_id":10,"from_message_id":from,"offset":0,"limit":limit});
+    let (chat, _) = setup(vec![
+        ok(json!({"@type":"getChat","chat_id":-100100}), channel_chat(-100100, 100)),
+        ok(json!({"@type":"getSupergroupFullInfo","supergroup_id":100}), json!({"@type":"supergroupFullInfo","linked_chat_id":-100200})),
+        ok(json!({"@type":"getMessageThread","chat_id":-100100,"message_id":10}), thread),
+        ok(history(0, 31), json!({"messages":[comment(505)]})),
+        ok(history(505, 30), json!({"messages":[comment(504), comment(503)]})),
+        ok(history(503, 28), json!({"messages":[comment(502), comment(501)]})),
+        ok(json!({"@type":"getUser","user_id":11}), json!({"id":11,"first_name":"An"})),
+    ]);
+    let res = get(&chat, "/api/chats/-100100/messages/10/comments", "limit=30").await.unwrap();
+    assert_eq!(res["messages"].as_array().unwrap().len(), 5);
+    assert_eq!(res["has_more"], true);
+}
+
+#[tokio::test]
+async fn channel_comments_uses_oldest_album_message_as_root_message_id() {
+    let thread = json!({
+        "@type": "messageThreadInfo",
+        "chat_id": -100200,
+        "message_thread_id": 500,
+        "messages": [
+            {"id": 502, "chat_id": -100200},
+            {"id": 501, "chat_id": -100200},
+            {"id": 500, "chat_id": -100200}
+        ]
+    });
+    let (chat, _) = setup(vec![
+        ok(json!({"@type":"getChat","chat_id":-100100}), channel_chat(-100100, 100)),
+        ok(json!({"@type":"getSupergroupFullInfo","supergroup_id":100}), json!({"@type":"supergroupFullInfo","linked_chat_id":-100200})),
+        ok(json!({"@type":"getMessageThread","chat_id":-100100,"message_id":10}), thread),
+        ok(json!({"@type":"getMessageThreadHistory","chat_id":-100100,"message_id":10,"from_message_id":0,"offset":0,"limit":31}), json!({"messages":[]})),
+    ]);
+    let res = get(&chat, "/api/chats/-100100/messages/10/comments", "limit=30").await.unwrap();
+    assert_eq!(res["root_message_id"], 500);
 }
