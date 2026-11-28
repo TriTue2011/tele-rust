@@ -945,3 +945,217 @@ async fn actor_end_cleans_up_call_live_files() {
     assert!(f_other.exists());
     let _ = fs::remove_dir_all(&temp_dir);
 }
+
+#[tokio::test]
+async fn shell_playback_rejects_custom_cmd() {
+    assert_eq!(playback_description("shell", "touch /tmp/pwn", "data/live/in.pcm", false).unwrap_err().status, 400);
+    assert!(playback_description("shell", "", "data/live/in.pcm", false).is_ok());
+
+    let f = Fixture::new(false);
+    let c = f.outgoing(false).await;
+    let id = c["id"].as_str().unwrap();
+    assert_eq!(f.manager().playback(json!({"id": id, "kind": "shell", "cmd": "id"})).await.unwrap_err().status, 400);
+    f.ready(7, 42, true, &["8.0.0"]).await;
+    assert_eq!(f.manager().playback(json!({"id": id, "kind": "shell", "cmd": "id"})).await.unwrap_err().status, 400);
+    let ok = f.manager().playback(json!({"id": id, "kind": "shell"})).await.unwrap();
+    assert_eq!(ok["playback"]["kind"], "shell");
+}
+
+#[test]
+fn source_rejects_local_paths_crlf_and_link_local_ssrf() {
+    for bad in [
+        "/etc/passwd",
+        "./local/secret.wav",
+        "http://example.com/a\r\nb",
+        "http://169.254.169.254/latest/meta-data/",
+        "http://[::ffff:169.254.169.254]/audio",
+        "http://0.0.0.0/audio",
+        "http://[::]/audio",
+        "http://[fe80::1]/audio",
+    ] {
+        assert_eq!(sources::source(&json!(bad), "mic").unwrap_err().status, 400, "{bad:?}");
+        assert_eq!(sources::source(&json!(bad), "camera").unwrap_err().status, 400, "{bad:?}");
+    }
+    for bad_spk in [
+        "http://169.254.169.254/api/r1_speaker/intercom/E?k=1",
+        "http://[::ffff:169.254.169.254]/api/r1_speaker/intercom/E?k=1",
+        "http://0.0.0.0/api/r1_speaker/intercom/E?k=1",
+        "http://[fe80::1]/api/dahua_talk/duplex/E?k=1",
+    ] {
+        assert!(!valid_speaker_url(bad_spk), "{bad_spk}");
+        assert_eq!(speaker_command(bad_spk).unwrap_err().status, 400, "{bad_spk}");
+        assert_eq!(sources::speaker_args(bad_spk).unwrap_err().status, 400, "{bad_spk}");
+    }
+
+    assert!(mic_command("rtsp://cam/s", "auto").contains("-protocol_whitelist rtsp,tcp,rtp,pipe "));
+    assert!(mic_command("rtsps://cam/s", "auto").contains("-protocol_whitelist rtsps,tls,tcp,rtp,pipe "));
+    assert!(mic_command("http://cam/s", "auto").contains("-protocol_whitelist http,tcp,pipe "));
+    assert!(mic_command("https://cam/s", "auto").contains("-protocol_whitelist https,tls,tcp,pipe "));
+    assert!(mic_command("rtmp://cam/s", "auto").contains("-protocol_whitelist rtmp,tcp,pipe "));
+    assert!(mic_command("/tmp/say.pcm", "s16le48k").contains("-protocol_whitelist file,pipe "));
+    assert!(camera_command("rtsp://cam/v", (640, 360, 15)).contains("-protocol_whitelist rtsp,tcp,rtp,pipe "));
+    assert!(camera_command("https://cam/v", (640, 360, 15)).contains("-protocol_whitelist https,tls,tcp,pipe "));
+    assert!(speaker_command(R1).unwrap().contains("-protocol_whitelist http,tcp,pipe "));
+    assert!(speaker_command(DUPLEX).unwrap().contains("-protocol_whitelist https,tls,tcp,pipe "));
+    assert!(sources::speaker_args(R1).unwrap().windows(2).any(|w| w[0] == "-protocol_whitelist" && w[1] == "http,tcp,pipe"));
+    assert!(sources::speaker_args(DUPLEX).unwrap().windows(2).any(|w| w[0] == "-protocol_whitelist" && w[1] == "https,tls,tcp,pipe"));
+}
+
+#[tokio::test]
+async fn failed_capture_switch_preserves_live_browser_mic() {
+    let f = Fixture::new(false);
+    let c = f.manager().call_out(json!({"user_id": 42, "mic": "browser"})).await.unwrap();
+    let id = c["id"].as_str().unwrap();
+    f.ready(7, 42, true, &["8.0.0"]).await;
+    f.emit(MediaEvent::Connection(42, ConnectionState::Connected)).await;
+    f.manager().audio_in(id, vec![0; 640]).await.unwrap();
+
+    f.media.lock().unwrap().fail = Some("capture");
+    assert_eq!(f.manager().media(json!({"id": id, "mic": "silence"})).await.unwrap_err().status, 502);
+    f.media.lock().unwrap().fail = None;
+
+    assert_eq!(f.info().await["mic_muted"], false);
+    f.manager().audio_in(id, vec![0; 640]).await.unwrap();
+}
+
+#[tokio::test]
+async fn audio_out_retries_after_playback_failure_and_validates_playback_kind() {
+    let f = Fixture::new(false);
+    let c = f.outgoing(false).await;
+    let id = c["id"].as_str().unwrap();
+    f.ready(7, 42, true, &["8.0.0"]).await;
+
+    f.media.lock().unwrap().fail = Some("playback");
+    assert_eq!(f.manager().media(json!({"id": id, "action": "audio_out"})).await.unwrap_err().status, 502);
+    f.media.lock().unwrap().fail = None;
+
+    let res = f.manager().media(json!({"id": id, "action": "audio_out"})).await.unwrap();
+    assert!(res["audio_out"]["url"].as_str().unwrap().contains("/api/live/audio/out/"));
+    assert!(matches!(f.ops().last().unwrap(), MediaOp::Sources(_, StreamMode::Playback, d)
+        if d.microphone.as_ref().unwrap().media_source == MediaSource::External));
+
+    assert_eq!(f.manager().playback(json!({"id": id, "kind": "invalid"})).await.unwrap_err().status, 400);
+    assert_eq!(f.manager().playback(json!({"id": id, "kind": "shell", "cmd": "id"})).await.unwrap_err().status, 400);
+    assert_eq!(f.manager().playback(json!({"id": id, "kind": "push", "url": "http://evil/x"})).await.unwrap_err().status, 400);
+}
+
+#[test]
+fn ready_parse_preserves_negative_signed_reflector_ids() {
+    let val = json!({
+        "encryption_key": STANDARD.encode([1u8; 32]),
+        "protocol": {"library_versions": ["8.0.0"]},
+        "servers": [
+            {"id": -42i64, "ip_address": "149.154.1.1", "ipv6_address": "::1", "port": 443,
+                "type": {"@type": "callServerTypeTelegramReflector", "peer_tag": STANDARD.encode([3u8; 16]), "is_tcp": true}},
+            {"id": "-99", "ip_address": "149.154.1.2", "ipv6_address": "::1", "port": 443,
+                "type": {"@type": "callServerTypeTelegramReflector", "peer_tag": STANDARD.encode([4u8; 16]), "is_tcp": false}},
+            {"id": 12345u64, "ip_address": "149.154.1.3", "ipv6_address": "::1", "port": 3478,
+                "type": {"@type": "callServerTypeWebrtc", "supports_turn": true, "supports_stun": true, "username": "u", "password": "p"}}
+        ]
+    });
+    let parsed = Ready::parse(&val, false).unwrap();
+    assert_eq!(parsed.servers[0].id, (-42i64) as u64);
+    assert_eq!(parsed.servers[1].id, (-99i64) as u64);
+    assert_eq!(parsed.servers[2].id, 12345u64);
+}
+
+#[tokio::test]
+async fn interrupting_speech_clears_saying_and_caps_pending_signaling() {
+    let f = Fixture::new(false);
+    let (mut actor, _commands) = local_actor(&f);
+    fs::create_dir_all(f.dir.join("live")).unwrap();
+    let devices = Devices { mic: "http://r1/mic?k=secret".into(), mic_format: "s16le16k".into(), ..Devices::default() };
+    let mut c = LiveCall::new(42, true, false, devices, &f.dir);
+    let id = c.id.clone();
+    c.state = "active";
+    c.media_created = true;
+    c.td_id = Some(7);
+    c.active = Some(Instant::now());
+    actor.calls.push(c);
+
+    actor.start_speech(0, &vec![7u8; 9600]).await.unwrap();
+    assert_eq!(actor.calls[0].info()["saying"], json!(true));
+
+    actor.set_media(json!({"id": id, "mic_format": "auto"})).await.unwrap();
+    assert_eq!(actor.calls[0].info()["saying"], json!(true));
+    let rev = actor.calls[0].capture_revision;
+    let say_path = PathBuf::from(&actor.calls[0].devices.mic);
+    actor.restore_mic(&id, rev, "http://r1/mic?k=secret".into(), "s16le16k".into(), say_path).await;
+    assert_eq!(actor.calls[0].devices.mic, "http://r1/mic?k=secret");
+    assert_eq!(actor.calls[0].devices.mic_format, "auto");
+
+    actor.start_speech(0, &vec![7u8; 9600]).await.unwrap();
+    assert_eq!(actor.calls[0].info()["saying"], json!(true));
+    actor.set_media(json!({"id": id, "mic": "silence"})).await.unwrap();
+    assert_eq!(actor.calls[0].info()["saying"], json!(false));
+    assert!(actor.calls[0].speech_revision.is_none());
+    actor.end(0, "test xong").await;
+
+    let mut pending_call = LiveCall::new(99, true, false, Devices::default(), &f.dir);
+    pending_call.td_id = Some(88);
+    actor.calls.push(pending_call);
+    let idx = actor.calls.len() - 1;
+    for _ in 0..(MAX_PENDING_SIGNALING + 20) {
+        actor.update(json!({"@type": "updateNewCallSignalingData", "call_id": 88, "data": "AAH/"})).await.unwrap();
+    }
+    assert_eq!(actor.calls[idx].pending_signaling.len(), MAX_PENDING_SIGNALING);
+}
+
+#[tokio::test]
+async fn catalog_anon_id_resolves_in_call_out_media_and_playback() {
+    let f = Fixture::new(false);
+    let saved = f.manager().devices(json!({
+        "mic": [
+            {"id": "http://192.0.2.10/mic1?k=SECRET1", "name": "Mic 1"},
+            {"id": "http://192.0.2.10/mic2?k=SECRET2", "name": "Mic 2"}
+        ],
+        "speaker": [
+            {"id": R1, "name": "Loa R1"},
+            {"id": DUPLEX, "name": "Loa Duplex"}
+        ],
+        "camera": [
+            {"id": "rtsp://192.0.2.10/cam1", "name": "Cam 1"}
+        ]
+    })).await.unwrap();
+    let mic1_anon = saved["catalog"]["mic"][0]["id"].as_str().unwrap().to_owned();
+    let mic2_anon = saved["catalog"]["mic"][1]["id"].as_str().unwrap().to_owned();
+    let spk1_anon = saved["catalog"]["speaker"][0]["id"].as_str().unwrap().to_owned();
+    let spk2_anon = saved["catalog"]["speaker"][1]["id"].as_str().unwrap().to_owned();
+    let cam1_anon = saved["catalog"]["camera"][0]["id"].as_str().unwrap().to_owned();
+
+    let c = f.manager().call_out(json!({
+        "user_id": 42,
+        "video": true,
+        "mic": mic1_anon,
+        "camera": cam1_anon,
+        "speaker": spk1_anon
+    })).await.unwrap();
+    let id = c["id"].as_str().unwrap();
+    f.ready(7, 42, true, &["8.0.0"]).await;
+
+    let ops = f.ops();
+    assert!(matches!(&ops[1], MediaOp::Sources(_, StreamMode::Capture, d)
+        if d.microphone.as_ref().unwrap().input == mic_command("http://192.0.2.10/mic1?k=SECRET1", "auto")
+        && d.camera.as_ref().unwrap().input == camera_command("rtsp://192.0.2.10/cam1", (640, 360, 15))));
+    assert!(matches!(&ops[2], MediaOp::Sources(_, StreamMode::Playback, d)
+        if d.microphone.as_ref().unwrap().input == speaker_command(R1).unwrap()));
+
+    f.manager().media(json!({"id": id, "mic": mic2_anon})).await.unwrap();
+    assert!(matches!(f.ops().last().unwrap(), MediaOp::Sources(_, StreamMode::Capture, d)
+        if d.microphone.as_ref().unwrap().input == mic_command("http://192.0.2.10/mic2?k=SECRET2", "auto")));
+
+    f.manager().playback(json!({"id": id, "kind": "push", "url": spk2_anon})).await.unwrap();
+    assert!(matches!(f.ops().last().unwrap(), MediaOp::Sources(_, StreamMode::Playback, d)
+        if d.microphone.as_ref().unwrap().input == speaker_command(DUPLEX).unwrap()));
+}
+
+#[test]
+fn rx_rotation_does_not_overflow_on_large_multiple_of_90() {
+    std::env::set_var("TELEGRAM_RX_ROTATE", "65520");
+    let r1 = rx_rotation(VideoRotation::VideoRotation90);
+    std::env::set_var("TELEGRAM_RX_ROTATE", "65430");
+    let r2 = rx_rotation(VideoRotation::VideoRotation270);
+    std::env::remove_var("TELEGRAM_RX_ROTATE");
+    assert_eq!(r1, 90);
+    assert_eq!(r2, 180);
+}

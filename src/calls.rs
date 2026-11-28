@@ -28,7 +28,7 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use crate::contract::{AudioOut, Binary, BoxFut, CallControl, CastAudio, GwError, TdLink, VideoFrames};
 use crate::events::{mask_peer, mask_peer_id};
 use media::{Media, MediaEvent, MediaOp, NativeMedia, Ready};
-use sources::{Devices, playback_description, video_profile};
+use sources::{cast_playback_description, Devices, playback_description, video_profile};
 
 type Reply = Result<Value, GwError>;
 
@@ -246,6 +246,15 @@ pub fn p2p_enabled(value: Option<&str>) -> bool {
     value.is_some_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
 }
 
+const MAX_PENDING_SIGNALING: usize = 256;
+
+struct CaptureHandles {
+    mic: Option<browser::BrowserMic>,
+    cam: Option<browser::BrowserCam>,
+    drop_mic: bool,
+    drop_cam: bool,
+}
+
 struct LiveCall {
     id: String,
     td_id: Option<i64>,
@@ -333,23 +342,50 @@ impl LiveCall {
         self.playback_with(&self.playback_kind, &self.playback_cmd, self.cast.as_ref())
     }
 
-    async fn capture_description(&mut self, profile: (i16, i16, u8)) -> Result<ntgcalls::MediaDescription, GwError> {
-        let (devices, video, cam_off) = (self.devices.clone(), self.video, self.cam_off);
-        self.capture_description_for(&devices, video, cam_off, profile).await
+    async fn prepare_current_capture(&self, profile: (i16, i16, u8)) -> Result<(ntgcalls::MediaDescription, CaptureHandles), GwError> {
+        self.prepare_capture(&self.devices, self.video, self.cam_off, profile).await
     }
 
-    /// Dùng cho cấu hình ứng viên (chưa ghi vào cuộc gọi): thiết bị, video và camera_off truyền vào rõ ràng.
-    async fn capture_description_for(&mut self, devices: &Devices, video: bool, cam_off: bool, profile: (i16, i16, u8)) -> Result<ntgcalls::MediaDescription, GwError> {
+    /// Chuẩn bị mô tả nguồn gửi đi không làm thay đổi trạng thái hiện tại: chỉ mở BrowserMic/BrowserCam mới nếu cần và chưa có sẵn.
+    async fn prepare_capture(&self, devices: &Devices, video: bool, cam_off: bool, profile: (i16, i16, u8)) -> Result<(ntgcalls::MediaDescription, CaptureHandles), GwError> {
         let mut description = devices.capture(video, cam_off, profile);
+        let mut handles = CaptureHandles { mic: None, cam: None, drop_mic: false, drop_cam: false };
         if devices.mic == "browser" {
-            if self.browser_mic.is_none() { self.browser_mic = Some(browser::BrowserMic::open().await?); }
-            description.microphone.as_mut().unwrap().input = self.browser_mic.as_ref().unwrap().command();
-        } else { self.browser_mic = None; }
+            if let Some(existing) = self.browser_mic.as_ref() {
+                description.microphone.as_mut().unwrap().input = existing.command();
+            } else {
+                let mic = browser::BrowserMic::open().await?;
+                description.microphone.as_mut().unwrap().input = mic.command();
+                handles.mic = Some(mic);
+            }
+        } else {
+            handles.drop_mic = true;
+        }
         if devices.camera == "browser" && video && !cam_off {
-            if self.browser_cam.is_none() { self.browser_cam = Some(browser::BrowserCam::open(profile.2 as u8).await?); }
-            if let Some(camera) = description.camera.as_mut() { camera.input = self.browser_cam.as_ref().unwrap().command(profile); }
-        } else { self.browser_cam = None; }
-        Ok(description)
+            if let Some(existing) = self.browser_cam.as_ref() {
+                if let Some(camera) = description.camera.as_mut() { camera.input = existing.command(profile); }
+            } else {
+                let cam = browser::BrowserCam::open(profile.2).await?;
+                if let Some(camera) = description.camera.as_mut() { camera.input = cam.command(profile); }
+                handles.cam = Some(cam);
+            }
+        } else {
+            handles.drop_cam = true;
+        }
+        Ok((description, handles))
+    }
+
+    fn commit_capture(&mut self, handles: CaptureHandles) {
+        if let Some(mic) = handles.mic {
+            self.browser_mic = Some(mic);
+        } else if handles.drop_mic {
+            self.browser_mic = None;
+        }
+        if let Some(cam) = handles.cam {
+            self.browser_cam = Some(cam);
+        } else if handles.drop_cam {
+            self.browser_cam = None;
+        }
     }
 
     fn playback_with(&self, kind: &str, cmd: &str, cast: Option<&cast::CastSink>) -> Result<ntgcalls::MediaDescription, GwError> {
@@ -362,15 +398,18 @@ impl LiveCall {
         // sau khi sửa connect_now loại trừ speaker). audio_sink.rs chỉ thật sự spawn tiến trình loa khi kind gốc
         // LÀ "push" (xem set_media/set_playback) — call không có loa thật thì audio_sink=None, chỉ tee cho AI thôi.
         if self.browser_audio.is_some() { return playback_description("external", "", &path, self.view_on); }
-        if let Some(cast) = cast { return playback_description("shell", &cast.encoder_command(), &path, self.view_on); }
+        if let Some(cast) = cast { return cast_playback_description(&cast.encoder_command(), self.view_on); }
         playback_description(kind, cmd, &path, self.view_on)
     }
 
     fn check_playback(&self, kind: &str, cmd: &str, cast_port: Option<u16>) -> Result<(), GwError> {
+        if kind == "browser" {
+            return playback_description("external", "", &self.playback_path.to_string_lossy(), self.view_on).map(|_| ());
+        }
         if kind == "push" && is_cast_spec(cmd) {
             return cast_port.map(|_| ()).ok_or_else(|| GwError::new(501, "NOT_IMPLEMENTED", "Chưa có cổng HTTP cho luồng Cast."));
         }
-        self.playback_with(kind, cmd, None).map(|_| ())
+        playback_description(kind, cmd, &self.playback_path.to_string_lossy(), self.view_on).map(|_| ())
     }
 
     async fn open_cast(kind: &str, cmd: &str) -> Result<Option<cast::CastSink>, GwError> {
@@ -501,7 +540,7 @@ impl Actor {
                         self.restore_mic(&id, revision, mic, fmt, path).await;
                     }
                     Some(Command::RefreshCapture(id)) => {
-                        if let Some(i) = self.calls.iter().position(|c| c.id == id && c.state == "active") {
+                        if let Some(i) = self.calls.iter().position(|c| c.id == id && c.state == "active" && c.speech_revision.is_none()) {
                             if self.capture(i).await.is_err() { self.calls[i].log("bật lại nguồn gửi đi lỗi"); }
                         }
                     }
@@ -537,7 +576,8 @@ impl Actor {
             if self.calls[i].state != "ended" {
                 let deadline = shutdown_deadline.unwrap_or_else(|| Instant::now() + Duration::from_secs(5));
                 if let Some(left) = deadline.checked_duration_since(Instant::now()) {
-                    let _ = tokio::time::timeout(left, self.discard(i)).await;
+                    let discard_wait = (left / 2).min(Duration::from_secs(2));
+                    let _ = tokio::time::timeout(discard_wait, self.discard(i)).await;
                     let left = deadline.checked_duration_since(Instant::now()).unwrap_or_default();
                     let _ = tokio::time::timeout(left, self.end(i, "runtime dừng")).await;
                 } else {
@@ -596,17 +636,23 @@ impl Actor {
         }
     }
 
+    fn resolve_catalog_fields(&self, map: &mut serde_json::Map<String, Value>, keys: &[&str]) {
+        for &key in keys {
+            if let Some(id) = map.get(key).and_then(Value::as_str) {
+                if let Some(url) = catalog::resolve(&self.data_dir, id) {
+                    map.insert(key.to_owned(), json!(url));
+                }
+            }
+        }
+    }
+
     fn settings(&mut self, mut body: Value) -> Reply {
         if body.is_null() { return Ok(self.defaults.json(true)); }
         // Trình duyệt chỉ gửi MÃ ẨN DANH của thiết bị HA (catalog.rs không trả URL thật ra ngoài) — tra lại URL thật TRƯỚC
         // khi kiểm hợp lệ (update() chỉ chấp nhận test/browser/đường dẫn/URL, không chấp nhận mã ẩn danh dạng hex).
         // Không khớp mã nào (id HA thường, hoặc giá trị "Nhập URL" người tự gõ) thì giữ nguyên giá trị gốc.
         if let Some(map) = body.as_object_mut() {
-            for key in ["mic", "camera", "speaker"] {
-                if let Some(id) = map.get(key).and_then(Value::as_str) {
-                    if let Some(url) = catalog::resolve(&self.data_dir, id) { map.insert(key.to_owned(), json!(url)); }
-                }
-            }
+            self.resolve_catalog_fields(map, &["mic", "camera", "speaker"]);
         }
         let mut devices = self.defaults.clone();
         devices.update(&body)?;
@@ -642,6 +688,7 @@ impl Actor {
         if self.calls.iter().any(|c| c.user_id == user && c.state != "ended") { return Err(GwError::new(409, "CALL_BUSY", "đang có cuộc gọi với người này")); }
         let mut devices = self.defaults.clone();
         let mut overrides = body.as_object().unwrap().clone();
+        self.resolve_catalog_fields(&mut overrides, &["mic", "camera", "speaker"]);
         for key in ["mic", "camera"] {
             if overrides.get(key).is_some_and(|v| v.is_null() || v.as_str() == Some("")) {
                 overrides.remove(key);
@@ -848,7 +895,9 @@ impl Actor {
                     if let Some(trace) = &self.calls[i].trace { trace.line("goi-rx", &format!("#{} baohieu len={}", self.calls[i].sig[2], bytes.len())); }
                     if self.calls[i].media_created {
                         if self.media.execute(MediaOp::Signaling(self.calls[i].user_id, bytes)).await.is_err() { self.fail(i,"NTgCalls không nhận được báo hiệu").await; return Err(media_error()); }
-                    } else { self.calls[i].pending_signaling.push(bytes); }
+                    } else if self.calls[i].pending_signaling.len() < MAX_PENDING_SIGNALING {
+                        self.calls[i].pending_signaling.push(bytes);
+                    }
                 }
             }
             _ => (),
@@ -862,12 +911,25 @@ impl Actor {
         c.log("NTgCalls: create_p2p_call");
         self.media.execute(MediaOp::Create(c.user_id)).await.map_err(|_| media_error())?;
         c.media_created = true;
-        let capture = c.capture_description(self.profile).await?;
+        let (capture, handles) = c.prepare_current_capture(self.profile).await?;
         self.media.execute(MediaOp::Sources(c.user_id, StreamMode::Capture, capture)).await.map_err(|_| media_error())?;
-        c.cast = LiveCall::open_cast(&c.playback_kind, &c.playback_cmd).await?;
-        self.media.execute(MediaOp::Sources(c.user_id, StreamMode::Playback, c.playback()?)).await.map_err(|_| media_error())?;
+        c.commit_capture(handles);
+        let next_cast = if c.browser_audio.is_none() {
+            LiveCall::open_cast(&c.playback_kind, &c.playback_cmd).await?
+        } else {
+            None
+        };
+        let playback_desc = c.playback_with(&c.playback_kind, &c.playback_cmd, next_cast.as_ref())?;
+        self.media.execute(MediaOp::Sources(c.user_id, StreamMode::Playback, playback_desc)).await.map_err(|_| media_error())?;
+        c.cast = next_cast;
         if let Some(cast) = &mut c.cast {
             cast.start(cast::target(&c.playback_cmd).unwrap(), self.cast_port.unwrap(), &c.id);
+        }
+        if c.browser_audio.is_some() && c.playback_kind == "push" && !is_cast_spec(&c.playback_cmd) && c.audio_sink.is_none() {
+            match audio_sink::AudioSink::spawn_push(&c.playback_cmd) {
+                Ok(sink) => c.audio_sink = Some(sink),
+                Err(err) => c.log(&format!("audio_sink: không spawn được ffmpeg loa ({})", err.message)),
+            }
         }
         if !ready.key.is_empty() {
             c.log("NTgCalls: skip_exchange");
@@ -882,8 +944,9 @@ impl Actor {
     async fn capture(&mut self, i: usize) -> Result<(), GwError> {
         let c = &mut self.calls[i];
         if c.media_created {
-            let capture = c.capture_description(self.profile).await?;
+            let (capture, handles) = c.prepare_current_capture(self.profile).await?;
             self.media.execute(MediaOp::Sources(c.user_id, StreamMode::Capture, capture)).await.map_err(|_| media_error())?;
+            c.commit_capture(handles);
         }
         Ok(())
     }
@@ -892,24 +955,31 @@ impl Actor {
         let i = self.find(&body)?;
         if self.calls[i].state == "ended" { return Err(missing()); }
         if body["action"] == "audio_out" {
-            let first_open = self.calls[i].browser_audio.is_none();
-            if first_open { self.calls[i].browser_audio = Some(browser_audio::BrowserAudio::new()?); }
-            // Mới mở lần đầu: LUÔN đổi Playback sang "external" (on_frames) để AI nghe được, BẤT KỂ kind — đo thật 26/11:
-            // AI bật thì connect_now bỏ loa nên kind thường là "file", nếu chỉ đổi khi kind=="push" thì tiếng (5MB/cuộc)
-            // vẫn chảy vào file, AI điếc. Chỉ khi có loa thật ("push") mới TỰ spawn ffmpeg-loa để tee — xem audio_sink.rs.
-            if first_open && self.calls[i].media_created {
-                if self.calls[i].playback_kind == "push" && self.calls[i].audio_sink.is_none() {
-                    let url = self.calls[i].playback_cmd.clone();
-                    match audio_sink::AudioSink::spawn_push(&url) {
-                        Ok(sink) => self.calls[i].audio_sink = Some(sink),
-                        Err(err) => self.calls[i].log(&format!("audio_sink: không spawn được ffmpeg loa ({})", err.message)),
+            if self.calls[i].browser_audio.is_none() {
+                let mut next_audio = browser_audio::BrowserAudio::new()?;
+                // Mới mở lần đầu: LUÔN đổi Playback sang "external" (on_frames) để AI nghe được, BẤT KỂ kind — đo thật 26/11:
+                // AI bật thì connect_now bỏ loa nên kind thường là "file", nếu chỉ đổi khi kind=="push" thì tiếng (5MB/cuộc)
+                // vẫn chảy vào file, AI điếc. Chỉ khi có loa thật ("push") mới TỰ spawn ffmpeg-loa để tee — xem audio_sink.rs.
+                if self.calls[i].media_created {
+                    let path = self.calls[i].playback_path.to_string_lossy().into_owned();
+                    let desc = playback_description("external", "", &path, self.calls[i].view_on)?;
+                    self.media.execute(MediaOp::Sources(self.calls[i].user_id, StreamMode::Playback, desc)).await.map_err(|_| media_error())?;
+                    if let Some(cast) = self.calls[i].cast.take() { cast.close().await; }
+                    if self.calls[i].playback_kind == "push" && !is_cast_spec(&self.calls[i].playback_cmd) && self.calls[i].audio_sink.is_none() {
+                        let url = self.calls[i].playback_cmd.clone();
+                        match audio_sink::AudioSink::spawn_push(&url) {
+                            Ok(sink) => self.calls[i].audio_sink = Some(sink),
+                            Err(err) => self.calls[i].log(&format!("audio_sink: không spawn được ffmpeg loa ({})", err.message)),
+                        }
                     }
                 }
-                let desc = self.calls[i].playback()?;
-                self.media.execute(MediaOp::Sources(self.calls[i].user_id, StreamMode::Playback, desc)).await.map_err(|_| media_error())?;
+                let descriptor = next_audio.descriptor(&self.calls[i].id)?;
+                self.calls[i].browser_audio = Some(next_audio);
+                return Ok(json!({"audio_out": descriptor}));
             }
-            let c = &mut self.calls[i];
-            return Ok(json!({"audio_out":c.browser_audio.as_mut().unwrap().descriptor(&c.id)?}));
+            let id = self.calls[i].id.clone();
+            let audio = self.calls[i].browser_audio.as_mut().unwrap();
+            return Ok(json!({"audio_out": audio.descriptor(&id)?}));
         }
         if !["mic","mic_muted","camera","camera_off","video"].iter().any(|k| body.get(*k).is_some()) && !matches!(body["mic_format"].as_str(),Some("auto"|"s16le16k")) {
             return Err(GwError::bad_request("Cần mic, mic_muted, camera, camera_off hoặc video."));
@@ -919,9 +989,10 @@ impl Actor {
         let mic_muted = body.get("mic_muted").map(|v| v.as_bool().ok_or_else(|| GwError::bad_request("mic_muted phải là boolean"))).transpose()?;
         let mut devices = c.devices.clone();
         // Chỉ cập nhật capture, không nhận nhầm speaker/playback từ endpoint media.
-        let mut capture = json!({});
-        for key in ["mic","camera","mic_format"] { if let Some(v) = body.get(key) { capture[key] = v.clone(); } }
-        devices.update(&capture)?;
+        let mut capture_map = serde_json::Map::new();
+        for key in ["mic","camera","mic_format"] { if let Some(v) = body.get(key) { capture_map.insert(key.to_owned(), v.clone()); } }
+        self.resolve_catalog_fields(&mut capture_map, &["mic", "camera"]);
+        devices.update(&Value::Object(capture_map))?;
         let mut mic_source = c.mic_source.clone();
         if devices.mic != c.devices.mic && devices.mic != "silence" {
             mic_source = devices.mic_source();
@@ -937,18 +1008,24 @@ impl Actor {
                     .ok_or_else(|| GwError::bad_request("Chưa chọn nguồn mic để bật mic."))?;
             }
         }
+        if c.speech_revision.is_some() && body.get("mic").is_none() && body.get("mic_muted").is_none() {
+            devices.mic_format = c.devices.mic_format.clone();
+        }
         let upgrade = body["video"] == true;
         let video = c.video || upgrade;
         let cam_off = !upgrade && cam_off.unwrap_or(c.cam_off);
         devices.check_camera(video, cam_off)?;
         if c.media_created {
-            // Mô tả nguồn phải đi qua capture_description: mic "browser" cần nối vào nguồn loopback, gọi thẳng devices.capture sẽ ra mic im lặng.
-            let c = &mut self.calls[i];
-            let desc = c.capture_description_for(&devices, video, cam_off, self.profile).await?;
-            self.media.execute(MediaOp::Sources(c.user_id, StreamMode::Capture, desc)).await.map_err(|_| media_error())?;
+            // Mô tả nguồn phải đi qua prepare_capture: mic "browser" cần nối vào nguồn loopback, gọi thẳng devices.capture sẽ ra mic im lặng.
+            let (desc, handles) = self.calls[i].prepare_capture(&devices, video, cam_off, self.profile).await?;
+            self.media.execute(MediaOp::Sources(self.calls[i].user_id, StreamMode::Capture, desc)).await.map_err(|_| media_error())?;
+            self.calls[i].commit_capture(handles);
         }
         let c = &mut self.calls[i];
-        if devices.mic != c.devices.mic || devices.mic_format != c.devices.mic_format {
+        if devices.mic != c.devices.mic {
+            c.speech_revision = None;
+            c.capture_revision += 1;
+        } else if devices.mic_format != c.devices.mic_format {
             c.capture_revision += 1;
         }
         c.mic_source = mic_source;
@@ -961,23 +1038,36 @@ impl Actor {
 
     async fn set_playback(&mut self, body: Value) -> Reply {
         let i = self.find(&body)?;
-        let c = &self.calls[i];
-        if c.state == "ended" { return Err(missing()); }
+        if self.calls[i].state == "ended" { return Err(missing()); }
         let kind = body["kind"].as_str().filter(|s| !s.is_empty()).unwrap_or("file").to_owned();
+        if kind == "shell" && body["cmd"].as_str().is_some_and(|s| !s.is_empty()) {
+            return Err(GwError::bad_request("Không hỗ trợ lệnh shell tùy ý."));
+        }
         // push CHỈ lấy url đã kiểm tra; cmd không thể ghi đè URL như một lệnh shell.
-        let cmd = if kind == "push" { body["url"].as_str().filter(|s| !s.is_empty()).unwrap_or(&c.devices.speaker) }
-            else { body["cmd"].as_str().unwrap_or("") }.to_owned();
+        let cmd = if kind == "push" {
+            match body["url"].as_str().filter(|s| !s.is_empty()) {
+                Some(url) => catalog::resolve(&self.data_dir, url).unwrap_or_else(|| url.to_owned()),
+                None => self.calls[i].devices.speaker.clone(),
+            }
+        } else {
+            String::new()
+        };
+        let c = &self.calls[i];
         c.check_playback(&kind, &cmd, self.cast_port)?;
         if c.cast.is_some() && kind == c.playback_kind && cmd == c.playback_cmd { return Ok(c.info()); }
         let mut next_cast = None;
-        // AI đang nghe (browser_audio mở) + đổi sang loa "push" mới: cần spawn lại audio_sink CHO ĐÚNG url mới
-        // trước khi báo Sources — playback_with tự chọn "external" khi thấy browser_audio, nhưng không tự spawn.
-        let next_sink = if c.browser_audio.is_some() && kind == "push" { Some(audio_sink::AudioSink::spawn_push(&cmd)?) } else { None };
         if c.media_created {
-            next_cast = LiveCall::open_cast(&kind, &cmd).await?;
+            if c.browser_audio.is_none() {
+                next_cast = LiveCall::open_cast(&kind, &cmd).await?;
+            }
             let desc = c.playback_with(&kind, &cmd, next_cast.as_ref())?;
             self.media.execute(MediaOp::Sources(c.user_id, StreamMode::Playback, desc)).await.map_err(|_| media_error())?;
         }
+        let next_sink = if self.calls[i].media_created && self.calls[i].browser_audio.is_some() && kind == "push" && !is_cast_spec(&cmd) {
+            Some(audio_sink::AudioSink::spawn_push(&cmd)?)
+        } else {
+            None
+        };
         let c = &mut self.calls[i];
         if let Some(cast) = c.cast.take() { cast.close().await; }
         if let Some(cast) = &mut next_cast {
@@ -1141,6 +1231,10 @@ impl Actor {
         if let Some(i) = self.calls.iter().position(|c| c.id == id) {
             if self.calls[i].speech_revision == Some(revision) { self.calls[i].speech_revision = None; }
             if self.calls[i].state != "ended" && self.calls[i].capture_revision == revision {
+                let fmt = self.calls[i].mic_source.as_ref()
+                    .filter(|(src, _)| *src == mic)
+                    .map(|(_, f)| f.clone())
+                    .unwrap_or(fmt);
                 self.calls[i].devices.mic = mic;
                 self.calls[i].devices.mic_format = fmt;
                 if self.capture(i).await.is_err() { self.calls[i].log("không trả được nguồn mic sau say"); }
@@ -1213,7 +1307,7 @@ fn wav(pcm: &[u8]) -> Vec<u8> {
 fn rx_rotation(flag: ntgcalls::VideoRotation) -> u16 {
     let base = match flag { ntgcalls::VideoRotation::VideoRotation90 => 90, ntgcalls::VideoRotation::VideoRotation180 => 180, ntgcalls::VideoRotation::VideoRotation270 => 270, _ => 0 };
     let extra = std::env::var("TELEGRAM_RX_ROTATE").ok().and_then(|v| v.trim().parse::<u16>().ok()).filter(|v| v % 90 == 0).unwrap_or(0);
-    (base + extra) % 360
+    (base + (extra % 360)) % 360
 }
 
 #[cfg(test)]

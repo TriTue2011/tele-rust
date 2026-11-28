@@ -17,9 +17,7 @@ fn valid_id(id: &str, kind: &str) -> bool {
     if id.is_empty() || id.len() > 2048 || id.chars().any(|c| c.is_control() || c.is_whitespace()) { return false; }
     if id.contains("://") {
         if kind == "speaker" { return super::valid_speaker_url(id); }
-        let Ok(url) = reqwest::Url::parse(id) else { return false; };
-        return matches!(url.scheme(), "http" | "https" | "rtsp" | "rtsps" | "rtmp") && url.host_str().is_some()
-            && !id.contains(['\'', '"', '`', '$', '<', '>', '\\']);
+        return super::sources::valid_media_url(id) && !id.contains(['\'', '"', '`', '$', '<', '>', '\\']);
     }
     // ID HA/opaque: không cho đường dẫn, dấu lệnh hoặc ký tự điều khiển.
     id.len() <= 128 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b"_.:-".contains(&b))
@@ -65,10 +63,12 @@ pub(super) fn load(dir: &Path) -> Result<Value, GwError> {
 pub(super) fn save(dir: &Path, body: &Value) -> Result<Value, GwError> {
     let (catalog, urls) = filter_with_urls(body)?;
     fs::create_dir_all(dir).map_err(|_| super::io_error())?;
-    crate::accounts::atomic_json(&dir.join("ha_devices.json"), &catalog).map_err(|_| super::io_error())?;
     let urls_path = dir.join(URLS_FILE);
+    if !urls.is_empty() {
+        crate::accounts::atomic_json(&urls_path, &json!(urls)).map_err(|_| super::io_error())?;
+    }
+    crate::accounts::atomic_json(&dir.join("ha_devices.json"), &catalog).map_err(|_| super::io_error())?;
     if urls.is_empty() { let _ = fs::remove_file(&urls_path); }
-    else { crate::accounts::atomic_json(&urls_path, &json!(urls)).map_err(|_| super::io_error())?; }
     Ok(catalog)
 }
 
@@ -136,5 +136,24 @@ mod tests {
         assert!(save(&dir,&invalid).is_err());assert_eq!(load(&dir).unwrap(),saved);
         assert_eq!(fs::read_dir(&dir).unwrap().count(),1);
         fs::remove_file(dir.join("ha_devices.json")).unwrap();fs::remove_dir(dir).unwrap();
+    }
+
+    #[test]
+    fn rejects_link_local_metadata_and_unspecified_urls() {
+        let body = json!({
+            "mic": [
+                {"id": "http://169.254.169.254/audio", "name": "Metadata"},
+                {"id": "http://[::ffff:169.254.169.254]/audio", "name": "MappedMetadata"},
+                {"id": "http://0.0.0.0/audio", "name": "Unspecified"},
+                {"id": "http://[::]/audio", "name": "UnspecifiedV6"},
+                {"id": "http://[fe80::1]/audio", "name": "LinkLocalV6"},
+                {"id": "http://camera.example/audio", "name": "Valid"}
+            ],
+            "speaker": [],
+            "camera": []
+        });
+        let result = filter(&body).unwrap();
+        assert_eq!(result["mic"].as_array().unwrap().len(), 1);
+        assert_eq!(result["mic"][0]["name"], "Valid");
     }
 }

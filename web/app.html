@@ -1861,7 +1861,8 @@
     } else { lastDay = day; box.appendChild(frag); if (atBottom) box.scrollTop = box.scrollHeight; }
   }
   async function openChat(c) {
-    cur = c.id; curKind = c.kind; replyTo = 0; $("reply").style.display = "none";
+    const seq = (openChat._seq = (openChat._seq || 0) + 1);
+    cur = c.id; curKind = c.kind; replyTo = 0; oldest = 0; $("reply").style.display = "none";
     if (typeof pendingFiles !== "undefined") pendingFiles = []; if (typeof renderTray === "function") renderTray(); if (typeof updateSendButtons === "function") updateSendButtons();
     $("app").classList.add("chatting"); $("gate").hidden = true; $("placeholder").hidden = true; $("head").hidden = false; $("msgs").hidden = false; $("typing").hidden = false; $("composer").hidden = false;
     $("title").textContent = c.title; $("call-a").hidden = $("call-v").hidden = c.kind !== "private";
@@ -1872,21 +1873,24 @@
     const box = $("msgs"); box.textContent = ""; rendered.clear(); msgData.clear(); lastDay = null; if (typeof applyBackground === "function") applyBackground(null);
     try {
       const r = await api("GET", "/api/chats/" + c.id + "/messages?limit=40"); const msgs = r.messages || [];
-      if (cur !== c.id) return; oldest = msgs.length ? msgs[0].id : 0;
+      if (cur !== c.id || seq !== openChat._seq) return;
+      oldest = msgs.length ? msgs[0].id : 0;
       if (msgs.length >= 30) { const b = el("button", "ghost", "Tải tin cũ hơn"); b.id = "more"; b.addEventListener("click", loadOlder); box.appendChild(b); }
       appendMessages(msgs, false); box.scrollTop = box.scrollHeight;
       markRead(c.id, msgs);
-    } catch (e) { toast(e.message); }
+    } catch (e) { if (cur === c.id && seq === openChat._seq) toast(e.message); }
+    if (cur !== c.id || seq !== openChat._seq) return;
     if (typeof loadChatBackground === "function") loadChatBackground(c.id);
     if (typeof onChatOpened === "function") onChatOpened(c);
     if (typeof updateComposerToolbar === "function") updateComposerToolbar();
     $("text").focus();
   }
   async function loadOlder() {
-    if (!cur || !oldest) return; const b = $("more"); b.disabled = true;
-    try { const r = await api("GET", "/api/chats/" + cur + "/messages?limit=40&before=" + oldest); const msgs = r.messages || [];
+    if (!cur || !oldest) return; const chatId = cur, seq = openChat._seq || 0; const b = $("more"); b.disabled = true;
+    try { const r = await api("GET", "/api/chats/" + chatId + "/messages?limit=40&before=" + oldest); const msgs = r.messages || [];
+      if (cur !== chatId || seq !== (openChat._seq || 0)) return;
       if (msgs.length) { oldest = msgs[0].id; appendMessages(msgs, true); } if (msgs.length < 5) b.remove(); else b.disabled = false; }
-    catch (e) { toast(e.message); b.disabled = false; }
+    catch (e) { if (cur === chatId && seq === (openChat._seq || 0)) { toast(e.message); b.disabled = false; } }
   }
   function markRead(chatId, msgs) {
     const ids = msgs.filter((m) => !m.outgoing).slice(-20).map((m) => m.id);
@@ -2277,13 +2281,15 @@
             if (parent) { sel.removeAllRanges(); sel.addRange(nr); }
           } else {
             let splitNode = container;
+            let didSplit = false;
             if (container.nodeType === 3 && offset > 0 && offset < container.nodeValue.length) {
               splitNode = container.splitText(offset);
+              didSplit = true;
             }
             const beforeRange = document.createRange();
             beforeRange.setStart(anc, 0);
             if (container.nodeType === 3) {
-              beforeRange.setEnd(container.nodeType === 3 && offset === 0 ? container : splitNode, container.nodeType === 3 && offset > 0 && offset < container.nodeValue.length ? 0 : (offset === 0 ? 0 : container.nodeValue.length));
+              beforeRange.setEnd(didSplit ? splitNode : container, didSplit ? 0 : (offset === 0 ? 0 : container.nodeValue.length));
             } else {
               beforeRange.setEnd(container, offset);
             }
@@ -2513,7 +2519,10 @@
     if (btnLike) btnLike.hidden = Boolean(has);
   }
 
+  let trayBlobUrls = [];
   function renderTray() {
+    for (const u of trayBlobUrls) { try { URL.revokeObjectURL(u); } catch (_) {} }
+    trayBlobUrls = [];
     const tray = $("attach-tray");
     if (!tray) return;
     tray.hidden = !pendingFiles.length;
@@ -2528,12 +2537,12 @@
       const isPic = isPhotoFile(f);
       if (isPic) {
         const img = document.createElement("img");
-        try { img.src = URL.createObjectURL(f); } catch (_) {}
+        try { const u = URL.createObjectURL(f); img.src = u; trayBlobUrls.push(u); } catch (_) {}
         img.alt = f.name || "Ảnh";
         item.appendChild(img);
       } else if (isVid) {
         const vid = document.createElement("video");
-        try { vid.src = URL.createObjectURL(f); } catch (_) {}
+        try { const u = URL.createObjectURL(f); vid.src = u; trayBlobUrls.push(u); } catch (_) {}
         vid.muted = true;
         vid.playsInline = true;
         vid.preload = "metadata";
@@ -2582,8 +2591,8 @@
     if (ed && typeof ed.focus === "function") ed.focus();
   }
 
-  const sendAttachedFiles = async (list, caption) => {
-    if (!list || !list.length || !cur) return;
+  const sendAttachedFiles = async (list, caption, targetChat = cur, targetReplyTo = replyTo) => {
+    if (!list || !list.length || !targetChat) return;
     const single = list.length === 1;
     for (let i = 0; i < list.length; i++) {
       const f = list[i];
@@ -2593,9 +2602,9 @@
       toast("Đang gửi " + (list.length > 1 ? (i + 1) + "/" + list.length + ": " : "") + (f.name || "tệp") + "…");
       try {
         const buf = typeof f.arrayBuffer === "function" ? await f.arrayBuffer() : f;
-        let url = "/api/chats/" + cur + "/send_file?kind=" + kind + "&name=" + encodeURIComponent(f.name || "file.bin");
+        let url = "/api/chats/" + targetChat + "/send_file?kind=" + kind + "&name=" + encodeURIComponent(f.name || "file.bin");
         if (fileCap) url += "&caption=" + encodeURIComponent(fileCap);
-        if (replyTo) url += "&reply_to=" + replyTo;
+        if (targetReplyTo) url += "&reply_to=" + targetReplyTo;
         await api("POST", url, buf, true);
         toast("Đã gửi " + (f.name || ""));
         scheduleChats();
@@ -2603,22 +2612,29 @@
     }
     if (caption && !single) {
       try {
-        await api("POST", "/api/chats/" + cur + "/send", { text: caption, reply_to: replyTo });
+        await api("POST", "/api/chats/" + targetChat + "/send", { text: caption, reply_to: targetReplyTo });
         scheduleChats();
       } catch (_) {}
     }
-    replyTo = 0;
-    if ($("reply")) $("reply").style.display = "none";
+    if (cur === targetChat && replyTo === targetReplyTo) {
+      replyTo = 0;
+      if ($("reply")) $("reply").style.display = "none";
+    }
   };
   const sendAttachedFile = async (f) => { if (f) await sendAttachedFiles([f], ""); };
 
   async function sendQuickLike() {
     if (!cur) return;
+    const chatId = cur, targetReplyTo = replyTo;
     try {
-      const m = await api("POST", "/api/chats/" + cur + "/send", { text: "👍", reply_to: replyTo });
-      replyTo = 0;
-      if ($("reply")) $("reply").style.display = "none";
-      if (m && m.id) appendMessages([Object.assign({}, m, { outgoing: true, date: m.date || Date.now() / 1000 })], false);
+      const m = await api("POST", "/api/chats/" + chatId + "/send", { text: "👍", reply_to: targetReplyTo });
+      if (cur === chatId) {
+        if (replyTo === targetReplyTo) {
+          replyTo = 0;
+          if ($("reply")) $("reply").style.display = "none";
+        }
+        if (m && m.id) appendMessages([Object.assign({}, m, { outgoing: true, date: m.date || Date.now() / 1000 })], false);
+      }
       scheduleChats();
     } catch (e) { toast(e.message); }
   }
@@ -2628,6 +2644,7 @@
   async function send() {
     const t = $("text");
     if (!t || !cur || isComposing) return;
+    const chatId = cur, targetReplyTo = replyTo;
     const parsed = extractComposerContent(t);
     const caption = parsed.text.trim();
     if (pendingFiles.length > 0) {
@@ -2636,22 +2653,26 @@
       renderTray();
       clearComposer(t);
       updateSendButtons();
-      await sendAttachedFiles(list, caption);
+      await sendAttachedFiles(list, caption, chatId, targetReplyTo);
       return;
     }
     if (!caption) return;
     const body = parsed.entities.length
-      ? { text: parsed.text, entities: parsed.entities, reply_to: replyTo }
-      : { text: parsed.text, reply_to: replyTo };
+      ? { text: parsed.text, entities: parsed.entities, reply_to: targetReplyTo }
+      : { text: parsed.text, reply_to: targetReplyTo };
     $("send").disabled = true;
     try {
-      const m = await api("POST", "/api/chats/" + cur + "/send", body);
-      clearComposer(t);
-      replyTo = 0; $("reply").style.display = "none";
-      if (m && m.id) appendMessages([Object.assign({}, m, { outgoing: true, date: m.date || Date.now() / 1000 })], false);
+      const m = await api("POST", "/api/chats/" + chatId + "/send", body);
+      if (cur === chatId) {
+        clearComposer(t);
+        if (replyTo === targetReplyTo) {
+          replyTo = 0; $("reply").style.display = "none";
+        }
+        if (m && m.id) appendMessages([Object.assign({}, m, { outgoing: true, date: m.date || Date.now() / 1000 })], false);
+      }
       scheduleChats();
     }
-    catch (e) { toast(e.message); } finally { $("send").disabled = false; t.focus(); }
+    catch (e) { toast(e.message); } finally { $("send").disabled = false; if (cur === chatId) t.focus(); }
   }
   $("send").addEventListener("click", send);
   if ($("btn-like")) $("btn-like").addEventListener("click", sendQuickLike);
@@ -2775,23 +2796,36 @@
   if ($("btn-sticker")) $("btn-sticker").addEventListener("click", toggleEmojiPanel);
   if ($("btn-app")) $("btn-app").addEventListener("click", () => toast("Tiện ích hội thoại: Định dạng Aa, Gửi ảnh/video, Đính kèm tệp, Ghi âm"));
 
-  let audioRecorder = null;
+  let audioRecorder = null, recStarting = false;
   async function toggleRecord() {
     const btn = $("btn-rec");
     if (audioRecorder) { audioRecorder.stop(); return; }
+    if (recStarting) return;
+    const targetChat = cur, targetReplyTo = replyTo;
+    if (!targetChat) { toast("Hãy mở một cuộc trò chuyện trước."); return; }
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       toast("Trình duyệt không hỗ trợ micro.");
       return;
     }
+    recStarting = true;
     let stream;
     try {
       stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     } catch (e) {
+      recStarting = false;
       toast("Không mở được micro: " + (e.message || e));
       return;
     }
-    const mime = ["audio/webm;codecs=opus", "audio/webm", "audio/ogg", "audio/mp4"].find((m) => window.MediaRecorder && MediaRecorder.isTypeSupported(m));
-    const rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+    let rec;
+    try {
+      const mime = ["audio/webm;codecs=opus", "audio/webm", "audio/ogg", "audio/mp4"].find((m) => window.MediaRecorder && MediaRecorder.isTypeSupported(m));
+      rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+    } catch (e) {
+      recStarting = false;
+      stream.getTracks().forEach((tr) => tr.stop());
+      toast("Không khởi tạo được ghi âm: " + (e.message || e));
+      return;
+    }
     const chunks = [];
     let cancelled = false;
     const started = Date.now();
@@ -2830,12 +2864,13 @@
       if (ed) ed.hidden = false;
       if (btn) { btn.textContent = "🎙️"; btn.setAttribute("aria-label", "Mic ghi âm"); }
       audioRecorder = null;
-      if (cancelled || !chunks.length || !cur) return;
+      if (cancelled || !chunks.length || !targetChat) return;
       const blob = new Blob(chunks, { type: rec.mimeType || "audio/webm" });
       const f = new File([blob], "voice.ogg", { type: blob.type });
-      await sendAttachedFiles([f], "");
+      await sendAttachedFiles([f], "", targetChat, targetReplyTo);
     };
     audioRecorder = rec;
+    recStarting = false;
     rec.start();
   }
   if ($("btn-rec")) $("btn-rec").addEventListener("click", toggleRecord);
@@ -2940,7 +2975,7 @@
   async function openWallpaperDialog() {
     if (!cur) return;
     const chatId = cur, isPrivate = curKind === "private";
-    const old = document.getElementById("wp-dialog"); if (old) old.remove();
+    const old = document.getElementById("wp-dialog"); if (old) { if (old.__close) old.__close(); else old.remove(); }
     let sharedOn = "", emojiPick = SHARED_EMOJI[0], emojiBg = "#e8f0fe", packFiles = null, packOn = "", packThumbs = {}; let dark = isDarkTheme(), tab = "shared", draft = null, dim = 0, both = false, busy = false, gallery = [], uploadedBlobUrl = "";
     // Mặc định mở tab «Mẫu chung» (46 mẫu minh hoạ dùng chung với Zalo), không phải «Bộ sưu tập» (nền thật đồng bộ từ điện thoại —
     // tài khoản có thể chỉ có vài màu phẳng ở đó): chủ máy chê tab mặc định "chưa được như Zalo" vì Zalo luôn mở sẵn bộ 46 mẫu đẹp.
@@ -3033,9 +3068,10 @@
       try {
         const blob = await shrinkImage(f); const buf = await blob.arrayBuffer();
         const r = await api("POST", "/api/wallpapers/upload", buf, true);
+        if (!dlg.isConnected) return;
         if (uploadedBlobUrl) URL.revokeObjectURL(uploadedBlobUrl); uploadedBlobUrl = URL.createObjectURL(blob);
         draft = { file_path: r.file, preview: "center/cover no-repeat url(" + JSON.stringify(uploadedBlobUrl) + ")" }; say("Đã tải ảnh lên."); await paint(); await drawBody();
-      } catch (e) { say(e.message || String(e), true); }
+      } catch (e) { if (dlg.isConnected) say(e.message || String(e), true); }
       busy = false;
     }
     async function loadGallery() {
@@ -3069,6 +3105,7 @@
     const head = el("div", "wpd-row"); head.appendChild(el("h2", "", "Hình nền hội thoại")); head.lastChild.style.flex = "1"; head.appendChild(nightBtn);
     const box = el("div", "wpd-box"); box.append(head, preview, tabs, body, msg, actions);
     const dlg = el("div", "wpd"); dlg.id = "wp-dialog"; dlg.setAttribute("role", "dialog"); dlg.setAttribute("aria-modal", "true"); dlg.setAttribute("aria-label", "Hình nền hội thoại"); dlg.appendChild(box);
+    dlg.__close = close;
     document.body.appendChild(dlg); document.addEventListener("keydown", onKey, true);
     drawTabs(); loadGallery(); paint();
     try { const r = await api("GET", "/api/chats/" + chatId + "/background"); if (r.background && r.background.dimming) { dim = r.background.dimming; drawBody(); } } catch (_) { /* không đọc được nền hiện tại */ }
@@ -3082,8 +3119,12 @@
       set: (v) => { try { document.cookie = emojiCookie + encodeURIComponent(v) + "; Max-Age=31536000; Path=/; SameSite=Strict" + (location.protocol === "https:" ? "; Secure" : ""); } catch (_) {} },
     });
   }
-  let rxPop = null;
-  function closeReactions() { if (rxPop) { rxPop.remove(); rxPop = null; document.removeEventListener("mousedown", rxOutside, true); document.removeEventListener("keydown", rxEsc, true); } }
+  let rxPop = null, rxSeq = 0, rxDownTimer = null;
+  function closeReactions() {
+    rxSeq++;
+    if (rxDownTimer !== null) { clearTimeout(rxDownTimer); rxDownTimer = null; }
+    if (rxPop) { rxPop.remove(); rxPop = null; document.removeEventListener("mousedown", rxOutside, true); document.removeEventListener("keydown", rxEsc, true); }
+  }
   function rxOutside(e) { if (rxPop && !rxPop.contains(e.target) && !e.target.closest(".acts")) closeReactions(); }
   function rxEsc(e) { if (e.key === "Escape") { e.stopPropagation(); closeReactions(); } }
   const myReaction = (m) => ((m.reactions || []).find((r) => r.mine) || {}).emoji || "";
@@ -3096,7 +3137,10 @@
   async function toggleReaction(m, emoji) { await react(m, emoji, emoji !== myReaction(m)); }
   async function openReactions(m, anchor) {
     closeReactions();
-    let av; try { av = await availableReactions(m); } catch (e) { return toast(e.message || "Không lấy được danh sách cảm xúc."); }
+    const seq = ++rxSeq, chatId = cur;
+    let av; try { av = await availableReactions(m); } catch (e) { if (seq === rxSeq && cur === chatId) toast(e.message || "Không lấy được danh sách cảm xúc."); return; }
+    if (seq !== rxSeq || cur !== chatId) return;
+    closeReactions();
     if (!av.all.length) return toast("Cuộc trò chuyện này không cho thả cảm xúc.");
     if (!window.Emoji) return toast("Không tải được bộ cảm xúc.");
     const asItem = (e) => ({ key: e, emoji: e, label: e });
@@ -3105,7 +3149,7 @@
     const r = anchor ? anchor.getBoundingClientRect() : { left: innerWidth / 2, top: innerHeight / 2, bottom: innerHeight / 2 };
     pop.style.left = Math.max(8, Math.min(r.left - pop.offsetWidth + 40, innerWidth - pop.offsetWidth - 8)) + "px";
     pop.style.top = Math.max(8, r.top - pop.offsetHeight - 8 >= 8 ? r.top - pop.offsetHeight - 8 : Math.min(r.bottom + 8, innerHeight - pop.offsetHeight - 8)) + "px";
-    document.addEventListener("keydown", rxEsc, true); setTimeout(() => document.addEventListener("mousedown", rxOutside, true), 0);
+    document.addEventListener("keydown", rxEsc, true); rxDownTimer = setTimeout(() => { rxDownTimer = null; if (rxPop === pop) document.addEventListener("mousedown", rxOutside, true); }, 0);
     const first = pop.querySelector(".rx-b"); if (first) first.focus();
   }
   // Nhấp đúp vào tin = thả cảm xúc nhanh đầu tiên được phép (như Telegram); nhấp đúp lần nữa gỡ.
@@ -3922,7 +3966,8 @@
         schedulePcm(output, merged.subarray(0, usable), info);
         rest = merged.slice(usable);
       }
-    })().catch((e) => { if (browserOutput === output && output.abort === controller && e.name !== "AbortError") { output.lowLatency = false; $("call-audio-enable").hidden = false; } });
+      if (browserOutput === output && output.abort === controller) { output.lowLatency = false; output.src = ""; $("call-audio-enable").hidden = false; }
+    })().catch((e) => { if (browserOutput === output && output.abort === controller && e.name !== "AbortError") { output.lowLatency = false; output.src = ""; $("call-audio-enable").hidden = false; } });
     return true;
   }
   function stopBrowserOutput() {
@@ -3983,7 +4028,7 @@
   $("call-audio-enable").addEventListener("click", () => {
     if (!browserOutput) return;
     if (browserOutput.lowLatency && browserOutput.ctx) { browserOutput.ctx.resume().then(() => { $("call-audio-enable").hidden = browserOutput?.ctx?.state === "running"; }, () => {}); return; }
-    if (browserOutput.src && !callAudio.error) playCallAudio(browserOutput);
+    if (browserOutput.src && callAudio.getAttribute("src") && !callAudio.error) playCallAudio(browserOutput);
     else {
       browserOutput.src = "";
       renewBrowserOutput(browserOutput);
@@ -4059,6 +4104,7 @@
   function stopBrowserCamera() {
     const cam = browserCamera; if (!cam) return;
     browserCamera = null; clearInterval(cam.timer);
+    try { cam.controller?.abort(); } catch (_) {}
     cam.stream?.getTracks().forEach((track) => track.stop());
   }
   function sendCameraFrame(cam, video, canvas) {
@@ -4070,15 +4116,15 @@
       try {
         if (!blob || browserCamera !== cam) return;
         const r = await fetch(accountPath("/api/live/video/in/" + encodeURIComponent(cam.id)), {
-          method: "POST", credentials: "same-origin", headers: { "X-Requested-With": "fetch", "Content-Type": "image/jpeg" }, body: blob });
-        if (r.status === 404 || r.status === 409) stopBrowserCamera();      // hết cuộc gọi hoặc không còn dùng camera của trình duyệt
+          method: "POST", credentials: "same-origin", headers: { "X-Requested-With": "fetch", "Content-Type": "image/jpeg" }, body: blob, signal: cam.controller.signal });
+        if (browserCamera === cam && (r.status === 404 || r.status === 409)) stopBrowserCamera();      // hết cuộc gọi hoặc không còn dùng camera của trình duyệt
       } catch (_) { /* mất một khung: khung sau gửi tiếp */ } finally { cam.sending = false; }
     }, "image/jpeg", 0.7);
   }
   async function startBrowserCamera(id) {
     if (browserCamera?.id === id) return;
     stopBrowserCamera();
-    const cam = { id, timer: null, sending: false, stream: null };
+    const cam = { id, timer: null, sending: false, stream: null, controller: new AbortController() };
     browserCamera = cam;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 15 } }, audio: false });
@@ -4086,6 +4132,7 @@
       cam.stream = stream;
       const video = document.createElement("video"); video.muted = true; video.playsInline = true; video.srcObject = stream;
       await video.play();
+      if (browserCamera !== cam) { video.srcObject = null; return; }
       const canvas = document.createElement("canvas");
       cam.timer = setInterval(() => sendCameraFrame(cam, video, canvas), 100);
     } catch (e) {
@@ -5563,6 +5610,7 @@
   }
 
   const ciConfirmAutoDelete = (nextSeconds, prevSeconds) => {
+    const targetId = chatInfo?.chat_id;
     const label = formatAutoDeleteLabel(nextSeconds);
     openCiConfirm({
       title: "Xác nhận tự xoá tin nhắn",
@@ -5570,12 +5618,12 @@
       showRevoke: false,
       okLabel: "Áp dụng tự xoá",
       onCancel: () => {
-        if (chatInfo) renderAutoDeleteSection(prevSeconds);
+        if (chatInfo && chatInfo.chat_id === targetId) renderAutoDeleteSection(prevSeconds);
       },
       onConfirm: async () => {
-        if (!chatInfo) return;
+        if (!chatInfo || chatInfo.chat_id !== targetId) return;
         await saveChatSettings({ auto_delete: { seconds: nextSeconds, confirm: true } });
-        applyChatAutoDeleteUpdate(chatInfo.chat_id, nextSeconds);
+        applyChatAutoDeleteUpdate(targetId, nextSeconds);
       },
     });
   };
@@ -5629,6 +5677,8 @@
         }
         if (cur === target.id) {
           cur = null;
+          if (typeof closeChatOverlays === "function") closeChatOverlays();
+          if ($("typing")) $("typing").hidden = true;
           if ($("app")?.classList) $("app").classList.remove("chatting");
           if ($("head")) $("head").hidden = true;
           if ($("msgs")) $("msgs").hidden = true;
@@ -5654,6 +5704,8 @@
         closeChatInfo();
         if (cur === chatId) {
           cur = null;
+          if (typeof closeChatOverlays === "function") closeChatOverlays();
+          if ($("typing")) $("typing").hidden = true;
           if ($("app")?.classList) $("app").classList.remove("chatting");
           if ($("head")) $("head").hidden = true;
           if ($("msgs")) $("msgs").hidden = true;
@@ -5668,10 +5720,13 @@
 
   async function saveChatSettings(body) {
     if (!chatInfo) return;
+    const targetId = chatInfo.chat_id;
+    const seq = chatInfoSeq;
     $("chat-info-error").textContent = "";
     $("chat-info-status").textContent = "Đang lưu…";
     try {
-      const res = await api("POST", "/api/chats/" + chatInfo.chat_id + "/settings", body);
+      const res = await api("POST", "/api/chats/" + targetId + "/settings", body);
+      if (seq !== chatInfoSeq || chatInfo?.chat_id !== targetId) return res;
       if (res.notification) chatInfo.notification = res.notification;
       if (res.auto_delete_seconds !== undefined) chatInfo.auto_delete_seconds = res.auto_delete_seconds;
       if (res.pinned !== undefined) chatInfo.pinned = res.pinned;
@@ -5682,8 +5737,10 @@
       $("chat-info-status").textContent = "Đã cập nhật cài đặt hội thoại.";
       return res;
     } catch (err) {
-      $("chat-info-status").textContent = "";
-      $("chat-info-error").textContent = err.message;
+      if (seq === chatInfoSeq && chatInfo?.chat_id === targetId) {
+        $("chat-info-status").textContent = "";
+        $("chat-info-error").textContent = err.message;
+      }
       throw err;
     }
   }
@@ -5705,7 +5762,7 @@
     av.textContent = typeof initials === "function" ? initials(title) : title.slice(0, 1).toUpperCase();
     const palette = typeof COLORS !== "undefined" ? COLORS : ["#1d68c4"];
     if (av.style) av.style.background = palette[Math.abs(Number(info.chat_id) || 0) % palette.length];
-    if (typeof loadAvatar === "function" && info.avatar_file) loadAvatar(av, info.avatar_file);
+    if (typeof loadAvatar === "function") loadAvatar(av, info.avatar_file);
 
     $("chat-info-title").textContent = title;
     $("chat-info-kind").textContent = CHAT_KIND_LABELS[info.kind] || info.kind || "Hội thoại";
@@ -5843,18 +5900,61 @@
     }
   }
 
-  async function saveChatCache(chatId, keep) {
+  function isChatCacheTightening(policy, chatId, nextKeep) {
+    if (!policy) return false;
+    const tighter = (oldVal, newVal) => (oldVal === null ? newVal !== null : newVal !== null && newVal < oldVal);
+    const row = (policy.exceptions || []).find((r) => r.chat_id === chatId);
+    const hasExc = Boolean(row);
+    const oldKeep = hasExc ? (row.keep ?? null) : undefined;
+    if (policy.mode === "stream") {
+      const ttl = policy.stream_ttl_s ?? null;
+      const oldVal = hasExc ? oldKeep : ttl;
+      const newVal = nextKeep !== undefined ? nextKeep : ttl;
+      return tighter(oldVal, newVal);
+    }
+    const kinds = ["private", "groups", "channels"];
+    const hasLimit = (policy.max_cache_bytes ?? null) !== null || kinds.some((k) => (policy.keep?.[k] ?? null) !== null);
+    if (hasExc && nextKeep !== undefined) return tighter(oldKeep, nextKeep);
+    if (hasExc && nextKeep === undefined) {
+      return oldKeep === null ? hasLimit : kinds.some((k) => tighter(oldKeep, policy.keep?.[k] ?? null));
+    }
+    if (!hasExc && nextKeep !== undefined) {
+      return nextKeep !== null && kinds.some((k) => tighter(policy.keep?.[k] ?? null, nextKeep));
+    }
+    return false;
+  }
+
+  async function saveChatCache(chatId, keep, confirmed = false) {
     if (!storagePolicyCache) return;
+    if (!confirmed && isChatCacheTightening(storagePolicyCache, chatId, keep)) {
+      openCiConfirm({
+        title: "Xác nhận làm chặt bộ nhớ đệm",
+        summary: keep === undefined
+          ? "Đưa hội thoại này về thời hạn giữ tệp mặc định (hoặc tắt giữ «Mãi mãi») có thể khiến các tệp đã tải bị dọn trong lượt dọn tới."
+          : "Giảm thời hạn giữ tệp của hội thoại này có thể khiến các tệp cũ hơn hạn mới bị dọn trong lượt dọn tới.",
+        showRevoke: false,
+        okLabel: "Xác nhận và lưu",
+        onCancel: () => {
+          if (!chatInfo || chatInfo.chat_id === chatId) renderCacheControls(chatId, storagePolicyCache);
+        },
+        onConfirm: () => saveChatCache(chatId, keep, true),
+      });
+      return;
+    }
+    const seq = chatInfoSeq;
     $("ci-cache-forever").disabled = $("ci-cache-keep").disabled = true;
     $("ci-cache-status").textContent = "Đang cập nhật chính sách bộ nhớ đệm…";
     try {
       const nextExceptions = (storagePolicyCache.exceptions || []).filter((row) => row.chat_id !== chatId);
       if (keep !== undefined) nextExceptions.push({ chat_id: chatId, keep });
-      const payload = { ...storagePolicyCache, exceptions: nextExceptions };
-      storagePolicyCache = await api("POST", "/api/settings/storage", payload);
+      const payload = { ...storagePolicyCache, exceptions: nextExceptions, ...(confirmed ? { confirm: true } : {}) };
+      const updated = await api("POST", "/api/settings/storage", payload);
+      if (seq !== chatInfoSeq) return;
+      storagePolicyCache = updated;
       renderCacheControls(chatId, storagePolicyCache);
       $("ci-cache-status").textContent = "Đã lưu ngoại lệ bộ nhớ đệm cho hội thoại này.";
     } catch (err) {
+      if (seq !== chatInfoSeq) return;
       $("ci-cache-status").textContent = err.message;
       renderCacheControls(chatId, storagePolicyCache);
     }
@@ -6332,23 +6432,26 @@
 
   $("ci-block").addEventListener("click", async () => {
     if (!chatInfo || !chatInfo.user_id) return;
+    const targetId = chatInfo.chat_id, seq = chatInfoSeq;
     $("ci-block").disabled = true;
     $("chat-info-error").textContent = "";
     try {
       const action = chatInfo.is_blocked ? "unblock_user" : "block_user";
       await api("POST", "/api/do/" + action, { user_id: chatInfo.user_id });
+      if (seq !== chatInfoSeq || chatInfo?.chat_id !== targetId) return;
       chatInfo.is_blocked = !chatInfo.is_blocked;
       $("ci-block").textContent = chatInfo.is_blocked ? "Bỏ chặn người dùng" : "Chặn người dùng";
       $("chat-info-status").textContent = chatInfo.is_blocked ? "Đã chặn người dùng." : "Đã bỏ chặn người dùng.";
     } catch (err) {
-      $("chat-info-error").textContent = err.message;
+      if (seq === chatInfoSeq && chatInfo?.chat_id === targetId) $("chat-info-error").textContent = err.message;
     } finally {
-      $("ci-block").disabled = false;
+      if (seq === chatInfoSeq && chatInfo?.chat_id === targetId) $("ci-block").disabled = false;
     }
   });
 
   $("ci-add-contact").addEventListener("click", async () => {
     if (!chatInfo || !chatInfo.user_id) return;
+    const targetId = chatInfo.chat_id, seq = chatInfoSeq;
     $("ci-add-contact").disabled = true;
     $("chat-info-error").textContent = "";
     try {
@@ -6357,13 +6460,14 @@
         first_name: chatInfo.first_name || chatInfo.title || "Liên hệ",
         last_name: chatInfo.last_name || "",
       });
+      if (seq !== chatInfoSeq || chatInfo?.chat_id !== targetId) return;
       chatInfo.is_contact = true;
       $("ci-add-contact").hidden = true;
       $("chat-info-status").textContent = "Đã thêm vào danh bạ.";
     } catch (err) {
-      $("chat-info-error").textContent = err.message;
+      if (seq === chatInfoSeq && chatInfo?.chat_id === targetId) $("chat-info-error").textContent = err.message;
     } finally {
-      $("ci-add-contact").disabled = false;
+      if (seq === chatInfoSeq && chatInfo?.chat_id === targetId) $("ci-add-contact").disabled = false;
     }
   });
 

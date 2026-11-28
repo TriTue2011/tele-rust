@@ -242,7 +242,7 @@
   }
 
   let qrTimer = null, qrShown = "";
-  function stopQrPoll() { if (qrTimer) { clearInterval(qrTimer); qrTimer = null; } }
+  function stopQrPoll() { if (qrTimer) { clearTimeout(qrTimer); qrTimer = null; } }
 
   function showStep(name) {
     if (name !== "qr") stopQrPoll();
@@ -265,15 +265,26 @@
   // Telegram đổi mã QR sau ~30 giây: hỏi gateway 2,5 giây một lần, vẽ lại khi mã đổi, tự hoàn tất khi đã quét.
   function startQrPoll() {
     stopQrPoll();
-    qrTimer = setInterval(async function () {
-      if (!loginId) { stopQrPoll(); return; }
-      try {
-        const r = await api("GET", "/ui/api/accounts/" + encodeURIComponent(loginId));
-        if (r.stage === "done") { stopQrPoll(); await loginDone(r); }
-        else if (r.stage === "password") { stopQrPoll(); showStep("pass"); say("login-msg", "Đã quét. Tài khoản bật hai bước: nhập mật khẩu.", "warn"); $("pass").focus(); }
-        else if (r.stage === "qr") { drawQr(r.qr_link); }
-      } catch (e) { stopQrPoll(); say("login-msg", e.message + " Bấm «Đăng nhập bằng QR» để tạo lại.", "err"); }
-    }, 2500);
+    const polledId = loginId;
+    if (!polledId) return;
+    const scheduleNext = () => {
+      qrTimer = setTimeout(async function () {
+        qrTimer = null;
+        if (loginId !== polledId) return;
+        try {
+          const r = await api("GET", "/ui/api/accounts/" + encodeURIComponent(polledId));
+          if (loginId !== polledId) return;
+          if (r.stage === "done") { stopQrPoll(); await loginDone(r); }
+          else if (r.stage === "password") { stopQrPoll(); showStep("pass"); say("login-msg", "Đã quét. Tài khoản bật hai bước: nhập mật khẩu.", "warn"); $("pass").focus(); }
+          else if (r.stage === "qr") { drawQr(r.qr_link); scheduleNext(); }
+          else { scheduleNext(); }
+        } catch (e) {
+          if (loginId !== polledId) return;
+          stopQrPoll(); say("login-msg", e.message + " Bấm «Đăng nhập bằng QR» để tạo lại.", "err");
+        }
+      }, 2500);
+    };
+    scheduleNext();
   }
 
   function loginDone(r) {
